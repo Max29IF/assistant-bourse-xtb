@@ -174,7 +174,42 @@ def tradingview_chart(symbol, interval="60"):
     <!-- TradingView Widget END -->
     """
     return widget
+# ==========================================================
+# INFORMATIONS SUR LA VALEUR
+# ==========================================================
 
+def get_stock_info(symbol):
+
+    try:
+
+        ticker = yf.Ticker(symbol)
+
+        info = ticker.info
+
+        return {
+            "nom": info.get("longName", symbol),
+            "secteur": info.get("sector", "N/A"),
+            "industrie": info.get("industry", "N/A"),
+            "capitalisation": info.get("marketCap"),
+            "prix": info.get("currentPrice") or info.get("regularMarketPrice"),
+            "variation": info.get("regularMarketChangePercent"),
+            "per": info.get("trailingPE"),
+            "forward_per": info.get("forwardPE"),
+            "eps": info.get("trailingEps"),
+            "dividende": info.get("dividendYield"),
+            "objectif": info.get("targetMeanPrice"),
+            "objectif_haut": info.get("targetHighPrice"),
+            "objectif_bas": info.get("targetLowPrice"),
+            "recommandation": info.get("recommendationKey"),
+            "analystes": info.get("numberOfAnalystOpinions"),
+            "52_high": info.get("fiftyTwoWeekHigh"),
+            "52_low": info.get("fiftyTwoWeekLow"),
+            "beta": info.get("beta"),
+        }
+
+    except Exception as e:
+
+        return None
 # ========== AFFICHAGE ==========
 if not all_selected:
 
