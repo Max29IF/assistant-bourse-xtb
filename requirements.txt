@@ -1,7 +1,5 @@
 streamlit
 yfinance
-mplfinance
 pandas
-streamlit-autorefresh
-matplotlib
 numpy
+streamlit-autorefresh
