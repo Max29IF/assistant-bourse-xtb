@@ -211,7 +211,7 @@ def get_stock_info(symbol):
 
         return Nonedef 
         get_stock_info(symbol):
-        # ==========================================================
+# ==========================================================
 # ACTUALITÉS
 # ==========================================================
 
@@ -267,7 +267,7 @@ def get_news(symbol, limit=5):
     except Exception:
 
         return []
-        # ==========================================================
+# ==========================================================
 # SENTIMENT ACTUALITÉS
 # ==========================================================
 
@@ -337,6 +337,173 @@ def news_sentiment(news):
 
     else:
         return "NEUTRE", score
+        for symbol in all_selected:
+        df = get_data(symbol)
+        # ==========================================================
+# POINT INFO VALEUR
+# ==========================================================
+
+stock_info = get_stock_info(symbol)
+
+if stock_info:
+
+    with st.expander("🏢 Point info valeur", expanded=True):
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+
+            st.metric(
+                "Prix",
+                f"{stock_info['prix']:.2f}"
+                if stock_info["prix"]
+                else "N/A"
+            )
+
+        with col2:
+
+            if stock_info["capitalisation"]:
+
+                cap = stock_info["capitalisation"]
+
+                if cap >= 1_000_000_000_000:
+
+                    cap_text = f"{cap / 1_000_000_000_000:.2f} T"
+
+                elif cap >= 1_000_000_000:
+
+                    cap_text = f"{cap / 1_000_000_000:.2f} Md"
+
+                else:
+
+                    cap_text = f"{cap / 1_000_000:.2f} M"
+
+            else:
+
+                cap_text = "N/A"
+
+            st.metric(
+                "Capitalisation",
+                cap_text
+            )
+
+        with col3:
+
+            st.metric(
+                "PER",
+                f"{stock_info['per']:.2f}"
+                if stock_info["per"]
+                else "N/A"
+            )
+
+        with col4:
+
+            target = stock_info["objectif"]
+
+            st.metric(
+                "Objectif analystes",
+                f"{target:.2f}"
+                if target
+                else "N/A"
+            )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+
+            st.write(
+                f"**Secteur :** "
+                f"{stock_info['secteur']}"
+            )
+
+        with col2:
+
+            st.write(
+                f"**Industrie :** "
+                f"{stock_info['industrie']}"
+            )
+
+        with col3:
+
+            st.write(
+                f"**EPS :** "
+                f"{stock_info['eps']:.2f}"
+                if stock_info["eps"]
+                else "**EPS :** N/A"
+            )
+
+        with col4:
+
+            recommendation = stock_info["recommandation"]
+
+            st.write(
+                f"**Consensus :** "
+                f"{recommendation.upper()}"
+                if recommendation
+                else "**Consensus :** N/A"
+            )
+            # ==========================================================
+# ACTUALITÉS
+# ==========================================================
+
+news = get_news(symbol, limit=5)
+
+if news:
+
+    with st.expander("📰 Actualités récentes", expanded=True):
+
+        sentiment, sentiment_score = news_sentiment(news)
+
+        if sentiment == "POSITIF":
+
+            st.success(
+                f"🟢 Sentiment actualités : "
+                f"**{sentiment}**"
+            )
+
+        elif sentiment == "NÉGATIF":
+
+            st.error(
+                f"🔴 Sentiment actualités : "
+                f"**{sentiment}**"
+            )
+
+        else:
+
+            st.info(
+                f"⚪ Sentiment actualités : "
+                f"**{sentiment}**"
+            )
+
+        for article in news:
+
+            title = article["title"]
+
+            publisher = article["publisher"]
+
+            url = article["url"]
+
+            st.markdown(
+                f"""
+                **{title}**
+
+                📰 {publisher}
+                """
+            )
+
+            if url:
+
+                st.markdown(
+                    f"[Lire l'article →]({url})"
+                )
+
+            st.markdown("---")
+
+else:
+
+    st.info(
+        "Aucune actualité récente disponible."
+    )
 # ========== AFFICHAGE ==========
 if not all_selected:
 
