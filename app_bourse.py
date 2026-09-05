@@ -181,36 +181,96 @@ if not all_selected:
 else:
     st.subheader(f"Suivi de {len(all_selected)} valeur(s)")
 
-    for symbol in all_selected:# ========== Niveaux proposés ==========
-if df is not None and len(df) > 20:
-    last_close = df['Close'].iloc[-1]
-    recent_high = df['High'].tail(20).max()
-    recent_low = df['Low'].tail(20).min()
-    atr = (df['High'] - df['Low']).tail(14).mean()  # ATR simplifié
+    for symbol in all_selected:
 
-    if signal == "ACHAT":
-        entry = last_close
-        stop_loss = round(last_close - (1.2 * atr), 4)
-        tp1 = round(last_close + (1.5 * atr), 4)
-        tp2 = round(last_close + (2.5 * atr), 4)
-    elif signal == "VENTE":
-        entry = last_close
-        stop_loss = round(last_close + (1.2 * atr), 4)
-        tp1 = round(last_close - (1.5 * atr), 4)
-        tp2 = round(last_close - (2.5 * atr), 4)
-    else:
-        entry = stop_loss = tp1 = tp2 = "-"
+        st.markdown(f"## {symbol}")
 
-    # Affichage des niveaux
-    st.markdown(f"""
-    <div style="background-color:#1e1e1e; padding:12px 18px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {'#00c853' if signal=='ACHAT' else '#ff1744' if signal=='VENTE' else '#9e9e9e'};">
-        <b>Signal :</b> {signal} &nbsp;&nbsp;|&nbsp;&nbsp;
-        <b>Entrée :</b> {entry} &nbsp;&nbsp;|&nbsp;&nbsp;
-        <b>Stop Loss :</b> {stop_loss} &nbsp;&nbsp;|&nbsp;&nbsp;
-        <b>TP1 :</b> {tp1} &nbsp;&nbsp;|&nbsp;&nbsp;
-        <b>TP2 :</b> {tp2}
-    </div>
-    """, unsafe_allow_html=True)
-else:
-    st.info("Pas assez de données pour proposer des niveaux.")
-       
+        # Récupération des données
+        df = get_data(symbol)
+
+        if df is None:
+            st.error(f"Impossible de récupérer les données pour {symbol}.")
+            continue
+
+        # Calcul du signal
+        signal, explanation, score = calculate_signals(df)
+
+        # Affichage du signal
+        if signal == "ACHAT":
+            st.success(f"🟢 ACHAT — Score : {score}")
+        elif signal == "VENTE":
+            st.error(f"🔴 VENTE — Score : {score}")
+        else:
+            st.info(f"⚪ ATTENTE — Score : {score}")
+
+        st.write(f"**Analyse :** {explanation}")
+
+        # ========== NIVEAUX PROPOSÉS ==========
+        if len(df) > 20:
+
+            last_close = df['Close'].iloc[-1]
+            recent_high = df['High'].tail(20).max()
+            recent_low = df['Low'].tail(20).min()
+
+            # ATR simplifié
+            atr = (df['High'] - df['Low']).tail(14).mean()
+
+            if signal == "ACHAT":
+                entry = last_close
+                stop_loss = last_close - (1.2 * atr)
+                tp1 = last_close + (1.5 * atr)
+                tp2 = last_close + (2.5 * atr)
+
+            elif signal == "VENTE":
+                entry = last_close
+                stop_loss = last_close + (1.2 * atr)
+                tp1 = last_close - (1.5 * atr)
+                tp2 = last_close - (2.5 * atr)
+
+            else:
+                entry = stop_loss = tp1 = tp2 = None
+
+            # Affichage des niveaux
+            if signal != "ATTENTE":
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        background-color:#1e1e1e;
+                        padding:15px 20px;
+                        border-radius:10px;
+                        margin:15px 0;
+                        border-left:5px solid 
+                        {'#00c853' if signal=='ACHAT' else '#ff1744'};
+                    ">
+                        <b>Signal :</b> {signal}
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+
+                        <b>Entrée :</b> {entry:.2f}
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+
+                        <b>Stop Loss :</b> {stop_loss:.2f}
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+
+                        <b>TP1 :</b> {tp1:.2f}
+                        &nbsp;&nbsp;|&nbsp;&nbsp;
+
+                        <b>TP2 :</b> {tp2:.2f}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            else:
+                st.info("Pas de signal suffisamment fort pour proposer une entrée.")
+
+        else:
+            st.info("Pas assez de données pour proposer des niveaux.")
+
+        # ========== GRAPHIQUE TRADINGVIEW ==========
+        components.html(
+            tradingview_chart(symbol, timeframe),
+            height=520
+        )
+
+        st.markdown("---")
