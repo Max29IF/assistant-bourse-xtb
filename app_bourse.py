@@ -267,6 +267,76 @@ def get_news(symbol, limit=5):
     except Exception:
 
         return []
+        # ==========================================================
+# SENTIMENT ACTUALITÉS
+# ==========================================================
+
+def news_sentiment(news):
+
+    positive_words = [
+        "hausse",
+        "hausse",
+        "croissance",
+        "profit",
+        "profits",
+        "bénéfice",
+        "bénéfices",
+        "record",
+        "partenariat",
+        "contrat",
+        "succès",
+        "buy",
+        "upgrade",
+        "bullish",
+        "beat",
+        "growth",
+        "strong",
+        "positive"
+    ]
+
+    negative_words = [
+        "baisse",
+        "perte",
+        "pertes",
+        "chute",
+        "crise",
+        "dette",
+        "licenciement",
+        "poursuite",
+        "amende",
+        "downgrade",
+        "sell",
+        "bearish",
+        "miss",
+        "weak",
+        "negative",
+        "warning"
+    ]
+
+    score = 0
+
+    for article in news:
+
+        title = article["title"].lower()
+
+        for word in positive_words:
+
+            if word in title:
+                score += 1
+
+        for word in negative_words:
+
+            if word in title:
+                score -= 1
+
+    if score >= 3:
+        return "POSITIF", score
+
+    elif score <= -3:
+        return "NÉGATIF", score
+
+    else:
+        return "NEUTRE", score
 # ========== AFFICHAGE ==========
 if not all_selected:
 
