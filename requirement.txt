@@ -4,3 +4,4 @@ mplfinance
 pandas
 streamlit-autorefresh
 matplotlib
+numpy
