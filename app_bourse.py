@@ -206,66 +206,179 @@ else:
         st.write(f"**Analyse :** {explanation}")
 
         # ========== NIVEAUX PROPOSÉS ==========
-        if len(df) > 20:
+      if len(df) >= 50:
 
-            last_close = df['Close'].iloc[-1]
-            recent_high = df['High'].tail(20).max()
-            recent_low = df['Low'].tail(20).min()
+    last_close = float(df['Close'].iloc[-1])
 
-            # ATR simplifié
-            atr = (df['High'] - df['Low']).tail(14).mean()
+    # ==============================
+    # SUPPORT / RÉSISTANCE
+    # ==============================
 
-            if signal == "ACHAT":
-                entry = last_close
-                stop_loss = last_close - (1.2 * atr)
-                tp1 = last_close + (1.5 * atr)
-                tp2 = last_close + (2.5 * atr)
+    recent_high = float(df['High'].tail(20).max())
+    recent_low = float(df['Low'].tail(20).min())
 
-            elif signal == "VENTE":
-                entry = last_close
-                stop_loss = last_close + (1.2 * atr)
-                tp1 = last_close - (1.5 * atr)
-                tp2 = last_close - (2.5 * atr)
+    # ==============================
+    # ATR
+    # ==============================
 
-            else:
-                entry = stop_loss = tp1 = tp2 = None
+    high_low = df['High'] - df['Low']
+    high_close = abs(df['High'] - df['Close'].shift(1))
+    low_close = abs(df['Low'] - df['Close'].shift(1))
 
-            # Affichage des niveaux
-            if signal != "ATTENTE":
+    true_range = pd.concat(
+        [high_low, high_close, low_close],
+        axis=1
+    ).max(axis=1)
 
-                st.markdown(
-                    f"""
-                    <div style="
-                        background-color:#1e1e1e;
-                        padding:15px 20px;
-                        border-radius:10px;
-                        margin:15px 0;
-                        border-left:5px solid 
-                        {'#00c853' if signal=='ACHAT' else '#ff1744'};
-                    ">
-                        <b>Signal :</b> {signal}
-                        &nbsp;&nbsp;|&nbsp;&nbsp;
+    atr = float(true_range.rolling(14).mean().iloc[-1])
 
-                        <b>Entrée :</b> {entry:.2f}
-                        &nbsp;&nbsp;|&nbsp;&nbsp;
+    # ==============================
+    # NIVEAUX
+    # ==============================
 
-                        <b>Stop Loss :</b> {stop_loss:.2f}
-                        &nbsp;&nbsp;|&nbsp;&nbsp;
+    if signal == "ACHAT":
 
-                        <b>TP1 :</b> {tp1:.2f}
-                        &nbsp;&nbsp;|&nbsp;&nbsp;
+        entry = last_close
 
-                        <b>TP2 :</b> {tp2:.2f}
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+        # Stop basé sur ATR
+        atr_stop = entry - (1.2 * atr)
 
-            else:
-                st.info("Pas de signal suffisamment fort pour proposer une entrée.")
+        # Support récent
+        support_stop = recent_low
 
-        else:
-            st.info("Pas assez de données pour proposer des niveaux.")
+        # On choisit le niveau le plus cohérent
+        stop_loss = max(atr_stop, support_stop)
+
+        # Risque
+        risk = entry - stop_loss
+
+        # Si le SL est trop proche
+        if risk <= 0:
+            stop_loss = atr_stop
+            risk = entry - stop_loss
+
+        # Objectifs basés sur le risque
+        tp1 = entry + (1.5 * risk)
+        tp2 = entry + (2.5 * risk)
+
+        # Résistance comme objectif potentiel
+        resistance = recent_high
+
+        # On évite un TP absurde au-dessus d'une résistance proche
+        if resistance > entry and resistance < tp2:
+            tp1 = resistance
+
+        direction = "LONG"
+
+
+    elif signal == "VENTE":
+
+        entry = last_close
+
+        # Stop basé sur ATR
+        atr_stop = entry + (1.2 * atr)
+
+        # Résistance récente
+        resistance_stop = recent_high
+
+        # Stop Loss
+        stop_loss = min(atr_stop, resistance_stop)
+
+        # Risque
+        risk = stop_loss - entry
+
+        # Sécurité
+        if risk <= 0:
+            stop_loss = atr_stop
+            risk = stop_loss - entry
+
+        # Objectifs
+        tp1 = entry - (1.5 * risk)
+        tp2 = entry - (2.5 * risk)
+
+        # Support comme objectif potentiel
+        support = recent_low
+
+        if support < entry and support > tp2:
+            tp1 = support
+
+        direction = "SHORT"
+
+
+    else:
+
+        entry = None
+        stop_loss = None
+        tp1 = None
+        tp2 = None
+        risk = None
+        direction = "NEUTRE"
+
+
+    # ==============================
+    # AFFICHAGE
+    # ==============================
+
+    if signal != "ATTENTE":
+
+        risk_percent = abs((entry - stop_loss) / entry) * 100
+
+        reward_tp1 = abs(tp1 - entry)
+        reward_tp2 = abs(tp2 - entry)
+
+        rr_tp1 = reward_tp1 / abs(entry - stop_loss)
+        rr_tp2 = reward_tp2 / abs(entry - stop_loss)
+
+        st.markdown(
+            f"""
+            <div style="
+                background-color:#1e1e1e;
+                padding:18px;
+                border-radius:12px;
+                margin:15px 0;
+                border-left:5px solid
+                {'#00c853' if signal=='ACHAT' else '#ff1744'};
+            ">
+
+                <h3>
+                    {'🟢 PLAN LONG' if signal=='ACHAT' else '🔴 PLAN SHORT'}
+                </h3>
+
+                <b>Entrée :</b> {entry:.2f}<br><br>
+
+                <b>Stop Loss :</b> {stop_loss:.2f}
+                &nbsp;&nbsp;
+                <b>Risque :</b> {risk_percent:.2f}%<br><br>
+
+                <b>TP1 :</b> {tp1:.2f}
+                &nbsp;&nbsp;
+                <b>R/R :</b> 1:{rr_tp1:.2f}<br><br>
+
+                <b>TP2 :</b> {tp2:.2f}
+                &nbsp;&nbsp;
+                <b>R/R :</b> 1:{rr_tp2:.2f}<br><br>
+
+                <b>Support 20 périodes :</b> {recent_low:.2f}<br>
+
+                <b>Résistance 20 périodes :</b> {recent_high:.2f}<br>
+
+                <b>ATR :</b> {atr:.2f}
+
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    else:
+
+        st.info(
+            f"⚪ ATTENTE — Support : {recent_low:.2f} | "
+            f"Résistance : {recent_high:.2f} | ATR : {atr:.2f}"
+        )
+
+else:
+
+    st.info("Pas assez de données pour calculer les niveaux.")
 
         # ========== GRAPHIQUE TRADINGVIEW ==========
         components.html(
