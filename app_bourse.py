@@ -181,34 +181,36 @@ if not all_selected:
 else:
     st.subheader(f"Suivi de {len(all_selected)} valeur(s)")
 
-    for symbol in all_selected:
-        df = get_data(symbol)
-        signal, explanation, score = calculate_signals(df)
+    for symbol in all_selected:# ========== Niveaux proposés ==========
+if df is not None and len(df) > 20:
+    last_close = df['Close'].iloc[-1]
+    recent_high = df['High'].tail(20).max()
+    recent_low = df['Low'].tail(20).min()
+    atr = (df['High'] - df['Low']).tail(14).mean()  # ATR simplifié
 
-        last_price = df['Close'].iloc[-1] if df is not None else None
-        change = None
-        if df is not None and len(df) > 1:
-            change = ((df['Close'].iloc[-1] / df['Close'].iloc[-2]) - 1) * 100
+    if signal == "ACHAT":
+        entry = last_close
+        stop_loss = round(last_close - (1.2 * atr), 4)
+        tp1 = round(last_close + (1.5 * atr), 4)
+        tp2 = round(last_close + (2.5 * atr), 4)
+    elif signal == "VENTE":
+        entry = last_close
+        stop_loss = round(last_close + (1.2 * atr), 4)
+        tp1 = round(last_close - (1.5 * atr), 4)
+        tp2 = round(last_close - (2.5 * atr), 4)
+    else:
+        entry = stop_loss = tp1 = tp2 = "-"
 
-        # En-tête de chaque actif
-        col1, col2, col3, col4 = st.columns([2, 2, 1.5, 3])
-        with col1:
-            st.metric(symbol, f"{last_price:.4f}" if last_price else "N/A",
-                      f"{change:+.2f}%" if change is not None else None)
-        with col2:
-            color = "🟢" if signal == "ACHAT" else "🔴" if signal == "VENTE" else "⚪"
-            st.markdown(f"### {color} {signal}")
-        with col3:
-            st.write(f"**Score :** {score}")
-        with col4:
-            st.caption(explanation)
-
-        # Emplacement réservé pour Entrée / SL / TP (on l'activera plus tard)
-        # st.info("Entrée : - | Stop Loss : - | TP1 : - | TP2 : -")
-
-        # Graphique TradingView
-        components.html(tradingview_chart(symbol, timeframe), height=520)
-
-        st.markdown("---")
-
-st.caption("Graphiques TradingView + Signaux automatiques – Outil d'aide à la décision uniquement.")
+    # Affichage des niveaux
+    st.markdown(f"""
+    <div style="background-color:#1e1e1e; padding:12px 18px; border-radius:10px; margin-bottom:10px; border-left: 5px solid {'#00c853' if signal=='ACHAT' else '#ff1744' if signal=='VENTE' else '#9e9e9e'};">
+        <b>Signal :</b> {signal} &nbsp;&nbsp;|&nbsp;&nbsp;
+        <b>Entrée :</b> {entry} &nbsp;&nbsp;|&nbsp;&nbsp;
+        <b>Stop Loss :</b> {stop_loss} &nbsp;&nbsp;|&nbsp;&nbsp;
+        <b>TP1 :</b> {tp1} &nbsp;&nbsp;|&nbsp;&nbsp;
+        <b>TP2 :</b> {tp2}
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.info("Pas assez de données pour proposer des niveaux.")
+       
