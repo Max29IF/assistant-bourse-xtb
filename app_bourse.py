@@ -209,7 +209,64 @@ def get_stock_info(symbol):
 
     except Exception as e:
 
-        return None
+        return Nonedef 
+        get_stock_info(symbol):
+        # ==========================================================
+# ACTUALITÉS
+# ==========================================================
+
+def get_news(symbol, limit=5):
+
+    try:
+
+        ticker = yf.Ticker(symbol)
+
+        news = ticker.news
+
+        if not news:
+            return []
+
+        results = []
+
+        for item in news[:limit]:
+
+            content = item.get("content", {})
+
+            title = content.get("title", "Titre indisponible")
+
+            publisher = content.get(
+                "provider",
+                {}
+            ).get(
+                "displayName",
+                "Source inconnue"
+            )
+
+            url = content.get(
+                "canonicalUrl",
+                {}
+            ).get(
+                "url",
+                ""
+            )
+
+            pub_date = content.get(
+                "pubDate",
+                ""
+            )
+
+            results.append({
+                "title": title,
+                "publisher": publisher,
+                "url": url,
+                "date": pub_date
+            })
+
+        return results
+
+    except Exception:
+
+        return []
 # ========== AFFICHAGE ==========
 if not all_selected:
 
