@@ -458,86 +458,114 @@ def _normalize_column_name(column):
     )
 
 
-def _decode_csv(uploaded_file):
-    raw = uploaded_file.getvalue()
+def _normalize_column_name(column):
+    """Normalise les en-têtes sans dépendre de la casse, accents, espaces ou BOM."""
+    import unicodedata
+    value = str(column).replace("\ufeff", "").strip().lower()
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return "".join(ch for ch in value if ch.isalnum())
+
+
+# Dictionnaire métier : variantes fréquentes entre brokers.
+_BROKER_ALIASES = {
+    "ticker": ["ticker", "symbol", "symbole", "code", "codevaleur", "marketcode", "instrumentticker", "ric"],
+    "name": ["name", "nom", "libelle", "designation", "instrument", "instrumentname", "securityname", "productname", "valeur", "label"],
+    "isin": ["isin", "isincode", "securityisin", "instrumentisin"],
+    "quantity": ["quantity", "quantite", "qty", "qte", "volume", "numberofshares", "shares", "units", "nombre", "positionquantity", "quantite detenue"],
+    "pru": ["buyingprice", "buyprice", "purchaseprice", "averageprice", "averagecost", "avgprice", "avgcost", "costprice", "prixachat", "prixdachat", "prixmoyen", "pru", "prixrevient", "coursmoyen"],
+    "cost": ["amountinvested", "investedamount", "cost", "costbasis", "totalcost", "purchaseamount", "buyingamount", "investi", "montantinvesti", "montantachat", "valorisationachat"],
+    "date": ["lastmovementdate", "purchasedate", "buydate", "acquisitiondate", "tradedate", "dateachat", "datedachat", "dateacquisition", "date"],
+}
+_BROKER_ALIASES = {k: [_normalize_column_name(x) for x in v] for k, v in _BROKER_ALIASES.items()}
+_BROKER_ALIASES_FLAT = set(x for vals in _BROKER_ALIASES.values() for x in vals)
+
+
+def _decode_bytes(raw):
     last_error = None
     for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError as exc:
             last_error = exc
-    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
+    raise ValueError(f"Encodage non reconnu : {last_error}")
+
+
+def _score_columns(columns):
+    cols = set(columns)
+    score = len(cols)
+    # PRIORITÉ ABSOLUE aux vrais exports de positions.
+    if {"name", "isin", "quantity"}.issubset(cols): score += 10000
+    if {"isin", "quantity", "buyingprice"}.issubset(cols): score += 8000
+    if {"ticker", "quantity"}.issubset(cols): score += 7000
+    score += 100 * len(cols & _BROKER_ALIASES_FLAT)
+    return score
 
 
 def _read_broker_csv(uploaded_file):
-    """Lecture adaptative : encodage + séparateur + lignes parasites."""
-    text_csv = _decode_csv(uploaded_file).lstrip("\ufeff\r\n \t")
-    best = None
-    best_score = -1
-    for sep in (";", ",", "\t", "|"):
-        for skip in range(0, min(15, max(1, len(text_csv.splitlines())))):
+    """Lecture basée sur le CONTENU : séparateur, BOM, lignes parasites et faux .xls."""
+    from io import StringIO
+    raw = uploaded_file.getvalue()
+    text = _decode_bytes(raw).lstrip("\ufeff\r\n \t")
+    lines = text.splitlines()
+    if not lines:
+        raise ValueError("Fichier vide.")
+
+    best_df, best_score = None, -10**9
+    # On essaie explicitement les séparateurs et les premières lignes comme en-têtes.
+    for skip in range(min(20, len(lines))):
+        for sep in (";", ",", "\t", "|"):
             try:
                 candidate = pd.read_csv(
-                    StringIO(text_csv), sep=sep, dtype=str, engine="python",
-                    keep_default_na=False, skiprows=skip, on_bad_lines="skip"
+                    StringIO(text), sep=sep, skiprows=skip, dtype=str,
+                    engine="python", keep_default_na=False, on_bad_lines="skip"
                 )
                 candidate.columns = [_normalize_column_name(c) for c in candidate.columns]
-                candidate = candidate.loc[:, ~candidate.columns.duplicated()].dropna(axis=1, how="all")
-                # Un bon parseur produit plusieurs colonnes et des noms plausibles.
-                score = len(candidate.columns)
-                score += 10 * sum(c in set(candidate.columns) for c in _BROKER_ALIASES_FLAT)
+                candidate = candidate.loc[:, ~candidate.columns.duplicated()]
                 if len(candidate.columns) <= 1:
-                    score -= 100
+                    continue
+                score = _score_columns(candidate.columns)
                 if score > best_score:
-                    best, best_score = candidate, score
+                    best_df, best_score = candidate, score
             except Exception:
-                pass
-    if best is None or len(best.columns) <= 1:
-        raise ValueError("Impossible d'identifier la structure du CSV (encodage ou séparateur non reconnu).")
-    return best
+                continue
+
+    if best_df is None:
+        raise ValueError("Impossible de détecter la structure CSV.")
+    return best_df
 
 
 def _read_broker_file(uploaded_file):
-    """Accepte CSV/TXT et vrais fichiers Excel, indépendamment de l'extension."""
+    """Accepte CSV/TXT même déguisé en .xls, puis vrais Excel en secours."""
     raw = uploaded_file.getvalue()
-    # Les CSV déguisés en .xls sont fréquents : toujours essayer CSV d'abord.
+    # Toujours CSV d'abord : beaucoup de brokers nomment leurs CSV '.xls'.
     try:
         return _read_broker_csv(uploaded_file)
     except Exception as csv_error:
-        try:
-            from io import BytesIO
-            xls = pd.read_excel(BytesIO(raw), dtype=str)
-            xls.columns = [_normalize_column_name(c) for c in xls.columns]
-            return xls
-        except Exception as excel_error:
-            raise ValueError(f"Fichier illisible comme CSV ou Excel. CSV: {csv_error} | Excel: {excel_error}")
-
-
-# Dictionnaire métier : les brokers utilisent tous des noms différents.
-_BROKER_ALIASES = {
-    "ticker": ["ticker","symbol","symbole","code","marketcode","instrumentticker","ric"],
-    "name": ["name","nom","libelle","designation","instrument","instrumentname","securityname","productname","valeur","label"],
-    "isin": ["isin","isincode","isin code","securityisin","instrumentisin"],
-    "quantity": ["quantity","quantite","qty","qte","volume","numberofshares","shares","units","nombre","positionquantity"],
-    "pru": ["buyingprice","buyprice","purchaseprice","averageprice","averagecost","avgprice","avgcost","costprice","prixachat","prixdachat","prixmoyen","pru","prixrevient","coursmoyen"],
-    "cost": ["amountinvested","investedamount","cost","costbasis","totalcost","purchaseamount","buyingamount","investi","montantinvesti","montantachat","valorisationachat"],
-    "date": ["lastmovementdate","purchasedate","buydate","acquisitiondate","tradedate","dateachat","datedachat","dateacquisition","date"],
-}
-_BROKER_ALIASES = {k: [_normalize_column_name(x) for x in v] for k,v in _BROKER_ALIASES.items()}
-_BROKER_ALIASES_FLAT = set(x for values in _BROKER_ALIASES.values() for x in values)
+        from io import BytesIO
+        excel_errors = []
+        for engine in (None, "openpyxl", "xlrd"):
+            try:
+                kwargs = {"dtype": str}
+                if engine: kwargs["engine"] = engine
+                df = pd.read_excel(BytesIO(raw), **kwargs)
+                df.columns = [_normalize_column_name(c) for c in df.columns]
+                if len(df.columns) > 1:
+                    return df
+            except Exception as exc:
+                excel_errors.append(str(exc))
+        raise ValueError(f"Fichier illisible. CSV: {csv_error}. Excel: {' | '.join(excel_errors[-2:])}")
 
 
 def _find_column(df, logical_name):
     cols = list(df.columns)
     aliases = _BROKER_ALIASES[logical_name]
-    # correspondance exacte
     for alias in aliases:
         if alias in cols:
             return alias
-    # correspondance partielle, utile aux exports très verbeux
     for col in cols:
-        if any(alias in col or col in alias for alias in aliases if len(alias) >= 4):
-            return col
+        for alias in aliases:
+            if len(alias) >= 4 and (alias in col or col in alias):
+                return col
     return None
 
 
@@ -547,7 +575,7 @@ def _auto_map_broker_columns(df):
 
 def _resolve_ticker(name, isin, raw_ticker):
     raw_ticker = str(raw_ticker or "").strip().upper()
-    if raw_ticker and raw_ticker not in {"NAN", "NONE"}:
+    if raw_ticker and raw_ticker not in {"NAN", "NONE", "NULL"}:
         return raw_ticker
     isin = str(isin or "").strip().upper()
     if isin in ISIN_TO_TICKER:
@@ -558,55 +586,63 @@ def _resolve_ticker(name, isin, raw_ticker):
     return ""
 
 
+def _is_positions_export(mapping):
+    return bool(mapping.get("quantity") and any(mapping.get(k) for k in ("ticker", "isin", "name")) and (mapping.get("pru") or mapping.get("cost")))
+
+
 def import_broker_pea(uploaded_file):
-    """Import universel de portefeuille broker vers Ticker / Quantité / PRU / Date achat."""
+    """Import universel d'un EXPORT DE POSITIONS vers le format de l'application."""
     df = _read_broker_file(uploaded_file)
     mapping = _auto_map_broker_columns(df)
 
-    # Conditions minimales : quantité + (ticker ou ISIN/nom) + (PRU ou coût total).
-    if not mapping["quantity"]:
+    if not _is_positions_export(mapping):
+        cols = ", ".join(map(str, df.columns))
+        # Cas explicite : relevé comptable / mouvements, pas positions.
+        if {"date", "label", "debit", "credit"}.issubset(set(df.columns)):
+            raise ValueError(
+                "Le fichier est bien lu, mais il s'agit d'un relevé de mouvements comptables "
+                "(date, label, debit, credit) et non d'un export de positions. "
+                "Un portefeuille ne peut pas être reconstruit de manière fiable sans quantité, "
+                "ISIN/ticker ou détail des opérations."
+            )
         raise ValueError(
-            "Impossible d'identifier automatiquement la colonne Quantité. "
-            f"Colonnes détectées : {', '.join(map(str, df.columns))}"
-        )
-    if not any(mapping[k] for k in ("ticker", "isin", "name")):
-        raise ValueError(
-            "Impossible d'identifier la valeur (Ticker, ISIN ou Nom). "
-            f"Colonnes détectées : {', '.join(map(str, df.columns))}"
-        )
-    if not mapping["pru"] and not mapping["cost"]:
-        raise ValueError(
-            "Impossible d'identifier le PRU ou le montant investi. "
-            f"Colonnes détectées : {', '.join(map(str, df.columns))}"
+            "Format lu mais insuffisant pour importer un portefeuille. "
+            f"Colonnes détectées : {cols}. "
+            "Il faut au minimum une identification (Ticker/ISIN/Nom), une Quantité et un PRU ou montant investi."
         )
 
     rows, errors = [], []
     for idx, r in df.iterrows():
-        get = lambda key: r.get(mapping[key], "") if mapping.get(key) else ""
+        def get(key):
+            col = mapping.get(key)
+            return r.get(col, "") if col else ""
+
         name = str(get("name")).strip()
         isin = str(get("isin")).strip().upper()
         ticker = _resolve_ticker(name, isin, get("ticker"))
         qty = _clean_num(get("quantity"))
-        pru = _clean_num(get("pru")) if mapping["pru"] else np.nan
-        cost = _clean_num(get("cost")) if mapping["cost"] else np.nan
+        pru = _clean_num(get("pru")) if mapping.get("pru") else np.nan
+        cost = _clean_num(get("cost")) if mapping.get("cost") else np.nan
 
-        # Si le broker ne fournit que le coût total, calcul automatique du PRU.
         if (not np.isfinite(pru) or pru <= 0) and np.isfinite(cost) and np.isfinite(qty) and qty > 0:
             pru = cost / qty
 
-        if not ticker:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non résolu automatiquement"})
-            continue
-        if not np.isfinite(qty) or qty <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "Quantité invalide"})
-            continue
-        if not np.isfinite(pru) or pru <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "PRU / coût invalide"})
-            continue
+        # Certains exports utilisent des centimes entiers : buyingPrice 15956 -> 159.56.
+        if np.isfinite(pru) and pru >= 1000 and abs(pru - round(pru)) < 1e-9 and mapping.get("pru") == "buyingprice":
+            pru = pru / 100.0
 
         raw_date = get("date")
         movement = pd.to_datetime(str(raw_date), dayfirst=True, errors="coerce")
-        rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru, "Date achat": movement.date() if pd.notna(movement) else None})
+
+        if not ticker:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non résolu"}); continue
+        if not np.isfinite(qty) or qty <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "Quantité invalide"}); continue
+        if not np.isfinite(pru) or pru <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "PRU invalide"}); continue
+
+        rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru,
+                     "Date achat": movement.date() if pd.notna(movement) else None})
 
     out = normalize_portfolio(pd.DataFrame(rows))
     if not out.empty:
@@ -615,11 +651,11 @@ def import_broker_pea(uploaded_file):
             q = g["Quantité"].sum()
             weighted_pru = (g["Quantité"] * g["PRU"]).sum() / q if q else 0
             dates = [d for d in g["Date achat"] if pd.notna(d)]
-            grouped.append({"Ticker": ticker, "Quantité": q, "PRU": weighted_pru, "Date achat": min(dates) if dates else None})
-        out = pd.DataFrame(grouped, columns=["Ticker","Quantité","PRU","Date achat"])
+            grouped.append({"Ticker": ticker, "Quantité": q, "PRU": weighted_pru,
+                            "Date achat": min(dates) if dates else None})
+        out = pd.DataFrame(grouped, columns=["Ticker", "Quantité", "PRU", "Date achat"])
 
-    errors_df = pd.DataFrame(errors)
-    return out, errors_df
+    return out, pd.DataFrame(errors)
 
 def default_portfolio():
     return pd.DataFrame(columns=["Ticker","Quantité","PRU","Date achat"])
