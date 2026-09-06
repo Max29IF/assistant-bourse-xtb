@@ -445,18 +445,8 @@ def _clean_num(value):
     except Exception:
         return np.nan
 
-def _decode_csv(uploaded_file):
-    raw = uploaded_file.getvalue()
-    last_error = None
-    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
-        try:
-            return raw.decode(enc)
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
-
 def _normalize_column_name(column):
-    """Normalise les noms de colonnes broker sans dépendre de la casse."""
+    """Normalise les noms de colonnes broker sans dépendre de la casse/BOM."""
     return (
         str(column)
         .replace("\ufeff", "")
@@ -468,47 +458,52 @@ def _normalize_column_name(column):
     )
 
 
+def _decode_csv(uploaded_file):
+    raw = uploaded_file.getvalue()
+    last_error = None
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
+
+
 def _read_broker_csv(uploaded_file):
-    """Lecture robuste : UTF-8/Windows + ; , tabulation + détection automatique."""
-    text_csv = _decode_csv(uploaded_file)
-    sample = text_csv[:5000]
+    """Lecture ultra-robuste des exports CSV broker."""
+    text_csv = _decode_csv(uploaded_file).lstrip("\ufeff\r\n ")
 
-    # Détection explicite du séparateur, avec priorité au point-virgule
-    separator = None
-    try:
-        separator = csv.Sniffer().sniff(sample, delimiters=";,\t|").delimiter
-    except csv.Error:
-        counts = {sep: sample.count(sep) for sep in (";", ",", "\t", "|")}
-        separator = max(counts, key=counts.get)
-        if counts[separator] == 0:
-            separator = ";"
+    candidates = []
+    separators = (";", ",", "\t", "|")
 
-    try:
-        df = pd.read_csv(
-            StringIO(text_csv),
-            sep=separator,
-            dtype=str,
-            keep_default_na=False,
-        )
-    except Exception as exc:
-        raise ValueError(f"Impossible de lire le CSV (séparateur détecté : {repr(separator)}) : {exc}")
+    # On teste explicitement tous les séparateurs : plus fiable que sep=None
+    for sep in separators:
+        try:
+            candidate = pd.read_csv(
+                StringIO(text_csv),
+                sep=sep,
+                dtype=str,
+                engine="python",
+                keep_default_na=False,
+            )
+            candidate.columns = [_normalize_column_name(c) for c in candidate.columns]
+            candidates.append(candidate)
+        except Exception:
+            continue
 
-    # Si une seule colonne est détectée, essayer tous les séparateurs courants
-    if len(df.columns) <= 1:
-        candidates = []
-        for sep in (";", ",", "\t", "|"):
-            try:
-                candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str, keep_default_na=False)
-                if len(candidate.columns) > 1:
-                    candidates.append(candidate)
-            except Exception:
-                continue
-        if candidates:
-            df = max(candidates, key=lambda x: len(x.columns))
+    if not candidates:
+        raise ValueError("Impossible de lire le fichier CSV.")
 
-    df.columns = [_normalize_column_name(c) for c in df.columns]
+    required = {"name", "isin", "quantity", "buyingprice"}
 
-    # Détection d'un fichier mal séparé : donne une erreur utile
+    # Priorité absolue au parseur qui retrouve les colonnes attendues
+    valid = [df for df in candidates if required.issubset(set(df.columns))]
+    if valid:
+        return max(valid, key=lambda df: len(df.columns))
+
+    # Sinon conserver le résultat ayant le plus de colonnes
+    df = max(candidates, key=lambda x: len(x.columns))
+
     if len(df.columns) <= 1:
         raise ValueError(
             "Le fichier a été lu comme une seule colonne. "
@@ -516,6 +511,33 @@ def _read_broker_csv(uploaded_file):
         )
 
     return df
+
+
+def _read_broker_file(uploaded_file):
+    """Détecte CSV ou véritable fichier Excel avant lecture."""
+    filename = (uploaded_file.name or "").lower()
+    raw = uploaded_file.getvalue()
+
+    # Un vrai XLS/XLSX est un fichier binaire/ZIP. Certains brokers nomment
+    # abusivement un CSV avec une extension .xls : on tente d'abord le CSV.
+    try:
+        return _read_broker_csv(uploaded_file)
+    except Exception as csv_error:
+        if filename.endswith((".xls", ".xlsx")):
+            try:
+                excel_df = pd.read_excel(StringIO(""))
+            except Exception:
+                try:
+                    from io import BytesIO
+                    excel_df = pd.read_excel(BytesIO(raw), dtype=str)
+                    excel_df.columns = [_normalize_column_name(c) for c in excel_df.columns]
+                    return excel_df
+                except Exception as excel_error:
+                    raise ValueError(
+                        f"Impossible de lire le fichier comme CSV ou Excel. "
+                        f"CSV : {csv_error} | Excel : {excel_error}"
+                    )
+        raise csv_error
 
 def _centimes_or_euros(value, reference=None):
     """Broker export stores prices such as 15956 for €159.56."""
@@ -534,12 +556,13 @@ def import_broker_pea(uploaded_file):
     amount, amountVariation, variation, lastMovementDate, compensation
     into the application's portfolio format.
     """
-    df = _read_broker_csv(uploaded_file)
+    df = _read_broker_file(uploaded_file)
     required = {"name", "isin", "quantity", "buyingprice"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(
             "Colonnes absentes : " + ", ".join(sorted(missing)) +
+            ". Colonnes détectées : " + ", ".join(map(str, df.columns)) +
             ". Format attendu : name, isin, quantity, buyingPrice, lastPrice, ..."
         )
 
