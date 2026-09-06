@@ -57,6 +57,87 @@ def login_gate():
 
 if not login_gate():
     st.stop()
+# ==========================================================
+# PERSISTENCE — Supabase
+# ==========================================================
+from supabase import create_client, Client
+
+@st.cache_resource
+def get_supabase() -> Client:
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    return create_client(url, key)
+
+def load_portfolio_db(account: str):
+    try:
+        sb = get_supabase()
+        res = sb.table("portfolios").select("*").eq("account", account).execute()
+        if not res.data:
+            return default_portfolio()
+        df = pd.DataFrame(res.data)
+        df = df.rename(columns={
+            "ticker": "Ticker",
+            "quantity": "Quantité",
+            "pru": "PRU",
+            "purchase_date": "Date achat"
+        })
+        return normalize_portfolio(df[["Ticker", "Quantité", "PRU", "Date achat"]])
+    except Exception as e:
+        st.warning(f"Erreur chargement portefeuille : {e}")
+        return default_portfolio()
+
+def save_portfolio_db(account: str, portfolio: pd.DataFrame):
+    try:
+        sb = get_supabase()
+        sb.table("portfolios").delete().eq("account", account).execute()
+        
+        portfolio = normalize_portfolio(portfolio)
+        rows = []
+        for _, row in portfolio.iterrows():
+            d = row["Date achat"]
+            d = d.isoformat() if pd.notna(d) else None
+            rows.append({
+                "account": account,
+                "ticker": row["Ticker"],
+                "quantity": float(row["Quantité"]),
+                "pru": float(row["PRU"]),
+                "purchase_date": d
+            })
+        if rows:
+            sb.table("portfolios").insert(rows).execute()
+    except Exception as e:
+        st.error(f"Erreur sauvegarde portefeuille : {e}")
+
+def load_journal_db():
+    try:
+        sb = get_supabase()
+        res = sb.table("journal").select("*").order("id", desc=True).execute()
+        return [
+            {
+                "Date": r.get("date", ""),
+                "Ticker": r.get("ticker", ""),
+                "Setup": r.get("setup", ""),
+                "Résultat": r.get("result", ""),
+                "Note": r.get("note", "")
+            }
+            for r in res.data
+        ]
+    except Exception:
+        return []
+
+def save_journal_db(sym, setup, result, note):
+    try:
+        sb = get_supabase()
+        sb.table("journal").insert({
+            "account": "global",
+            "date": datetime.now().strftime("%d/%m/%Y %H:%M"),
+            "ticker": sym,
+            "setup": setup,
+            "result": result,
+            "note": note
+        }).execute()
+    except Exception as e:
+        st.error(f"Erreur sauvegarde journal : {e}")
 
 # ==========================================================
 # UNIVERSE
