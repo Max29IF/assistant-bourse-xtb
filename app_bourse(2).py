@@ -17,7 +17,7 @@ import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="Trading Command Center — V6",
+    page_title="Trading Command Center — V6.1",
     page_icon="📈",
     layout="wide",
 )
@@ -83,7 +83,6 @@ SUPABASE = get_supabase()
 
 def db_conn():
     conn=sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.execute("CREATE TABLE IF NOT EXISTS portfolios (account TEXT, ticker TEXT, quantity REAL, pru REAL, purchase_date TEXT, PRIMARY KEY(account,ticker))")
     conn.execute("CREATE TABLE IF NOT EXISTS journal (id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT, date TEXT, ticker TEXT, setup TEXT, result TEXT, note TEXT)")
     conn.commit(); return conn
 
@@ -97,8 +96,7 @@ def load_portfolio_db(account):
             return default_portfolio()
         except Exception as exc:
             st.warning(f"Supabase indisponible pour {account} : {exc}. Stockage local utilisé.")
-    conn=db_conn(); rows=conn.execute("SELECT ticker,quantity,pru,purchase_date FROM portfolios WHERE account=? ORDER BY ticker",(account,)).fetchall(); conn.close()
-    return default_portfolio() if not rows else normalize_portfolio(pd.DataFrame(rows,columns=["Ticker","Quantité","PRU","Date achat"]))
+    return default_portfolio()
 
 def save_portfolio_db(account, portfolio):
     portfolio=normalize_portfolio(portfolio)
@@ -114,11 +112,7 @@ def save_portfolio_db(account, portfolio):
         except Exception as exc:
             st.error(f"Échec de sauvegarde Supabase : {exc}")
             return False
-    conn=db_conn(); conn.execute("DELETE FROM portfolios WHERE account=?",(account,))
-    for _,row in portfolio.iterrows():
-        d=row["Date achat"]; d=d.isoformat() if pd.notna(d) else ""
-        conn.execute("INSERT OR REPLACE INTO portfolios(account,ticker,quantity,pru,purchase_date) VALUES(?,?,?,?,?)",(account,row["Ticker"],float(row["Quantité"]),float(row["PRU"]),d))
-    conn.commit(); conn.close(); return True
+    return False
 
 def load_journal_db():
     if SUPABASE is not None:
