@@ -384,6 +384,172 @@ def confirmation(symbol, interval, period):
 # ==========================================================
 # PORTFOLIO ENGINE
 # ==========================================================
+
+# ==========================================================
+# IMPORT PEA — FORMAT EXPORT BROKER (name / isin / quantity...)
+# ==========================================================
+ISIN_TO_TICKER = {
+    "FR0013341781": "2CRSI.PA",
+    "FR0000120073": "AI.PA",
+    "FR0000120628": "CS.PA",
+    "FR0011550185": "ESE.PA",
+    "FR0000045072": "ACA.PA",
+    "FR0010208488": "ENGI.PA",
+    "FR0000062671": "EXA.PA",
+    "FR0014010QE1": "MLHPI.PA",
+    "FR0014001PM5": "ALHRS.PA",
+    "FR001400SF56": "LOUP.PA",
+    "FR0000038242": "LBIRD.PA",
+    "FR0000121014": "MC.PA",
+    "FR0011049824": "ALMDT.PA",
+    "FR0013269123": "RUI.PA",
+    "FR0000125007": "SGO.PA",
+    "FR0000121972": "SU.PA",
+    "FR0010528059": "ALSTW.PA",
+    "NL0014559478": "TE.PA",
+    "FR0000120271": "TTE.PA",
+    "FR0000124141": "VIE.PA",
+}
+
+NAME_TO_TICKER = {
+    "2CRSI": "2CRSI.PA", "AIR LIQUIDE": "AI.PA", "AXA": "CS.PA",
+    "BNPP EASY S&P 500 ETF EUR C": "ESE.PA", "CREDIT AGRICOLE SA": "ACA.PA",
+    "ENGIE": "ENGI.PA", "EXAIL TECHNOLOGIES": "EXA.PA", "HOPIUM": "MLHPI.PA",
+    "HRS (HYDROGEN REFUELING SOL.)": "ALHRS.PA", "LDC": "LOUP.PA",
+    "LUMIBIRD": "LBIRD.PA", "LVMH": "MC.PA", "MEDIAN TECHNOLOGIES": "ALMDT.PA",
+    "RUBIS": "RUI.PA", "SAINT-GOBAIN": "SGO.PA", "SCHNEIDER ELECTRIC": "SU.PA",
+    "STREAMWIDE": "ALSTW.PA", "TECHNIP ENERGIES": "TE.PA",
+    "TOTALENERGIES": "TTE.PA", "VEOLIA": "VIE.PA",
+}
+
+def _clean_num(value):
+    """Convert French/European broker numbers to float."""
+    if pd.isna(value):
+        return np.nan
+    s = str(value).strip().replace("\u00a0", " ").replace("€", "")
+    if not s:
+        return np.nan
+    s = s.replace(" ", "")
+    # 12 345,67 -> 12345.67 ; 1234.56 stays 1234.56
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return np.nan
+
+def _decode_csv(uploaded_file):
+    raw = uploaded_file.getvalue()
+    last_error = None
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
+
+def _read_broker_csv(uploaded_file):
+    """Read broker export with comma, semicolon, tab or auto-detected separator."""
+    text_csv = _decode_csv(uploaded_file)
+    from io import StringIO
+    try:
+        df = pd.read_csv(StringIO(text_csv), sep=None, engine="python", dtype=str)
+    except Exception:
+        frames = []
+        for sep in (";", ",", "\t"):
+            try:
+                candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str)
+                if len(candidate.columns) >= 2:
+                    frames.append(candidate)
+            except Exception:
+                pass
+        if not frames:
+            raise ValueError("Impossible de lire le CSV.")
+        df = max(frames, key=lambda x: len(x.columns))
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    return df
+
+def _centimes_or_euros(value, reference=None):
+    """Broker export stores prices such as 15956 for €159.56."""
+    x = _clean_num(value)
+    if not np.isfinite(x):
+        return np.nan
+    # Export examples use integer centimes. Keep already-decimal prices as euros.
+    if reference == "price" and x >= 100 and abs(x - round(x)) < 1e-9:
+        return x / 100.0
+    return x
+
+def import_broker_pea(uploaded_file):
+    """
+    Converts the user's broker export:
+    name, isin, quantity, buyingPrice, lastPrice, intradayVariation,
+    amount, amountVariation, variation, lastMovementDate, compensation
+    into the application's portfolio format.
+    """
+    df = _read_broker_csv(uploaded_file)
+    required = {"name", "isin", "quantity", "buyingprice"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            "Colonnes absentes : " + ", ".join(sorted(missing)) +
+            ". Format attendu : name, isin, quantity, buyingPrice, lastPrice, ..."
+        )
+
+    rows, errors = [], []
+    for idx, r in df.iterrows():
+        name = str(r.get("name", "")).strip()
+        isin = str(r.get("isin", "")).strip().upper()
+        qty = _clean_num(r.get("quantity"))
+        raw_pru = _clean_num(r.get("buyingprice"))
+
+        ticker = ISIN_TO_TICKER.get(isin)
+        if not ticker:
+            ticker = NAME_TO_TICKER.get(name.upper())
+
+        if not ticker:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non reconnu"})
+            continue
+        if not np.isfinite(qty) or qty <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Quantité invalide"})
+            continue
+        if not np.isfinite(raw_pru) or raw_pru <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "PRU invalide"})
+            continue
+
+        pru = _centimes_or_euros(raw_pru, "price")
+        movement = pd.to_datetime(str(r.get("lastmovementdate", "")), dayfirst=True, errors="coerce")
+        purchase_date = movement.date() if pd.notna(movement) else None
+
+        rows.append({
+            "Ticker": ticker,
+            "Quantité": qty,
+            "PRU": pru,
+            "Date achat": purchase_date,
+        })
+
+    out = normalize_portfolio(pd.DataFrame(rows))
+    # Keep only one line per ticker; if duplicate lots exist, calculate weighted average PRU.
+    if not out.empty:
+        grouped = []
+        for ticker, g in out.groupby("Ticker", sort=True):
+            q = g["Quantité"].sum()
+            weighted_pru = (g["Quantité"] * g["PRU"]).sum() / q if q else 0
+            dates = [d for d in g["Date achat"] if pd.notna(d)]
+            grouped.append({
+                "Ticker": ticker,
+                "Quantité": q,
+                "PRU": weighted_pru,
+                "Date achat": min(dates) if dates else None,
+            })
+        out = pd.DataFrame(grouped, columns=["Ticker","Quantité","PRU","Date achat"])
+
+    return out, pd.DataFrame(errors)
+
 def default_portfolio():
     return pd.DataFrame(columns=["Ticker","Quantité","PRU","Date achat"])
 
@@ -496,23 +662,44 @@ def arbitrage_table(metrics):
 
 def show_portfolio_page(title, key):
     st.header(title)
-    st.caption("Les lignes sont saisies manuellement. Les cours, noms d'entreprises et dividendes sont ensuite actualisés depuis la source de marché disponible.")
+    st.caption("Import compatible avec ton export broker : name / isin / quantity / buyingPrice / lastPrice / amount / lastMovementDate. Les cours et noms sont ensuite actualisés depuis la source de marché.")
 
     if key not in st.session_state:
         st.session_state[key] = load_portfolio_db(key)
 
     upload = st.file_uploader(
-        "Importer un CSV (optionnel)",
+        "📥 Importer ton export CSV PEA",
         type=["csv"],
         key=f"{key}_upload",
-        help="Colonnes attendues : Ticker, Quantité, PRU, Date achat",
+        help="Le fichier peut contenir name, isin, quantity, buyingPrice, lastPrice, amount, lastMovementDate, etc.",
     )
+
     if upload is not None:
-        try:
-            st.session_state[key] = normalize_portfolio(pd.read_csv(upload))
-            save_portfolio_db(key, st.session_state[key])
-        except Exception as exc:
-            st.error(f"CSV invalide : {exc}")
+        file_signature = f"{upload.name}_{upload.size}"
+        if st.session_state.get(f"{key}_last_import") != file_signature:
+            try:
+                imported, errors = import_broker_pea(upload)
+                st.session_state[key] = imported
+                st.session_state[f"{key}_last_import"] = file_signature
+                st.session_state[f"{key}_import_errors"] = errors
+
+                if imported.empty:
+                    st.error("❌ 0 ligne importée. Vérifie le format de l'export.")
+                else:
+                    ok = save_portfolio_db(key, imported)
+                    if ok:
+                        st.success(f"✅ {len(imported)} ligne(s) importée(s) et enregistrée(s) dans Supabase.")
+                    else:
+                        st.warning(f"⚠️ {len(imported)} ligne(s) importée(s), mais la sauvegarde Supabase a échoué.")
+                if not errors.empty:
+                    st.warning(f"⚠️ {len(errors)} ligne(s) nécessitent une vérification.")
+            except Exception as exc:
+                st.error(f"❌ CSV invalide : {exc}")
+
+    errors = st.session_state.get(f"{key}_import_errors")
+    if isinstance(errors, pd.DataFrame) and not errors.empty:
+        with st.expander("⚠️ Lignes non importées / à vérifier"):
+            st.dataframe(errors, use_container_width=True, hide_index=True)
 
     edited = st.data_editor(
         st.session_state[key],
@@ -533,7 +720,7 @@ def show_portfolio_page(title, key):
         st.success("Portefeuille enregistré. Il sera récupéré automatiquement à la prochaine ouverture.")
 
     if st.session_state[key].empty:
-        st.info("Ajoute tes lignes ci-dessus. Exemple : AAPL | 10 | 180 | 2026-01-15")
+        st.info("Importe ton export broker ou ajoute une ligne manuellement : Ticker | Quantité | PRU | Date achat")
         return
 
     metrics = portfolio_metrics(st.session_state[key])
