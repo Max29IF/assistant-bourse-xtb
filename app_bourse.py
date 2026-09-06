@@ -1,4 +1,3 @@
-
 import hashlib
 import math
 import os
@@ -9,9 +8,10 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
+from supabase import create_client, Client
 
 st.set_page_config(
-    page_title="Trading Command Center — V5",
+    page_title="Trading Command Center — V6",
     page_icon="📈",
     layout="wide",
 )
@@ -41,7 +41,7 @@ def login_gate():
     )
     st.markdown('<div class="login-box">', unsafe_allow_html=True)
     st.title("🔐 Trading Command Center")
-    st.caption("Accès privé. Le mot de passe est lu depuis les Secrets Streamlit ou la variable APP_PASSWORD.")
+    st.caption("Accès privé")
     with st.form("login_form"):
         password = st.text_input("Code / mot de passe", type="password")
         submitted = st.form_submit_button("Se connecter", type="primary")
@@ -57,16 +57,35 @@ def login_gate():
 
 if not login_gate():
     st.stop()
+
 # ==========================================================
 # PERSISTENCE — Supabase
 # ==========================================================
-from supabase import create_client, Client
-
 @st.cache_resource
 def get_supabase() -> Client:
     url = st.secrets["supabase"]["url"]
     key = st.secrets["supabase"]["key"]
     return create_client(url, key)
+
+
+def default_portfolio():
+    return pd.DataFrame(columns=["Ticker", "Quantité", "PRU", "Date achat"])
+
+
+def normalize_portfolio(df):
+    if df is None or df.empty:
+        return default_portfolio()
+    x = df.copy()
+    for col in ["Ticker", "Quantité", "PRU", "Date achat"]:
+        if col not in x.columns:
+            x[col] = "" if col in ["Ticker", "Date achat"] else 0.0
+    x = x[["Ticker", "Quantité", "PRU", "Date achat"]]
+    x["Ticker"] = x["Ticker"].astype(str).str.upper().str.strip()
+    x["Quantité"] = pd.to_numeric(x["Quantité"], errors="coerce").fillna(0.0)
+    x["PRU"] = pd.to_numeric(x["PRU"], errors="coerce").fillna(0.0)
+    x["Date achat"] = pd.to_datetime(x["Date achat"], errors="coerce").dt.date
+    return x[x["Ticker"] != ""].reset_index(drop=True)
+
 
 def load_portfolio_db(account: str):
     try:
@@ -86,11 +105,11 @@ def load_portfolio_db(account: str):
         st.warning(f"Erreur chargement portefeuille : {e}")
         return default_portfolio()
 
+
 def save_portfolio_db(account: str, portfolio: pd.DataFrame):
     try:
         sb = get_supabase()
         sb.table("portfolios").delete().eq("account", account).execute()
-        
         portfolio = normalize_portfolio(portfolio)
         rows = []
         for _, row in portfolio.iterrows():
@@ -108,6 +127,7 @@ def save_portfolio_db(account: str, portfolio: pd.DataFrame):
     except Exception as e:
         st.error(f"Erreur sauvegarde portefeuille : {e}")
 
+
 def load_journal_db():
     try:
         sb = get_supabase()
@@ -124,6 +144,7 @@ def load_journal_db():
         ]
     except Exception:
         return []
+
 
 def save_journal_db(sym, setup, result, note):
     try:
@@ -155,12 +176,8 @@ UNIVERSE = {
 }
 
 INDEXES = {
-    "S&P 500": "^GSPC",
-    "NASDAQ": "^IXIC",
-    "CAC 40": "^FCHI",
-    "DAX": "^GDAXI",
-    "Euro Stoxx 50": "^STOXX50E",
-    "FTSE 100": "^FTSE",
+    "S&P 500": "^GSPC", "NASDAQ": "^IXIC", "CAC 40": "^FCHI",
+    "DAX": "^GDAXI", "Euro Stoxx 50": "^STOXX50E", "FTSE 100": "^FTSE"
 }
 
 TF = {
@@ -172,7 +189,6 @@ TF = {
     "1 day": {"interval": "1d", "periods": ["1mo","3mo","6mo","1y","2y","5y","10y"]},
     "1 week": {"interval": "1wk", "periods": ["1y","2y","5y","10y"]},
 }
-
 # ==========================================================
 # DATA
 # ==========================================================
@@ -386,29 +402,9 @@ def confirmation(symbol, interval, period):
     x = t["df"].iloc[-1]
     trend_ok = bool(t["price"] > x.SMA20 > x.SMA50)
     return {"score": t["score"], "trend_ok": trend_ok, "signal": t["signal"], "rsi": t["rsi"]}
-
-# ==========================================================
+    # ==========================================================
 # PORTFOLIO ENGINE
 # ==========================================================
-def default_portfolio():
-    return pd.DataFrame(columns=["Ticker","Quantité","PRU","Date achat"])
-
-
-def normalize_portfolio(df):
-    if df is None or df.empty:
-        return default_portfolio()
-    x = df.copy()
-    for col in ["Ticker","Quantité","PRU","Date achat"]:
-        if col not in x.columns:
-            x[col] = "" if col in ["Ticker","Date achat"] else 0.0
-    x = x[["Ticker","Quantité","PRU","Date achat"]]
-    x["Ticker"] = x["Ticker"].astype(str).str.upper().str.strip()
-    x["Quantité"] = pd.to_numeric(x["Quantité"], errors="coerce").fillna(0.0)
-    x["PRU"] = pd.to_numeric(x["PRU"], errors="coerce").fillna(0.0)
-    x["Date achat"] = pd.to_datetime(x["Date achat"], errors="coerce").dt.date
-    return x[x["Ticker"] != ""].reset_index(drop=True)
-
-
 def portfolio_metrics(portfolio):
     rows = []
     for _, p in portfolio.iterrows():
@@ -472,8 +468,7 @@ def portfolio_curve(portfolio):
         total_cost += qty * pru
     if not series or total_cost <= 0:
         return None
-    curve = pd.concat(series, axis=1).ffill().sum(axis=1) + (total_cost - sum(float(p["Quantité"]) * float(p["PRU"]) for _, p in portfolio.iterrows()))
-    # Rebase at invested capital. This curve includes cash dividends but does not reinvest them.
+    curve = pd.concat(series, axis=1).ffill().sum(axis=1)
     curve = curve.dropna()
     return curve / total_cost * 100 - 100
 
@@ -502,10 +497,10 @@ def arbitrage_table(metrics):
 
 def show_portfolio_page(title, key):
     st.header(title)
-    st.caption("Les lignes sont saisies manuellement. Les cours, noms d'entreprises et dividendes sont ensuite actualisés depuis la source de marché disponible.")
+    st.caption("Saisie manuelle des positions. Les cours, noms d'entreprises et dividendes sont actualisés automatiquement.")
 
     if key not in st.session_state:
-        st.session_state[key] = default_portfolio()
+        st.session_state[key] = load_portfolio_db(key)
 
     upload = st.file_uploader(
         "Importer un CSV (optionnel)",
@@ -516,6 +511,7 @@ def show_portfolio_page(title, key):
     if upload is not None:
         try:
             st.session_state[key] = normalize_portfolio(pd.read_csv(upload))
+            save_portfolio_db(key, st.session_state[key])
         except Exception as exc:
             st.error(f"CSV invalide : {exc}")
 
@@ -531,7 +527,12 @@ def show_portfolio_page(title, key):
             "Date achat": st.column_config.DateColumn("Date achat"),
         },
     )
-    st.session_state[key] = normalize_portfolio(edited)
+    normalized = normalize_portfolio(edited)
+    st.session_state[key] = normalized
+
+    if st.button("💾 Enregistrer définitivement", key=f"{key}_save", type="primary"):
+        save_portfolio_db(key, normalized)
+        st.success("Portefeuille enregistré dans Supabase.")
 
     if st.session_state[key].empty:
         st.info("Ajoute tes lignes ci-dessus. Exemple : AAPL | 10 | 180 | 2026-01-15")
@@ -549,14 +550,14 @@ def show_portfolio_page(title, key):
     total_perf = metrics["Perf totale"].sum()
     total_pct = total_perf / total_cost * 100 if total_cost else 0
 
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Valeur", f"{total_value:,.2f} €")
-    c2.metric("Investi", f"{total_cost:,.2f} €")
-    c3.metric("PV latente", f"{total_pnl:,.2f} €")
-    c4.metric("Dividendes", f"{total_div:,.2f} €")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Valeur", f"{total_value:,.2f}")
+    c2.metric("Investi", f"{total_cost:,.2f}")
+    c3.metric("PV latente", f"{total_pnl:,.2f}")
+    c4.metric("Dividendes", f"{total_div:,.2f}")
     c5.metric("Performance totale", f"{total_pct:+.2f}%")
 
-    st.subheader("📊 Positions — cours et entreprise")
+    st.subheader("📊 Positions")
     st.dataframe(
         metrics[["Ticker","Entreprise","Devise","Qté","PRU","Cours","Valeur","Poids %","Plus-value","Perf cours %","Dividendes","Perf totale","Perf totale %","Date"]],
         use_container_width=True, hide_index=True,
@@ -566,27 +567,24 @@ def show_portfolio_page(title, key):
     curve = portfolio_curve(st.session_state[key])
     if curve is not None and not curve.empty:
         st.line_chart(curve.rename("Rendement total (%)"))
-        st.caption("Courbe = évolution de la valeur des positions + dividendes encaissés, sans réinvestissement automatique des dividendes. Les conversions de devises ne sont pas encore modélisées finement.")
+        st.caption("Courbe = valeur des positions + dividendes encaissés (sans réinvestissement).")
     else:
-        st.info("Ajoute une date d'achat pour obtenir une courbe historique plus pertinente.")
+        st.info("Ajoute une date d'achat pour obtenir une courbe historique.")
 
     st.subheader("⚖️ Pistes d'arbitrage")
     arb = arbitrage_table(metrics)
     if not arb.empty:
         st.dataframe(arb, use_container_width=True, hide_index=True)
-        st.caption("Ces pistes sont des alertes analytiques basées sur le moteur technique. Elles ne constituent pas une recommandation et doivent être validées avec ton allocation, ta fiscalité et ton horizon.")
 
-    st.subheader("📰 Actualités des principales lignes")
-    for sym in metrics["Ticker"].head(8):
+    st.subheader("📰 Actualités")
+    for sym in metrics["Ticker"].head(6):
         st.markdown(f"**{sym} — {metrics.loc[metrics['Ticker']==sym, 'Entreprise'].iloc[0]}**")
-        for n in news(sym)[:3]:
+        for n in news(sym)[:2]:
             st.caption(f"{n['title']} — {n['publisher']}")
 
     csv = st.session_state[key].to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Exporter le portefeuille CSV", csv, f"{key}.csv", "text/csv")
-
-
-# ==========================================================
+    st.download_button("⬇️ Exporter CSV", csv, f"{key}.csv", "text/csv")
+    # ==========================================================
 # SIDEBAR
 # ==========================================================
 with st.sidebar:
@@ -629,12 +627,9 @@ with st.sidebar:
 # ==========================================================
 # HEADER
 # ==========================================================
-st.title("📈 Trading Command Center — V5")
-st.caption("Scanner + suivi CTO/PEA + performance + dividendes + pistes d'arbitrage. Outil d'analyse, pas une recommandation financière.")
+st.title("📈 Trading Command Center — V6")
+st.caption("Scanner + suivi CTO/PEA + performance + dividendes + arbitrage. Outil d'analyse, pas une recommandation financière.")
 
-# ==========================================================
-# GLOBAL MARKET
-# ==========================================================
 with st.expander("🌍 Contexte des marchés", expanded=False):
     mr = market_regime()
     if not mr.empty:
@@ -721,7 +716,7 @@ elif mode == "📊 Analyse":
         d.metric("TP2", f"{t['tp2']:.2f}")
         e.metric("Qualité", t["quality"])
         with st.expander("🔬 Détails techniques", True):
-            st.write(f"RSI **{t['rsi']:.1f}** • ATR **{t['atr']:.2f} ({t['atr_pct']:.1f}%) • Volume **{t['volume_ratio']:.2f}x**")
+            st.write(f"RSI **{t['rsi']:.1f}** • ATR **{t['atr']:.2f}** ({t['atr_pct']:.1f}%) • Volume **{t['volume_ratio']:.2f}x**")
             st.write(" • ".join(t["reasons"]))
     with st.expander("🏢 Fondamentaux + actualités", False):
         fs, fr = fundamental_score(info(symbol))
@@ -731,13 +726,9 @@ elif mode == "📊 Analyse":
             st.markdown(f"**{n['title']}** — {n['publisher']}")
 
 elif mode == "💼 CTO XTB":
-    st.header("💼 CTO XTB")
-    st.warning("La synchronisation directe avec XTB n'est pas utilisée : XTB indique que son accès API a été arrêté le 14 mars 2025. Les positions peuvent donc être saisies ou importées en CSV, puis les cours/actualités sont actualisés séparément.")
     show_portfolio_page("💼 Suivi du CTO XTB", "cto_xtb")
 
 elif mode == "🏦 PEA":
-    st.header("🏦 Suivi PEA")
-    st.info("Les lignes PEA sont saisies manuellement : ticker, quantité, PRU et date d'achat. Le moteur enrichit ensuite les lignes avec le nom de l'entreprise, le cours de marché, les dividendes et les indicateurs techniques.")
     show_portfolio_page("🏦 Suivi PEA", "pea")
 
 elif mode == "🧪 Simulation":
@@ -763,7 +754,7 @@ elif mode == "🧪 Simulation":
 else:
     st.header("📓 Journal de trading")
     if "journal" not in st.session_state:
-        st.session_state["journal"] = []
+        st.session_state["journal"] = load_journal_db()
     with st.form("journal_form"):
         sym = st.text_input("Ticker", "AAPL").upper()
         setup = st.text_input("Configuration", "Breakout / pullback")
@@ -771,14 +762,12 @@ else:
         note = st.text_area("Note")
         submitted = st.form_submit_button("Ajouter")
         if submitted:
-            st.session_state["journal"].append({
-                "Date": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                "Ticker": sym, "Setup": setup, "Résultat": result, "Note": note,
-            })
+            save_journal_db(sym, setup, result, note)
+            st.session_state["journal"] = load_journal_db()
     if st.session_state["journal"]:
         st.dataframe(pd.DataFrame(st.session_state["journal"]), use_container_width=True, hide_index=True)
     else:
         st.info("Aucune opération enregistrée.")
 
 st.markdown("---")
-st.caption("V5 — Données de marché via yfinance. Les cours peuvent être différés selon le marché et la source. Aucun mot de passe XTB n'est demandé ni stocké par cette application.")
+st.caption("V6 + Supabase — Outil d'analyse. Pas une recommandation financière.")
