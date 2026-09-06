@@ -1,5 +1,7 @@
 
 import hashlib
+import csv
+from io import StringIO
 import math
 import os
 import sqlite3
@@ -453,25 +455,66 @@ def _decode_csv(uploaded_file):
             last_error = exc
     raise ValueError(f"Encodage CSV non reconnu : {last_error}")
 
+def _normalize_column_name(column):
+    """Normalise les noms de colonnes broker sans dépendre de la casse."""
+    return (
+        str(column)
+        .replace("\ufeff", "")
+        .strip()
+        .lower()
+        .replace(" ", "")
+        .replace("_", "")
+        .replace("-", "")
+    )
+
+
 def _read_broker_csv(uploaded_file):
-    """Read broker export with comma, semicolon, tab or auto-detected separator."""
+    """Lecture robuste : UTF-8/Windows + ; , tabulation + détection automatique."""
     text_csv = _decode_csv(uploaded_file)
-    from io import StringIO
+    sample = text_csv[:5000]
+
+    # Détection explicite du séparateur, avec priorité au point-virgule
+    separator = None
     try:
-        df = pd.read_csv(StringIO(text_csv), sep=None, engine="python", dtype=str)
-    except Exception:
-        frames = []
-        for sep in (";", ",", "\t"):
+        separator = csv.Sniffer().sniff(sample, delimiters=";,\t|").delimiter
+    except csv.Error:
+        counts = {sep: sample.count(sep) for sep in (";", ",", "\t", "|")}
+        separator = max(counts, key=counts.get)
+        if counts[separator] == 0:
+            separator = ";"
+
+    try:
+        df = pd.read_csv(
+            StringIO(text_csv),
+            sep=separator,
+            dtype=str,
+            keep_default_na=False,
+        )
+    except Exception as exc:
+        raise ValueError(f"Impossible de lire le CSV (séparateur détecté : {repr(separator)}) : {exc}")
+
+    # Si une seule colonne est détectée, essayer tous les séparateurs courants
+    if len(df.columns) <= 1:
+        candidates = []
+        for sep in (";", ",", "\t", "|"):
             try:
-                candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str)
-                if len(candidate.columns) >= 2:
-                    frames.append(candidate)
+                candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str, keep_default_na=False)
+                if len(candidate.columns) > 1:
+                    candidates.append(candidate)
             except Exception:
-                pass
-        if not frames:
-            raise ValueError("Impossible de lire le CSV.")
-        df = max(frames, key=lambda x: len(x.columns))
-    df.columns = [str(c).strip().lower() for c in df.columns]
+                continue
+        if candidates:
+            df = max(candidates, key=lambda x: len(x.columns))
+
+    df.columns = [_normalize_column_name(c) for c in df.columns]
+
+    # Détection d'un fichier mal séparé : donne une erreur utile
+    if len(df.columns) <= 1:
+        raise ValueError(
+            "Le fichier a été lu comme une seule colonne. "
+            "Séparateurs acceptés : ; , tabulation ou |."
+        )
+
     return df
 
 def _centimes_or_euros(value, reference=None):
@@ -669,7 +712,7 @@ def show_portfolio_page(title, key):
 
     upload = st.file_uploader(
         "📥 Importer ton export CSV PEA",
-        type=["csv"],
+        type=["csv", "txt", "xls", "xlsx"],
         key=f"{key}_upload",
         help="Le fichier peut contenir name, isin, quantity, buyingPrice, lastPrice, amount, lastMovementDate, etc.",
     )
