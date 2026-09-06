@@ -590,26 +590,123 @@ def _is_positions_export(mapping):
     return bool(mapping.get("quantity") and any(mapping.get(k) for k in ("ticker", "isin", "name")) and (mapping.get("pru") or mapping.get("cost")))
 
 
+def _is_trade_republic_transactions(df):
+    """Détecte un export d'historique Trade Republic à partir de sa structure."""
+    cols = set(df.columns)
+    required = {"date", "category", "type", "name", "shares", "amount"}
+    return required.issubset(cols) and ("symbol" in cols or "price" in cols)
+
+
+def _transaction_asset_id(row):
+    """Clé stable d'un instrument : ISIN > symbole > nom."""
+    symbol = str(row.get("symbol", "") or "").strip().upper()
+    name = str(row.get("name", "") or "").strip()
+    # Trade Republic met parfois l'ISIN dans symbol.
+    if len(symbol) == 12 and symbol[:2].isalpha() and symbol[2:].isalnum():
+        return f"ISIN:{symbol}", symbol, name
+    return f"SYM:{symbol or name.upper()}", symbol, name
+
+
+def _reconstruct_trade_republic_portfolio(df):
+    """Reconstruit les positions ouvertes depuis BUY/SELL Trade Republic.
+
+    Le coût d'un achat est abs(amount) + abs(fee) + abs(tax), car amount est
+    le montant de l'ordre et les frais sont exportés séparément. Lors d'une
+    vente, on retire le coût moyen historique proportionnellement aux titres
+    vendus : le PRU des titres restants reste donc cohérent.
+    """
+    trades = df.copy()
+    for col in ("category", "type"):
+        trades[col] = trades[col].astype(str).str.strip().str.upper()
+
+    trades = trades[(trades["category"] == "TRADING") & trades["type"].isin(["BUY", "SELL"])].copy()
+    if trades.empty:
+        return default_portfolio(), pd.DataFrame()
+
+    trades["_date"] = pd.to_datetime(trades["date"], errors="coerce", utc=True)
+    trades = trades.sort_values(["_date"], kind="stable")
+
+    positions = {}
+    errors = []
+
+    for idx, row in trades.iterrows():
+        key, raw_symbol, name = _transaction_asset_id(row)
+        qty = _clean_num(row.get("shares", np.nan))
+        amount = abs(_clean_num(row.get("amount", np.nan)))
+        fee = abs(_clean_num(row.get("fee", 0))) if pd.notna(_clean_num(row.get("fee", 0))) else 0.0
+        tax = abs(_clean_num(row.get("tax", 0))) if pd.notna(_clean_num(row.get("tax", 0))) else 0.0
+
+        if not np.isfinite(qty) or qty <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Quantité de transaction invalide"})
+            continue
+
+        if key not in positions:
+            positions[key] = {"name": name, "symbol": raw_symbol, "quantity": 0.0,
+                              "cost_basis": 0.0, "first_date": row.get("_date")}
+        pos = positions[key]
+
+        if row["type"] == "BUY":
+            if not np.isfinite(amount) or amount <= 0:
+                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Montant d'achat invalide"})
+                continue
+            pos["quantity"] += qty
+            pos["cost_basis"] += amount + fee + tax
+            if pd.notna(row.get("_date")) and (pd.isna(pos["first_date"]) or row["_date"] < pos["first_date"]):
+                pos["first_date"] = row["_date"]
+
+        else:  # SELL
+            current_qty = pos["quantity"]
+            if current_qty <= 1e-10:
+                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Vente sans position ouverte correspondante"})
+                continue
+            # Tolérance pour les arrondis exportés par le broker.
+            if qty > current_qty + max(1e-8, current_qty * 1e-6):
+                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol,
+                               "Motif": f"Vente ({qty}) supérieure à la position reconstruite ({current_qty})"})
+                qty = min(qty, current_qty)
+            avg_cost = pos["cost_basis"] / current_qty if current_qty > 0 else 0.0
+            pos["quantity"] = current_qty - qty
+            pos["cost_basis"] = max(0.0, pos["cost_basis"] - qty * avg_cost)
+            if abs(pos["quantity"]) <= max(1e-8, current_qty * 1e-8):
+                pos["quantity"] = 0.0
+                pos["cost_basis"] = 0.0
+
+    rows = []
+    for pos in positions.values():
+        qty = pos["quantity"]
+        if qty <= 1e-8:
+            continue  # entièrement vendu
+        raw_symbol = pos["symbol"]
+        isin = raw_symbol if len(raw_symbol) == 12 and raw_symbol[:2].isalpha() else ""
+        ticker = _resolve_ticker(pos["name"], isin, "" if isin else raw_symbol)
+        # Si aucun mapping Yahoo n'est connu, conserver l'identifiant plutôt que fabriquer un ticker.
+        if not ticker:
+            ticker = raw_symbol or pos["name"].upper()
+        pru = pos["cost_basis"] / qty
+        dt = pos["first_date"]
+        rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru,
+                     "Date achat": dt.date() if pd.notna(dt) else None})
+
+    out = normalize_portfolio(pd.DataFrame(rows)) if rows else default_portfolio()
+    return out, pd.DataFrame(errors)
+
+
 def import_broker_pea(uploaded_file):
-    """Import universel d'un EXPORT DE POSITIONS vers le format de l'application."""
+    """Import universel : snapshot de positions OU historique Trade Republic."""
     df = _read_broker_file(uploaded_file)
+
+    # PRIORITÉ : un historique Trade Republic doit être reconstruit, jamais lu
+    # comme un simple tableau de positions.
+    if _is_trade_republic_transactions(df):
+        return _reconstruct_trade_republic_portfolio(df)
+
     mapping = _auto_map_broker_columns(df)
 
     if not _is_positions_export(mapping):
         cols = ", ".join(map(str, df.columns))
-        # Cas explicite : relevé comptable / mouvements, pas positions.
         if {"date", "label", "debit", "credit"}.issubset(set(df.columns)):
-            raise ValueError(
-                "Le fichier est bien lu, mais il s'agit d'un relevé de mouvements comptables "
-                "(date, label, debit, credit) et non d'un export de positions. "
-                "Un portefeuille ne peut pas être reconstruit de manière fiable sans quantité, "
-                "ISIN/ticker ou détail des opérations."
-            )
-        raise ValueError(
-            "Format lu mais insuffisant pour importer un portefeuille. "
-            f"Colonnes détectées : {cols}. "
-            "Il faut au minimum une identification (Ticker/ISIN/Nom), une Quantité et un PRU ou montant investi."
-        )
+            raise ValueError("Le fichier est un relevé comptable (date, label, debit, credit), sans détail suffisant pour reconstruire les quantités.")
+        raise ValueError("Format lu mais insuffisant pour importer un portefeuille. Colonnes détectées : " + cols)
 
     rows, errors = [], []
     for idx, r in df.iterrows():
@@ -623,24 +720,16 @@ def import_broker_pea(uploaded_file):
         qty = _clean_num(get("quantity"))
         pru = _clean_num(get("pru")) if mapping.get("pru") else np.nan
         cost = _clean_num(get("cost")) if mapping.get("cost") else np.nan
-
         if (not np.isfinite(pru) or pru <= 0) and np.isfinite(cost) and np.isfinite(qty) and qty > 0:
             pru = cost / qty
-
-        # Certains exports utilisent des centimes entiers : buyingPrice 15956 -> 159.56.
-        if np.isfinite(pru) and pru >= 1000 and abs(pru - round(pru)) < 1e-9 and mapping.get("pru") == "buyingprice":
-            pru = pru / 100.0
-
         raw_date = get("date")
         movement = pd.to_datetime(str(raw_date), dayfirst=True, errors="coerce")
-
         if not ticker:
             errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non résolu"}); continue
         if not np.isfinite(qty) or qty <= 0:
             errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "Quantité invalide"}); continue
         if not np.isfinite(pru) or pru <= 0:
             errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "PRU invalide"}); continue
-
         rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru,
                      "Date achat": movement.date() if pd.notna(movement) else None})
 
@@ -654,7 +743,6 @@ def import_broker_pea(uploaded_file):
             grouped.append({"Ticker": ticker, "Quantité": q, "PRU": weighted_pru,
                             "Date achat": min(dates) if dates else None})
         out = pd.DataFrame(grouped, columns=["Ticker", "Quantité", "PRU", "Date achat"])
-
     return out, pd.DataFrame(errors)
 
 def default_portfolio():
