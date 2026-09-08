@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V8.4 Automatic Reconciliation"
+APP_VERSION = "V8.5 Supabase Conflict Fix"
 
 # ==========================================================
 # AUTHENTICATION
@@ -218,7 +218,9 @@ def save_positions(account: str, broker: str, df: pd.DataFrame, source: str = "d
 
     rows = list(rows_by_key.values())
     if rows:
-        SUPABASE.table("portfolio_positions").upsert(rows, on_conflict="account,broker,instrument_key").execute()
+        # Le snapshot compte+courtier a déjà été supprimé au début de save_positions.
+        # INSERT évite de dépendre d'une contrainte UNIQUE/EXCLUSION PostgreSQL pour ON CONFLICT.
+        SUPABASE.table("portfolio_positions").insert(rows).execute()
     return len(rows)
 
 
