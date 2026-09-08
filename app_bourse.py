@@ -524,39 +524,88 @@ def _clean_num(value):
         return np.nan
 
 def _decode_csv(uploaded_file):
+    """Decode broker exports robustly, including CSV files carrying .xls/.txt extensions."""
     raw = uploaded_file.getvalue()
-    last_error = None
-    for enc in ("utf-8-sig","utf-16","utf-16-le","utf-16-be","utf-8","cp1252","latin1"):
+    if not raw:
+        raise ValueError("Le fichier est vide.")
+    # Excel/broker exports can contain UTF-8 BOM, UTF-16 BOM, or plain ANSI/UTF-8.
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        for enc in ("utf-16", "utf-16-le", "utf-16-be"):
+            try:
+                return raw.decode(enc).replace("\x00", "")
+            except UnicodeDecodeError:
+                pass
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
         try:
-            return raw.decode(enc).replace("\x00","")
-        except UnicodeDecodeError as exc:
-            last_error = exc
-    raise ValueError(f"Encodage non reconnu : {last_error}")
+            return raw.decode(enc).replace("\x00", "")
+        except UnicodeDecodeError:
+            pass
+    # Last resort: replacement decoding keeps the delimiter/header readable.
+    return raw.decode("utf-8", errors="replace").replace("\x00", "")
 
 def _read_universal_csv(uploaded_file):
-    """Reads CSV-like broker exports regardless of extension/separator/encoding."""
-    from io import StringIO
-    text = _decode_csv(uploaded_file)
-    candidates = []
-    for sep in (";","\t",",","|"):
+    """Universal reader for CSV/TSV exports, even when extension is .xls or .txt."""
+    from io import StringIO, BytesIO
+    raw = uploaded_file.getvalue()
+    name = str(getattr(uploaded_file, "name", "")).lower()
+
+    # 1) True Excel workbook (binary XLS/XLSX) if pandas can identify it.
+    if raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" or raw[:4] == b"PK\x03\x04":
         try:
-            df = pd.read_csv(StringIO(text), sep=sep, dtype=str, engine="python",
-                             keep_default_na=False)
+            xls = pd.ExcelFile(BytesIO(raw))
+            frames = []
+            for sheet in xls.sheet_names:
+                tmp = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                if tmp is not None and not tmp.empty:
+                    frames.append(tmp)
+            if frames:
+                candidates = []
+                for df in frames:
+                    normcols = [_norm_text(c) for c in df.columns]
+                    score = sum(any(a == n for a in aliases for n in normcols) for aliases in FIELD_ALIASES.values())
+                    candidates.append((score, len(df.columns), df))
+                return max(candidates, key=lambda x:(x[0],x[1]))[2]
+        except Exception:
+            pass
+
+    # 2) Text-delimited broker export. Do not trust the file extension.
+    text = _decode_csv(uploaded_file)
+    if not text.strip():
+        raise ValueError("Le fichier est vide ou illisible.")
+
+    candidates = []
+    # Score delimiters by number of useful recognized headers AND column count.
+    for sep in (";", "\t", ",", "|", ":"):
+        try:
+            df = pd.read_csv(
+                StringIO(text), sep=sep, dtype=str, engine="python",
+                keep_default_na=False, quotechar='"', on_bad_lines="warn"
+            )
             if len(df.columns) < 2:
                 continue
             normcols = [_norm_text(c) for c in df.columns]
             score = 0
             for aliases in FIELD_ALIASES.values():
-                if any(a in normcols for a in aliases):
+                if any(a == n for a in aliases for n in normcols):
+                    score += 2
+                elif any(any(a in n or n in a for a in aliases if len(a) >= 4) for n in normcols):
                     score += 1
-            # Accounting exports have DATE/LABEL/DEBIT/CREDIT and should score low.
+            # Prefer the separator that actually creates several meaningful columns.
+            score += min(len(df.columns), 20) * 0.05
             candidates.append((score, len(df.columns), df))
         except Exception:
             continue
+
     if not candidates:
-        raise ValueError("Impossible de lire le fichier comme CSV/texte délimité.")
-    _, _, df = max(candidates, key=lambda x:(x[0],x[1]))
-    df.columns = [str(c).replace("\ufeff","").replace("\x00","").strip().strip('"') for c in df.columns]
+        raise ValueError(
+            f"Impossible de lire '{name}' comme fichier CSV/texte délimité. "
+            "Le fichier peut être un véritable Excel non supporté ou être vide."
+        )
+
+    score, ncols, df = max(candidates, key=lambda x:(x[0],x[1]))
+    if ncols < 2:
+        raise ValueError("Aucune colonne exploitable n'a été détectée.")
+    df.columns = [str(c).replace("\ufeff", "").replace("\x00", "").strip().strip('"') for c in df.columns]
     return df
 
 def _find_field(columns, field):
@@ -846,7 +895,7 @@ def show_portfolio_page(title, key):
 
     upload = st.file_uploader(
         "📥 Importer ton export CSV PEA",
-        type=["csv","xls","txt"],
+        type=["csv","xls","xlsx","txt"],
         key=f"{key}_upload",
         help="Import universel : l’application détecte automatiquement le courtier, les colonnes, l’encodage et le séparateur.",
     )
