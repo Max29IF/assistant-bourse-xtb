@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V8.5 Supabase Conflict Fix"
+APP_VERSION = "V9 Market Intelligence Agent"
 
 # ==========================================================
 # AUTHENTICATION
@@ -108,7 +108,7 @@ def load_positions(account: str, broker: str | None = None):
         return pd.DataFrame(columns=cols)
     try:
         q = (SUPABASE.table("portfolio_positions")
-             .select("ticker,isin,name,broker,quantity,pru,currency,purchase_date,last_price_imported,market_value_imported,instrument_key,source_import_hash")
+             .select("ticker,isin,name,broker,quantity,pru,currency,purchase_date,last_price_imported,market_value_imported,instrument_key,source,source_import_hash")
              .eq("account", account))
         if broker:
             q = q.eq("broker", broker)
@@ -125,6 +125,7 @@ def load_positions(account: str, broker: str | None = None):
             "Date achat": r.get("purchase_date") or None,
             "Cours importé": r.get("last_price_imported"),
             "Valeur importée": r.get("market_value_imported"),
+            "Source": r.get("source") or "",
             "Instrument": r.get("instrument_key") or r.get("isin") or r.get("ticker") or r.get("name") or "",
         } for r in rows])
         if not out.empty:
@@ -850,39 +851,104 @@ def ledger_summary(df: pd.DataFrame):
 
 
 def portfolio_valuation(account: str, use_live=True, broker: str | None = None):
-    df=load_positions(account, broker=broker)
-    rows=[]
-    for _,r in df.iterrows():
-        ticker=str(r.get("Ticker") or "").strip()
-        qty=float(r.get("Quantité") or 0)
-        pru=float(r.get("PRU") or 0)
-        imported_price=pd.to_numeric(pd.Series([r.get("Cours importé")]),errors="coerce").iloc[0]
-        imported_value=pd.to_numeric(pd.Series([r.get("Valeur importée")]),errors="coerce").iloc[0]
-        price=None; price_source="Import"
-        company=r.get("Nom") or r.get("ISIN") or ticker
+    """
+    V8.6:
+    - Broker position snapshot (document_import): imported market value is authoritative
+      for total value and latent P/L reconciliation.
+    - Transaction rebuild: live quote is preferred; otherwise last transaction price is fallback.
+    - Live market estimate remains visible separately when available.
+    """
+    df = load_positions(account, broker=broker)
+    rows = []
+
+    for _, r in df.iterrows():
+        ticker = _clean_text(r.get("Ticker"), upper=True)
+        qty = float(r.get("Quantité") or 0)
+        pru = float(r.get("PRU") or 0)
+        source = _clean_text(r.get("Source"))
+
+        imported_price = pd.to_numeric(pd.Series([r.get("Cours importé")]), errors="coerce").iloc[0]
+        imported_value = pd.to_numeric(pd.Series([r.get("Valeur importée")]), errors="coerce").iloc[0]
+
+        company = r.get("Nom") or r.get("ISIN") or ticker
+        live_price = None
+        live_value = np.nan
+
         if use_live and ticker:
-            q=live_quote(ticker)
+            q = live_quote(ticker)
             if q.get("price") is not None:
-                price=float(q["price"]); company=q.get("name") or company; price_source="Marché"
-        if price is None and pd.notna(imported_price): price=float(imported_price)
-        if price is not None:
-            value=qty*price
-        elif pd.notna(imported_value):
-            value=float(imported_value); price_source="Valeur importée"
-        else: value=np.nan
-        cost=qty*pru if pru else np.nan
-        pnl=value-cost if pd.notna(value) and pd.notna(cost) else np.nan
-        pct=pnl/cost*100 if pd.notna(pnl) and cost else np.nan
-        rows.append({"Ticker":ticker,"ISIN":r.get("ISIN"),"Entreprise":company,"Courtier":r.get("Courtier"),"Qté":qty,"PRU":pru,
-                     "Cours":price,"Source cours":price_source,"Valeur":value,"Coût":cost,"P/L latent":pnl,"P/L %":pct})
-    detail=pd.DataFrame(rows)
-    totals={
-        "value":float(detail["Valeur"].sum(skipna=True)) if not detail.empty else 0.0,
-        "cost":float(detail["Coût"].sum(skipna=True)) if not detail.empty else 0.0,
-        "unrealized":float(detail["P/L latent"].sum(skipna=True)) if not detail.empty else 0.0,
-        "unpriced":int(detail["Valeur"].isna().sum()) if not detail.empty else 0,
+                live_price = float(q["price"])
+                company = q.get("name") or company
+                live_value = qty * live_price
+
+        cost = qty * pru if pru else np.nan
+
+        # Exact broker snapshot: preserve the broker's own imported valuation.
+        is_broker_snapshot = source in {"document_import", "positions_import", ""} and pd.notna(imported_value)
+
+        if is_broker_snapshot:
+            reference_value = float(imported_value)
+            reference_price = float(imported_price) if pd.notna(imported_price) else (
+                reference_value / qty if qty else np.nan
+            )
+            value_source = "Snapshot courtier"
+        else:
+            if pd.notna(live_value):
+                reference_value = float(live_value)
+                reference_price = live_price
+                value_source = "Marché"
+            elif pd.notna(imported_value):
+                reference_value = float(imported_value)
+                reference_price = float(imported_price) if pd.notna(imported_price) else (
+                    reference_value / qty if qty else np.nan
+                )
+                value_source = "Dernière valeur connue"
+            elif pd.notna(imported_price):
+                reference_price = float(imported_price)
+                reference_value = qty * reference_price
+                value_source = "Dernier prix transaction"
+            else:
+                reference_price = np.nan
+                reference_value = np.nan
+                value_source = "Non valorisé"
+
+        pnl = reference_value - cost if pd.notna(reference_value) and pd.notna(cost) else np.nan
+        pct = pnl / cost * 100 if pd.notna(pnl) and cost else np.nan
+
+        live_gap = (
+            live_value - reference_value
+            if pd.notna(live_value) and pd.notna(reference_value)
+            else np.nan
+        )
+
+        rows.append({
+            "Ticker": ticker,
+            "ISIN": r.get("ISIN"),
+            "Entreprise": company,
+            "Courtier": r.get("Courtier"),
+            "Qté": qty,
+            "PRU": pru,
+            "Cours référence": reference_price,
+            "Source valorisation": value_source,
+            "Valeur référence": reference_value,
+            "Coût": cost,
+            "P/L latent": pnl,
+            "P/L %": pct,
+            "Cours live": live_price,
+            "Valeur live estimée": live_value,
+            "Écart live / snapshot": live_gap,
+        })
+
+    detail = pd.DataFrame(rows)
+
+    totals = {
+        "value": float(detail["Valeur référence"].sum(skipna=True)) if not detail.empty else 0.0,
+        "cost": float(detail["Coût"].sum(skipna=True)) if not detail.empty else 0.0,
+        "unrealized": float(detail["P/L latent"].sum(skipna=True)) if not detail.empty else 0.0,
+        "unpriced": int(detail["Valeur référence"].isna().sum()) if not detail.empty else 0,
+        "live_value": float(detail["Valeur live estimée"].sum(skipna=True)) if not detail.empty else 0.0,
     }
-    return totals,detail
+    return totals, detail
 
 
 def save_performance_snapshot(account: str, metrics: dict):
@@ -1011,6 +1077,7 @@ ALIASES = {
     "average_cost": ["buyingprice","averageprice","avgprice","averagecost","purchaseprice","pru","prixmoyen","prixderevient","prixdacquisition","costbasis"],
     "market_price": ["lastprice","currentprice","marketprice","cours","coursactuel","prixactuel","last"],
     "market_value": ["marketvalue","amount","value","valorisation","valeur","positionvalue"],
+    "unrealized_pl": ["amountvariation","unrealizedpl","unrealizedpnl","latentpl","pllatent","plusvaluelatente","moinsvaluelatente"],
     "currency": ["currency","devise","ccy"],
     "purchase_date": ["purchasedate","buydate","acquisitiondate","dateachat","lastmovementdate"],
     "datetime": ["datetime","timestamp","occurredat","executiontime"],
@@ -1211,11 +1278,21 @@ def normalize_positions(df: pd.DataFrame, cmap: dict):
         cost = parse_number(value_from(row, cmap, "average_cost", np.nan))
         market_price = parse_number(value_from(row, cmap, "market_price", np.nan))
         market_value = parse_number(value_from(row, cmap, "market_value", np.nan))
+        unrealized_pl = parse_number(value_from(row, cmap, "unrealized_pl", np.nan))
         # In position snapshots, many brokers call the position value simply "amount".
         if not np.isfinite(market_value):
             amount_col = next((c for c in df.columns if norm_token(c) in {"amount","montant","value","valeur","valorisation"}), None)
             if amount_col is not None:
                 market_value = parse_number(row.get(amount_col, np.nan))
+        # Some broker exports round the displayed PRU heavily (e.g. penny stocks),
+        # while market value and latent P/L are more precise. When both are present,
+        # infer the effective cost basis so the app reconciles with the broker snapshot.
+        if np.isfinite(qty) and abs(qty) > 1e-12 and np.isfinite(market_value) and np.isfinite(unrealized_pl):
+            implied_cost = market_value - unrealized_pl
+            implied_pru = implied_cost / qty
+            if np.isfinite(implied_pru) and implied_pru >= 0:
+                cost = implied_pru
+
         currency = str(value_from(row, cmap, "currency", "")).strip().upper()
         pdate_raw = str(value_from(row, cmap, "purchase_date", "")).strip()
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", pdate_raw):
@@ -1313,11 +1390,20 @@ def interpret_document(uploaded_file):
 # MARKET / TRADING ENGINE
 # ==========================================================
 UNIVERSE = {
-    "USA": ["AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AVGO","AMD","NFLX","ADBE","CRM","ORCL","QCOM","INTC","PLTR","JPM","V","MA","XOM","CVX","LLY","JNJ"],
-    "France": ["MC.PA","OR.PA","AIR.PA","SAN.PA","SU.PA","TTE.PA","BNP.PA","AI.PA","SAF.PA","DG.PA","CS.PA","CAP.PA","ACA.PA","ENGI.PA","SGO.PA","VIE.PA"],
-    "Germany": ["SAP.DE","SIE.DE","ALV.DE","DTE.DE","MBG.DE","BMW.DE","BAS.DE","IFX.DE","DBK.DE"],
-    "Netherlands": ["ASML.AS","ADYEN.AS","INGA.AS","PRX.AS","PHIA.AS"],
-    "UK": ["SHEL.L","AZN.L","HSBA.L","ULVR.L","BP.L","GSK.L","RIO.L"],
+    "USA": ["AAPL","MSFT","NVDA","AMZN","META","GOOGL","TSLA","AVGO","AMD","NFLX","ADBE","CRM","ORCL","QCOM","INTC","PLTR","JPM","V","MA","XOM","CVX","LLY","JNJ","UNH","COST","WMT","HD","CAT","GE","BA","NOW","PANW","CRWD","MU","AMAT","LRCX"],
+    "Canada": ["SHOP.TO","RY.TO","TD.TO","BNS.TO","BMO.TO","ENB.TO","CNQ.TO","SU.TO","CP.TO","CNR.TO"],
+    "France": ["MC.PA","OR.PA","AIR.PA","SAN.PA","SU.PA","TTE.PA","BNP.PA","AI.PA","SAF.PA","DG.PA","CS.PA","CAP.PA","ACA.PA","ENGI.PA","SGO.PA","VIE.PA","RMS.PA","KER.PA","DSY.PA","HO.PA"],
+    "Germany": ["SAP.DE","SIE.DE","ALV.DE","DTE.DE","MBG.DE","BMW.DE","BAS.DE","IFX.DE","DBK.DE","RHM.DE","ADS.DE","VOW3.DE","HEN3.DE"],
+    "Netherlands": ["ASML.AS","ADYEN.AS","INGA.AS","PRX.AS","PHIA.AS","UNA.AS","HEIA.AS"],
+    "UK": ["SHEL.L","AZN.L","HSBA.L","ULVR.L","BP.L","GSK.L","RIO.L","BARC.L","LLOY.L","RR.L","LSEG.L"],
+    "Spain": ["SAN.MC","BBVA.MC","IBE.MC","ITX.MC","REP.MC","TEF.MC","FER.MC"],
+    "Italy": ["ENEL.MI","ENI.MI","ISP.MI","UCG.MI","STLAM.MI","RACE.MI","G.MI"],
+    "Switzerland": ["NESN.SW","ROG.SW","NOVN.SW","UBSG.SW","ABBN.SW","CFR.SW"],
+    "Nordics": ["NOVO-B.CO","MAERSK-B.CO","VOLV-B.ST","ERIC-B.ST","NDA-SE.ST","EQNR.OL"],
+    "Japan": ["7203.T","6758.T","9984.T","8306.T","8035.T","6861.T"],
+    "Hong Kong": ["0700.HK","9988.HK","3690.HK","1211.HK","1810.HK"],
+    "Australia": ["BHP.AX","CBA.AX","CSL.AX","WBC.AX","NAB.AX","WES.AX"],
+    "ETF globaux": ["SPY","QQQ","IWM","DIA","VGK","EWJ","EEM","GLD","SLV","TLT","HYG"],
 }
 TF = {
     "15 minutes": {"interval":"15m","periods":["5d","1mo","3mo"]},
@@ -1446,6 +1532,138 @@ def fast_scan(symbols, min_upside=3.0, min_rr=2.0, min_score=72, top_n=20):
     if not out.empty:
         out = out.sort_values(["Score combiné","R/R","Potentiel %"], ascending=False)
     return out
+
+
+def _fallback_universe():
+    rows = []
+    for market, symbols in UNIVERSE.items():
+        for symbol in symbols:
+            rows.append({
+                "symbol": symbol,
+                "market": market,
+                "broker": "fallback",
+                "enabled": True,
+                "asset_type": "ETF" if market == "ETF globaux" else "EQUITY",
+            })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_broker_universe(brokers=None, markets=None):
+    """
+    Universe scanner:
+    - Priorité à Supabase `broker_universe` si la table est renseignée.
+    - Sinon fallback global intégré.
+    La colonne broker permet de ne conserver que les instruments marqués
+    compatibles avec XTB / Trade Republic / les deux.
+    """
+    if SUPABASE is not None:
+        try:
+            q = SUPABASE.table("broker_universe").select(
+                "symbol,name,isin,market,asset_type,broker,enabled"
+            ).eq("enabled", True)
+            res = q.execute()
+            data = _sb_data(res)
+            if data:
+                df = pd.DataFrame(data)
+                if brokers:
+                    wanted = {str(x).strip().lower() for x in brokers}
+                    df = df[df["broker"].fillna("").str.lower().isin(wanted)]
+                if markets:
+                    df = df[df["market"].isin(markets)]
+                if not df.empty:
+                    return df.drop_duplicates(subset=["symbol","broker"])
+        except Exception:
+            pass
+
+    df = _fallback_universe()
+    if markets:
+        df = df[df["market"].isin(markets)]
+    return df
+
+
+def compatible_scan_symbols(brokers, markets):
+    df = load_broker_universe(brokers=brokers, markets=markets)
+    return sorted({
+        str(x).strip().upper()
+        for x in df.get("symbol", pd.Series(dtype=str)).dropna().tolist()
+        if str(x).strip()
+    })
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_market_alerts(limit=100, status=None):
+    if SUPABASE is None:
+        return pd.DataFrame()
+    try:
+        q = SUPABASE.table("market_alerts").select("*").order("created_at", desc=True).limit(limit)
+        if status:
+            q = q.eq("status", status)
+        return pd.DataFrame(_sb_data(q.execute()))
+    except Exception:
+        return pd.DataFrame()
+
+
+def acknowledge_alert(alert_id):
+    if SUPABASE is None:
+        return
+    try:
+        SUPABASE.table("market_alerts").update({
+            "status": "ACKNOWLEDGED",
+            "acknowledged_at": datetime.utcnow().isoformat()
+        }).eq("id", alert_id).execute()
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
+def show_market_agent_page():
+    st.header("🛰️ Agent marché — veille automatique")
+    st.caption(
+        "Cette page lit les alertes produites par le worker VISION FUTURE. "
+        "Le worker surveille les positions et les meilleurs setups, puis peut consulter "
+        "un modèle OpenAI avec recherche web lorsque OPENAI_API_KEY est configurée."
+    )
+
+    alerts = load_market_alerts(limit=200)
+    if alerts.empty:
+        st.info(
+            "Aucune alerte pour l'instant. Une fois le worker planifié, les nouvelles alertes "
+            "apparaîtront automatiquement ici."
+        )
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Alertes", len(alerts))
+    c2.metric("Entrées", int((alerts.get("alert_type","") == "ENTRY").sum()) if "alert_type" in alerts else 0)
+    c3.metric("Positions", int((alerts.get("alert_type","") == "POSITION").sum()) if "alert_type" in alerts else 0)
+
+    for _, r in alerts.head(50).iterrows():
+        typ = r.get("alert_type","ALERT")
+        symbol = r.get("symbol","")
+        score = r.get("score")
+        title = f"{typ} • {symbol}"
+        if pd.notna(score):
+            title += f" • score {float(score):.0f}"
+        with st.expander(title, expanded=(r.get("status") == "NEW")):
+            cols = st.columns(4)
+            if pd.notna(r.get("entry")): cols[0].metric("Entrée", f"{float(r.get('entry')):.2f}")
+            if pd.notna(r.get("stop")): cols[1].metric("Stop", f"{float(r.get('stop')):.2f}")
+            if pd.notna(r.get("tp1")): cols[2].metric("TP1", f"{float(r.get('tp1')):.2f}")
+            if pd.notna(r.get("tp2")): cols[3].metric("TP2", f"{float(r.get('tp2')):.2f}")
+            if r.get("headline"):
+                st.write("**Contexte :**", r.get("headline"))
+            if r.get("analysis"):
+                st.write(r.get("analysis"))
+            st.caption(
+                f"{r.get('broker','')} • {r.get('market','')} • "
+                f"{r.get('created_at','')} • statut {r.get('status','NEW')}"
+            )
+            if r.get("status") == "NEW" and r.get("id") is not None:
+                if st.button("Marquer comme lu", key=f"ack_{r.get('id')}"):
+                    acknowledge_alert(r.get("id"))
+                    st.rerun()
+
 
 def indicators(df):
     x=df.copy(); c=x.Close; h=x.High; l=x.Low; v=x.Volume
@@ -1772,8 +1990,13 @@ def show_portfolio_page(account, title, broker: str | None = None):
     c2.metric("Coût snapshot",f"{totals['cost']:,.2f} €")
     c3.metric("P/L latent",f"{totals['unrealized']:+,.2f} €")
     c4.metric("Sans valorisation",totals['unpriced'])
+    if totals.get("live_value", 0) > 0:
+        st.caption(f"Estimation live disponible : {totals['live_value']:,.2f} € — séparée du snapshot courtier.")
     st.dataframe(m,use_container_width=True,hide_index=True)
-    st.caption("Le cours de marché est utilisé lorsqu'un ticker est résolu ; sinon VISION FUTURE conserve le cours ou la valorisation du dernier export courtier.")
+    st.caption(
+        "Pour un export de positions, la valeur totale et le P/L latent utilisent le snapshot courtier "
+        "afin de rester cohérents avec le fichier importé. Les cours live sont affichés séparément comme estimation."
+    )
 
 def show_transactions_page():
     st.header("💰 Transactions / Ledger")
@@ -1801,7 +2024,7 @@ def show_transactions_page():
 # ==========================================================
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Analyse","🧪 Simulation"])
+    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","🛰️ Agent marché","📊 Analyse","🧪 Simulation"])
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"]=False; st.rerun()
     st.markdown("---")
@@ -1863,36 +2086,62 @@ elif mode=="⚖️ Arbitrage":
     show_arbitrage_page()
 
 elif mode=="🔎 Scanner":
-    st.header("⚡ Scanner rapide — configurations favorables")
-    st.caption("Le moteur effectue un scan groupé en daily, puis confirme seulement les meilleurs candidats en 1h. Objectif : réduire fortement la latence sans promettre qu'un trade sera gagnant.")
+    st.header("⚡ Scanner mondial — CTO compatible")
+    st.caption(
+        "Le scanner utilise en priorité la table Supabase broker_universe. "
+        "Elle permet de marquer précisément les instruments disponibles chez XTB, Trade Republic ou les deux. "
+        "En l'absence de cette table renseignée, un univers global liquide de secours est utilisé."
+    )
+
     c1,c2,c3,c4=st.columns(4)
-    countries=c1.multiselect("Marchés",list(UNIVERSE),default=["USA","France"])
-    min_upside=c2.number_input("Potentiel minimum (%)",1.0,30.0,3.0,.5)
-    min_rr=c3.number_input("R/R minimum",1.0,5.0,2.0,.1)
-    min_score=c4.slider("Score minimum",50,100,72)
-    c5,c6=st.columns(2)
-    top_n=c5.slider("Finalistes à confirmer",5,30,15)
-    only_confirmed=c6.checkbox("Afficher uniquement les setups confirmés en 1h",False)
-    pool=sorted(set(sum([UNIVERSE.get(c,[]) for c in countries],[])))
-    st.caption(f"Univers : {len(pool)} titres • Filtre potentiel ≥ {min_upside:.1f}%")
-    with st.spinner("Analyse groupée du marché…"):
-        out=fast_scan(pool,min_upside=min_upside,min_rr=min_rr,min_score=min_score,top_n=top_n)
-    if out.empty:
-        st.warning("Aucune configuration ne passe les filtres actuels.")
+    brokers=c1.multiselect(
+        "Courtiers compatibles",
+        ["XTB","Trade Republic"],
+        default=["XTB","Trade Republic"]
+    )
+    available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
+    default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
+    markets=c2.multiselect("Marchés", available_markets, default=default_markets)
+    min_upside=c3.number_input("Potentiel minimum (%)",1.0,30.0,3.0,.5)
+    min_rr=c4.number_input("R/R minimum",1.0,5.0,2.0,.1)
+
+    c5,c6,c7=st.columns(3)
+    min_score=c5.slider("Score minimum",50,100,72)
+    top_n=c6.slider("Finalistes à confirmer",5,50,20)
+    only_confirmed=c7.checkbox("Uniquement confirmés 1h",False)
+
+    pool=compatible_scan_symbols(brokers, markets)
+    st.caption(
+        f"Univers actif : {len(pool)} instrument(s) • potentiel ≥ {min_upside:.1f}% • "
+        f"R/R ≥ {min_rr:.1f}. Les disponibilités exactes dépendent du référentiel broker_universe."
+    )
+
+    if not pool:
+        st.warning("Aucun instrument dans l'univers sélectionné.")
     else:
-        # Company names are fetched only for finalists, never for the whole universe.
-        names={sym:live_quote(sym).get("name",sym) for sym in out["Ticker"].tolist()}
-        out.insert(1,"Entreprise",out["Ticker"].map(names))
-        if only_confirmed:
-            out=out[out["Confirmé 1h"]=="✅"]
-        st.success(f"{len(out)} configuration(s) retenue(s).")
-        visible=["Ticker","Entreprise","Score combiné","Score","Confirmation 1h","Confirmé 1h","Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"]
-        st.dataframe(out[visible],use_container_width=True,hide_index=True)
-        st.subheader("Pourquoi ces candidats ?")
-        for _,r in out.head(8).iterrows():
-            with st.expander(f"{r['Ticker']} • score {r['Score combiné']} • potentiel {r['Potentiel %']:.1f}% • R/R {r['R/R']:.2f}"):
-                st.write(r.get("Raisons") or "Analyse technique disponible mais sans justification textuelle détaillée.")
-                st.caption("Entrée/SL/TP sont des niveaux analytiques basés sur volatilité, support/résistance et momentum. Ils ne garantissent pas un résultat positif.")
+        with st.spinner("Analyse groupée mondiale…"):
+            out=fast_scan(pool,min_upside=min_upside,min_rr=min_rr,min_score=min_score,top_n=top_n)
+        if out.empty:
+            st.warning("Aucune configuration ne passe les filtres actuels.")
+        else:
+            names={sym:live_quote(sym).get("name",sym) for sym in out["Ticker"].tolist()}
+            out.insert(1,"Entreprise",out["Ticker"].map(names))
+            if only_confirmed:
+                out=out[out["Confirmé 1h"]=="✅"]
+            st.success(f"{len(out)} configuration(s) retenue(s).")
+            visible=["Ticker","Entreprise","Score combiné","Score","Confirmation 1h","Confirmé 1h","Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"]
+            st.dataframe(out[visible],use_container_width=True,hide_index=True)
+            st.subheader("Pourquoi ces candidats ?")
+            for _,r in out.head(10).iterrows():
+                with st.expander(f"{r['Ticker']} • score {r['Score combiné']} • potentiel {r['Potentiel %']:.1f}% • R/R {r['R/R']:.2f}"):
+                    st.write(r.get("Raisons") or "Analyse technique disponible.")
+                    st.caption(
+                        "Entrée/SL/TP sont des niveaux analytiques. Le worker d'agent peut ensuite "
+                        "croiser ces setups avec l'actualité mondiale et générer une alerte persistante."
+                    )
+
+elif mode=="🛰️ Agent marché":
+    show_market_agent_page()
 
 elif mode=="📊 Analyse":
     st.header("📊 Analyse détaillée")
@@ -1914,4 +2163,4 @@ else:
     else: st.warning("Setup indisponible.")
 
 st.markdown("---")
-st.caption("VISION FUTURE V8 Smart Portfolio & Fast Scanner. Les cours yfinance peuvent être différés. Les scénarios Entrée/SL/TP sont des aides analytiques, pas des garanties de performance.")
+st.caption("VISION FUTURE V9 Market Intelligence Agent. Les cours yfinance peuvent être différés. Les scénarios Entrée/SL/TP sont des aides analytiques, pas des garanties de performance.")
