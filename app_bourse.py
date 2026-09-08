@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V8.1 Auto Rebuild Fix"
+APP_VERSION = "V8.2 Unified Imports"
 
 # ==========================================================
 # AUTHENTICATION
@@ -1312,84 +1312,275 @@ def position_calc(capital,risk_pct,entry,stop,target):
 # PAGES
 # ==========================================================
 def show_import_page():
-    st.header("📥 Import intelligent de documents")
-    st.caption("Dépose un export. VISION FUTURE détecte d'abord le format réel, puis le type de document et ses champs. L'extension du fichier n'impose pas le lecteur.")
-    account = st.selectbox("Compte cible", ["pea","cto_xtb","cto_trade_republic","cto_autre"], format_func=lambda x:{"pea":"PEA","cto_xtb":"CTO XTB","cto_trade_republic":"CTO Trade Republic","cto_autre":"CTO / autre"}[x])
-    uploaded = st.file_uploader("Document", type=None, accept_multiple_files=False)
-    if uploaded is None:
-        st.info("Formats tabulaires pris en charge : CSV, CSV renommé .xls, TSV, TXT, XLSX et XLS. Les PDF seront ajoutés au moteur documentaire dans une étape dédiée.")
-        return
-    try:
-        result = interpret_document(uploaded)
-    except Exception as exc:
-        raw = uploaded.getvalue()
-        st.error(f"Lecture impossible : {exc}")
-        st.code(repr(raw[:240]))
-        return
+    st.header("📥 Imports & gestion des documents")
+    st.caption(
+        "Même espace pour importer, consulter et supprimer les documents. "
+        "Les reconstructions de portefeuille restent automatiques."
+    )
 
-    meta=result["meta"]; doc=result["document_type"]; broker=result["broker"]
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("Type", doc)
-    c2.metric("Confiance", f"{result['confidence']*100:.0f}%")
-    c3.metric("Courtier probable", broker)
-    c4.metric("Lignes", len(result["raw_df"]))
-    st.caption(f"Format réel : {meta['format']} • encodage : {meta['encoding']} • séparateur : {meta['separator']} • taille : {meta['size']} octets")
+    tab_import, tab_manage = st.tabs(["➕ Importer", "📁 Gérer / supprimer"])
 
-    with st.expander("🔎 Champs reconnus", expanded=True):
-        if result["column_map"]:
-            mapping_df=pd.DataFrame([{"Champ interne":k,"Colonne détectée":v} for k,v in result["column_map"].items()])
-            st.dataframe(mapping_df,use_container_width=True,hide_index=True)
+    with tab_import:
+        st.subheader("Import intelligent")
+        st.caption(
+            "Dépose un export. VISION FUTURE détecte le format réel, le type de document "
+            "et ses champs. L'extension du fichier n'impose pas le lecteur."
+        )
+
+        account = st.selectbox(
+            "Compte cible",
+            ["pea","cto_xtb","cto_trade_republic","cto_autre"],
+            format_func=lambda x:{
+                "pea":"PEA",
+                "cto_xtb":"CTO XTB",
+                "cto_trade_republic":"CTO Trade Republic",
+                "cto_autre":"CTO / autre"
+            }[x],
+            key="import_account"
+        )
+
+        uploaded = st.file_uploader(
+            "Document",
+            type=None,
+            accept_multiple_files=False,
+            key="unified_import_uploader"
+        )
+
+        if uploaded is None:
+            st.info(
+                "Formats tabulaires pris en charge : CSV, CSV renommé .xls, TSV, TXT, XLSX et XLS. "
+                "Les PDF seront ajoutés au moteur documentaire dans une étape dédiée."
+            )
         else:
-            st.warning("Aucun champ financier connu n'a été reconnu.")
+            try:
+                result = interpret_document(uploaded)
+            except Exception as exc:
+                raw = uploaded.getvalue()
+                st.error(f"Lecture impossible : {exc}")
+                st.code(repr(raw[:240]))
+                result = None
 
-    broker_override=st.text_input("Courtier / source", value=broker)
-    with st.expander("Aperçu normalisé", expanded=True):
-        st.dataframe(result["normalized"].head(100),use_container_width=True,hide_index=True)
-    if not result["issues"].empty:
-        st.warning(f"{len(result['issues'])} ligne(s) nécessitent une vérification.")
-        st.dataframe(result["issues"],use_container_width=True,hide_index=True)
-
-    duplicate = import_exists(meta["hash"], account)
-    if duplicate:
-        st.success(f"✅ Ce fichier a déjà été importé ({duplicate.get('document_type','')}, {duplicate.get('imported_at','')}).")
-        return
-
-    if doc == "UNKNOWN":
-        st.error("Document non reconnu avec assez de certitude. Aucune donnée ne sera enregistrée.")
-        return
-    if doc == "ACCOUNTING":
-        st.info("Document comptable reconnu. Il est volontairement exclu du portefeuille et du ledger boursier dans cette V7 Core.")
-        return
-
-    if st.button("☁️ Valider et enregistrer dans Supabase", type="primary"):
-        try:
-            rebuild_stats = None
-            if doc == "POSITIONS":
-                count=save_positions(account, broker_override, result["normalized"], source_import_hash=meta["hash"])
-            else:
-                count=save_transactions(account, broker_override, result["normalized"], source_import_hash=meta["hash"])
-                rebuild_stats = rebuild_positions_from_transactions(account, broker_override)
-            upsert_import_record({
-                "file_hash":meta["hash"],"account":account,"filename":uploaded.name,"document_type":doc,
-                "broker":broker_override,"row_count":int(count),"status":"IMPORTED","imported_at":datetime.utcnow().isoformat(),
-                "metadata":json.dumps({k:v for k,v in meta.items() if k!="hash"},ensure_ascii=False),
-            })
-            if rebuild_stats is not None:
-                st.success(
-                    f"☁️ Import terminé : {count} transaction(s) synchronisée(s). "
-                    f"Portefeuille reconstruit automatiquement : {rebuild_stats['positions']} position(s) ouverte(s)."
+            if result is not None:
+                meta=result["meta"]; doc=result["document_type"]; broker=result["broker"]
+                c1,c2,c3,c4=st.columns(4)
+                c1.metric("Type", doc)
+                c2.metric("Confiance", f"{result['confidence']*100:.0f}%")
+                c3.metric("Courtier probable", broker)
+                c4.metric("Lignes", len(result["raw_df"]))
+                st.caption(
+                    f"Format réel : {meta['format']} • encodage : {meta['encoding']} • "
+                    f"séparateur : {meta['separator']} • taille : {meta['size']} octets"
                 )
-                if rebuild_stats.get("corporate_actions"):
-                    st.caption(f"{rebuild_stats['corporate_actions']} opération(s) sur titres intégrée(s) automatiquement.")
-                if rebuild_stats.get("issues"):
-                    with st.expander("⚠️ Points à vérifier"):
-                        for msg in rebuild_stats["issues"][:20]:
-                            st.write("•", msg)
-            else:
-                st.success(f"☁️ Import terminé : {count} position(s) enregistrée(s). Elles seront rechargées automatiquement aux prochaines connexions.")
-            st.cache_data.clear()
-        except Exception as exc:
-            st.error(f"Échec d'enregistrement Supabase : {exc}")
+
+                with st.expander("🔎 Champs reconnus", expanded=True):
+                    if result["column_map"]:
+                        mapping_df=pd.DataFrame([
+                            {"Champ interne":k,"Colonne détectée":v}
+                            for k,v in result["column_map"].items()
+                        ])
+                        st.dataframe(mapping_df,use_container_width=True,hide_index=True)
+                    else:
+                        st.warning("Aucun champ financier connu n'a été reconnu.")
+
+                broker_override=st.text_input(
+                    "Courtier / source",
+                    value=broker,
+                    key="unified_broker_override"
+                )
+
+                with st.expander("Aperçu normalisé", expanded=True):
+                    st.dataframe(
+                        result["normalized"].head(100),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                if not result["issues"].empty:
+                    st.warning(f"{len(result['issues'])} ligne(s) nécessitent une vérification.")
+                    st.dataframe(result["issues"],use_container_width=True,hide_index=True)
+
+                duplicate = import_exists(meta["hash"], account)
+
+                if duplicate:
+                    st.success(
+                        f"✅ Ce fichier a déjà été importé "
+                        f"({duplicate.get('document_type','')}, {duplicate.get('imported_at','')})."
+                    )
+                elif doc == "UNKNOWN":
+                    st.error(
+                        "Document non reconnu avec assez de certitude. "
+                        "Aucune donnée ne sera enregistrée."
+                    )
+                elif doc == "ACCOUNTING":
+                    st.info(
+                        "Document comptable reconnu. Il est volontairement exclu "
+                        "du portefeuille et du ledger boursier."
+                    )
+                elif st.button(
+                    "☁️ Valider et enregistrer dans Supabase",
+                    type="primary",
+                    key="unified_save_import"
+                ):
+                    try:
+                        rebuild_stats = None
+
+                        if doc == "POSITIONS":
+                            count=save_positions(
+                                account,
+                                broker_override,
+                                result["normalized"],
+                                source_import_hash=meta["hash"]
+                            )
+                        else:
+                            count=save_transactions(
+                                account,
+                                broker_override,
+                                result["normalized"],
+                                source_import_hash=meta["hash"]
+                            )
+                            rebuild_stats = rebuild_positions_from_transactions(
+                                account,
+                                broker_override
+                            )
+
+                        upsert_import_record({
+                            "file_hash":meta["hash"],
+                            "account":account,
+                            "filename":uploaded.name,
+                            "document_type":doc,
+                            "broker":broker_override,
+                            "row_count":int(count),
+                            "status":"IMPORTED",
+                            "imported_at":datetime.utcnow().isoformat(),
+                            "metadata":json.dumps(
+                                {k:v for k,v in meta.items() if k!="hash"},
+                                ensure_ascii=False
+                            ),
+                        })
+
+                        if rebuild_stats is not None:
+                            st.success(
+                                f"☁️ Import terminé : {count} transaction(s) synchronisée(s). "
+                                f"Portefeuille reconstruit automatiquement : "
+                                f"{rebuild_stats['positions']} position(s) ouverte(s)."
+                            )
+                            if rebuild_stats.get("corporate_actions"):
+                                st.caption(
+                                    f"{rebuild_stats['corporate_actions']} opération(s) "
+                                    f"sur titres intégrée(s) automatiquement."
+                                )
+                            if rebuild_stats.get("issues"):
+                                with st.expander("⚠️ Points à vérifier"):
+                                    for msg in rebuild_stats["issues"][:20]:
+                                        st.write("•", msg)
+                        else:
+                            st.success(
+                                f"☁️ Import terminé : {count} position(s) enregistrée(s). "
+                                "Elles seront rechargées automatiquement."
+                            )
+
+                        st.cache_data.clear()
+
+                    except Exception as exc:
+                        st.error(f"Échec d'enregistrement Supabase : {exc}")
+
+    with tab_manage:
+        st.subheader("Documents enregistrés")
+        st.caption(
+            "Filtre les imports par compte ou courtier puis supprime l'historique seul, "
+            "ou le document avec les données qu'il a générées."
+        )
+
+        c1, c2 = st.columns(2)
+        account_filter = c1.selectbox(
+            "Compte",
+            ["Tous","pea","cto_xtb","cto_trade_republic","cto_autre"],
+            key="unified_docs_account"
+        )
+        broker_filter = c2.text_input(
+            "Courtier (optionnel)",
+            "",
+            key="unified_docs_broker"
+        ).strip()
+
+        df = load_imports(
+            None if account_filter == "Tous" else account_filter,
+            broker_filter or None
+        )
+
+        if df.empty:
+            st.info("Aucun document enregistré pour ce filtre.")
+        else:
+            show_cols = [
+                c for c in
+                ["id","filename","document_type","account","broker","row_count","status","imported_at"]
+                if c in df.columns
+            ]
+            st.dataframe(
+                df[show_cols],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            options = {}
+            for _, r in df.iterrows():
+                label = (
+                    f"#{r.get('id')} • {r.get('filename')} • "
+                    f"{r.get('document_type')} • {r.get('account')} • {r.get('broker')}"
+                )
+                options[label] = r.to_dict()
+
+            selected = st.selectbox(
+                "Document à gérer",
+                list(options),
+                key="unified_doc_to_manage"
+            )
+            row = options[selected]
+
+            st.caption(
+                "La suppression de l'historique conserve les positions/transactions. "
+                "La suppression avec données retire aussi ce que le document a généré "
+                "puis reconstruit automatiquement le portefeuille si nécessaire."
+            )
+
+            a, b = st.columns(2)
+
+            if a.button(
+                "🗑️ Supprimer seulement de l'historique",
+                use_container_width=True,
+                key="unified_delete_history"
+            ):
+                try:
+                    delete_import_record(row, delete_generated_data=False)
+                    st.success(
+                        "Document supprimé de l'historique. "
+                        "Les données de portefeuille sont conservées."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Suppression impossible : {exc}")
+
+            confirm = b.checkbox(
+                "Je confirme la suppression des données liées",
+                key=f"unified_confirm_delete_{row.get('id')}"
+            )
+
+            if b.button(
+                "🧨 Supprimer document + données",
+                type="primary",
+                use_container_width=True,
+                disabled=not confirm,
+                key="unified_delete_all"
+            ):
+                try:
+                    delete_import_record(row, delete_generated_data=True)
+                    st.success(
+                        "Document et données liées supprimés. "
+                        "Les états calculés ont été actualisés."
+                    )
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Suppression impossible : {exc}")
 
 
 def show_portfolio_page(account, title, broker: str | None = None):
@@ -1403,7 +1594,7 @@ def show_portfolio_page(account, title, broker: str | None = None):
         except Exception as exc:
             st.warning(f"Les transactions sont présentes mais la reconstruction automatique du portefeuille a échoué : {exc}")
     if df.empty:
-        st.info("Aucune position enregistrée pour ce compte. Importe un export de positions ou de transactions depuis « Import documents » ; la reconstruction est ensuite automatique.")
+        st.info("Aucune position enregistrée pour ce compte. Importe un export de positions ou de transactions depuis « Imports & documents » ; la reconstruction est ensuite automatique.")
         return
     broker_label = broker or "Tous courtiers"
     st.success(f"☁️ {len(df)} position(s) chargée(s) automatiquement depuis Supabase • {broker_label}.")
@@ -1421,7 +1612,7 @@ def show_transactions_page():
     account=st.selectbox("Compte", ["Tous","pea","cto_xtb","cto_trade_republic","cto_autre"])
     df=load_transactions(None if account=="Tous" else account)
     if df.empty:
-        st.info("Aucune transaction enregistrée. Importe un export de transactions depuis « Import documents ».")
+        st.info("Aucune transaction enregistrée. Importe un export de transactions depuis « Imports & documents ».")
         return
     st.success(f"{len(df)} transaction(s) persistante(s) chargée(s) depuis Supabase.")
     if "type" in df:
@@ -1442,7 +1633,7 @@ def show_transactions_page():
 # ==========================================================
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Import documents","📁 Documents & données","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Analyse","🧪 Simulation"])
+    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Analyse","🧪 Simulation"])
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"]=False; st.rerun()
     st.markdown("---")
@@ -1475,11 +1666,8 @@ if mode=="🏠 Dashboard":
                 st.caption(f"{npos} position(s) • {txc} transaction(s)")
     st.info("VISION FUTURE charge les portefeuilles depuis Supabase. Réimporte seulement lorsqu'un courtier fournit un nouvel export ; les transactions déjà connues sont dédupliquées.")
 
-elif mode=="📥 Import documents":
+elif mode=="📥 Imports & documents":
     show_import_page()
-
-elif mode=="📁 Documents & données":
-    show_documents_page()
 
 elif mode=="🏦 PEA":
     brokers = available_brokers("pea")
