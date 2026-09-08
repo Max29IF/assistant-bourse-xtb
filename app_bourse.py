@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V8 Smart Portfolio & Fast Scanner"
+APP_VERSION = "V8.1 Auto Rebuild Fix"
 
 # ==========================================================
 # AUTHENTICATION
@@ -134,40 +134,91 @@ def load_positions(account: str, broker: str | None = None):
         st.error(f"Impossible de charger les positions Supabase : {exc}")
         return pd.DataFrame(columns=cols)
 
+
+def _clean_text(value, upper: bool = False):
+    """Return a clean optional string; pandas NaN/NA/None never become literal NAN."""
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    s = str(value).strip()
+    if s.upper() in {"", "NAN", "NONE", "NULL", "<NA>", "NAT"}:
+        return ""
+    return s.upper() if upper else s
+
+
 def save_positions(account: str, broker: str, df: pd.DataFrame, source: str = "document_import", source_import_hash: str | None = None):
     if SUPABASE is None:
         raise RuntimeError("Supabase n'est pas configuré.")
-    # A positions export is a snapshot: replace this account+broker snapshot atomically enough for a personal app.
+
     SUPABASE.table("portfolio_positions").delete().eq("account", account).eq("broker", broker).execute()
-    rows = []
+
+    rows_by_key = {}
     for _, r in df.iterrows():
-        instrument_key = str(r.get("instrument_key") or r.get("isin") or r.get("ticker") or r.get("name") or "").strip()
+        ticker = _clean_text(r.get("ticker"), upper=True)
+        isin = _clean_text(r.get("isin"), upper=True)
+        name = _clean_text(r.get("name"))
+        instrument_key = _clean_text(r.get("instrument_key"), upper=True) or isin or ticker or norm_token(name)
         if not instrument_key:
             continue
+
         purchase_date = r.get("purchase_date")
         if pd.notna(purchase_date):
             purchase_date = pd.Timestamp(purchase_date).date().isoformat()
         else:
             purchase_date = None
-        rows.append({
+
+        qty = pd.to_numeric(r.get("quantity"), errors="coerce")
+        qty = float(qty) if pd.notna(qty) else 0.0
+        avg = pd.to_numeric(r.get("average_cost"), errors="coerce")
+        avg = float(avg) if pd.notna(avg) else None
+        mkt_price = pd.to_numeric(r.get("market_price"), errors="coerce")
+        mkt_price = float(mkt_price) if pd.notna(mkt_price) else None
+        mkt_value = pd.to_numeric(r.get("market_value"), errors="coerce")
+        mkt_value = float(mkt_value) if pd.notna(mkt_value) else None
+
+        payload = {
             "account": account,
             "broker": broker,
             "instrument_key": instrument_key,
-            "ticker": str(r.get("ticker") or "") or None,
-            "isin": str(r.get("isin") or "") or None,
-            "name": str(r.get("name") or "") or None,
-            "quantity": float(r.get("quantity") or 0),
-            "pru": float(r.get("average_cost") or 0) if pd.notna(r.get("average_cost")) else None,
-            "currency": str(r.get("currency") or "") or None,
-            "last_price_imported": float(r.get("market_price")) if pd.notna(r.get("market_price")) else None,
-            "market_value_imported": float(r.get("market_value")) if pd.notna(r.get("market_value")) else None,
+            "ticker": ticker or None,
+            "isin": isin or None,
+            "name": name or None,
+            "quantity": qty,
+            "pru": avg,
+            "currency": _clean_text(r.get("currency"), upper=True) or None,
+            "last_price_imported": mkt_price,
+            "market_value_imported": mkt_value,
             "purchase_date": purchase_date,
             "source": source,
             "source_import_hash": source_import_hash,
             "updated_at": datetime.utcnow().isoformat(),
-        })
+        }
+
+        if instrument_key in rows_by_key:
+            old = rows_by_key[instrument_key]
+            q_old = float(old.get("quantity") or 0)
+            total_q = q_old + qty
+            c_old = (old.get("pru") or 0) * q_old
+            c_new = (avg or 0) * qty
+            old["quantity"] = total_q
+            old["pru"] = ((c_old + c_new) / total_q) if total_q else None
+            if mkt_price is not None:
+                old["last_price_imported"] = mkt_price
+            if mkt_value is not None:
+                old["market_value_imported"] = (old.get("market_value_imported") or 0) + mkt_value
+            old["ticker"] = old.get("ticker") or payload["ticker"]
+            old["isin"] = old.get("isin") or payload["isin"]
+            old["name"] = old.get("name") or payload["name"]
+        else:
+            rows_by_key[instrument_key] = payload
+
+    rows = list(rows_by_key.values())
     if rows:
-        SUPABASE.table("portfolio_positions").insert(rows).execute()
+        SUPABASE.table("portfolio_positions").upsert(rows, on_conflict="account,broker,instrument_key").execute()
     return len(rows)
 
 
@@ -209,9 +260,9 @@ def save_transactions(account: str, broker: str, df: pd.DataFrame, source_import
 
 
 def _transaction_key(row):
-    isin = str(row.get("isin") or "").strip().upper()
-    symbol = str(row.get("symbol") or "").strip().upper()
-    name = str(row.get("name") or "").strip()
+    isin = _clean_text(row.get("isin"), upper=True)
+    symbol = _clean_text(row.get("symbol"), upper=True)
+    name = _clean_text(row.get("name"))
     return isin or symbol or norm_token(name)
 
 
@@ -257,10 +308,10 @@ def rebuild_positions_from_transactions(account: str, broker: str):
             return None, None
         h = holdings.setdefault(key, {
             "quantity": 0.0, "cost": 0.0,
-            "ticker": str(r.get("symbol") or "").strip().upper(),
-            "isin": str(r.get("isin") or "").strip().upper(),
-            "name": str(r.get("name") or "").strip(),
-            "currency": str(r.get("currency") or "").strip().upper(),
+            "ticker": _clean_text(r.get("symbol"), upper=True),
+            "isin": _clean_text(r.get("isin"), upper=True),
+            "name": _clean_text(r.get("name")),
+            "currency": _clean_text(r.get("currency"), upper=True),
             "purchase_date": None, "last_price": None,
         })
         # Never treat an ISIN-looking value as a ticker.
