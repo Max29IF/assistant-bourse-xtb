@@ -3,5 +3,6 @@ yfinance
 pandas
 numpy
 streamlit-autorefresh
-matplotlib
 supabase
+openpyxl
+xlrd
