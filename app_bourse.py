@@ -449,29 +449,24 @@ def confirmation(symbol, interval, period):
 # ==========================================================
 # IMPORT PEA — FORMAT EXPORT BROKER (name / isin / quantity...)
 # ==========================================================
+# ==========================================================
+# UNIVERSAL BROKER IMPORT
+# ==========================================================
+# Known mappings for the user's current PEA export. The importer does not
+# depend on these mappings: if a ticker/symbol is present in the broker file,
+# it uses it directly. ISIN/name mappings are only a fallback.
 ISIN_TO_TICKER = {
-    "FR0013341781": "2CRSI.PA",
-    "FR0000120073": "AI.PA",
-    "FR0000120628": "CS.PA",
-    "FR0011550185": "ESE.PA",
-    "FR0000045072": "ACA.PA",
-    "FR0010208488": "ENGI.PA",
-    "FR0000062671": "EXA.PA",
-    "FR0014010QE1": "MLHPI.PA",
-    "FR0014001PM5": "ALHRS.PA",
-    "FR001400SF56": "LOUP.PA",
-    "FR0000038242": "LBIRD.PA",
-    "FR0000121014": "MC.PA",
-    "FR0011049824": "ALMDT.PA",
-    "FR0013269123": "RUI.PA",
-    "FR0000125007": "SGO.PA",
-    "FR0000121972": "SU.PA",
-    "FR0010528059": "ALSTW.PA",
-    "NL0014559478": "TE.PA",
-    "FR0000120271": "TTE.PA",
-    "FR0000124141": "VIE.PA",
+    "FR0013341781": "2CRSI.PA", "FR0000120073": "AI.PA",
+    "FR0000120628": "CS.PA", "FR0011550185": "ESE.PA",
+    "FR0000045072": "ACA.PA", "FR0010208488": "ENGI.PA",
+    "FR0000062671": "EXA.PA", "FR0014010QE1": "MLHPI.PA",
+    "FR0014001PM5": "ALHRS.PA", "FR001400SF56": "LOUP.PA",
+    "FR0000038242": "LBIRD.PA", "FR0000121014": "MC.PA",
+    "FR0011049824": "ALMDT.PA", "FR0013269123": "RUI.PA",
+    "FR0000125007": "SGO.PA", "FR0000121972": "SU.PA",
+    "FR0010528059": "ALSTW.PA", "NL0014559478": "TE.PA",
+    "FR0000120271": "TTE.PA", "FR0000124141": "VIE.PA",
 }
-
 NAME_TO_TICKER = {
     "2CRSI": "2CRSI.PA", "AIR LIQUIDE": "AI.PA", "AXA": "CS.PA",
     "BNPP EASY S&P 500 ETF EUR C": "ESE.PA", "CREDIT AGRICOLE SA": "ACA.PA",
@@ -483,22 +478,46 @@ NAME_TO_TICKER = {
     "TOTALENERGIES": "TTE.PA", "VEOLIA": "VIE.PA",
 }
 
+FIELD_ALIASES = {
+    "ticker": ["ticker","symbol","symbole","code","codevaleur","instrumentcode","securitycode",
+               "securityid","instrumentid","stockcode","stockticker","mnemonic","valor","valoris"],
+    "isin": ["isin","isincode","isin code","identifiantisin","isinvalue"],
+    "name": ["name","nom","libelle","libellé","instrument","instrumentname","security",
+             "securityname","product","productname","asset","assetname","designation"],
+    "quantity": ["quantity","qty","quantite","quantité","shares","share","units","unit",
+                 "position","positions","numberofshares","nombre","nbtitres","titres"],
+    "pru": ["buyingprice","buyprice","purchaseprice","purchase_price","averageprice","avgprice",
+            "averagecost","avgcost","costbasis","costbasisprice","prixmoyen","prix moyen",
+            "pru","prixderevient","prixderevientunitaire","prixachat","prixdachat"],
+    "last_price": ["lastprice","last_price","currentprice","current_price","marketprice",
+                   "market_price","price","cours","coursactuel","prixactuel","currentvalueprice"],
+    "value": ["amount","marketvalue","market_value","value","valorisation","valorisationposition",
+              "positionvalue","valeur","valeurposition","netvalue"],
+    "currency": ["currency","devise","ccy","monnaie"],
+    "date": ["purchasedate","buydate","acquisitiondate","tradedate","dateachat","dateachat",
+             "date","lastmovementdate","lastmovement","dateoperation"],
+}
+
+def _norm_text(value):
+    import unicodedata
+    s = str(value or "").replace("\ufeff","").replace("\x00","").strip().lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii","ignore").decode("ascii")
+    return re.sub(r"[^a-z0-9]+", "", s)
+
 def _clean_num(value):
-    """Convert French/European broker numbers to float."""
-    if pd.isna(value):
+    if value is None or (isinstance(value, float) and np.isnan(value)):
         return np.nan
-    s = str(value).strip().replace("\u00a0", " ").replace("€", "")
-    if not s:
+    s = str(value).strip().replace("\u00a0"," ").replace("€","").replace("$","").replace("£","")
+    if not s or s.lower() in {"nan","none","null","-","—","n/a","na"}:
         return np.nan
-    s = s.replace(" ", "")
-    # 12 345,67 -> 12345.67 ; 1234.56 stays 1234.56
+    s = s.replace(" ","")
+    # Negative parentheses: (123,45) -> -123.45
+    if s.startswith("(") and s.endswith(")"):
+        s = "-" + s[1:-1]
     if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
+        s = s.replace(".","").replace(",",".") if s.rfind(",") > s.rfind(".") else s.replace(",","")
     elif "," in s:
-        s = s.replace(",", ".")
+        s = s.replace(",",".")
     try:
         return float(s)
     except Exception:
@@ -507,131 +526,196 @@ def _clean_num(value):
 def _decode_csv(uploaded_file):
     raw = uploaded_file.getvalue()
     last_error = None
-    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-8", "cp1252", "latin1"):
+    for enc in ("utf-8-sig","utf-16","utf-16-le","utf-16-be","utf-8","cp1252","latin1"):
         try:
-            return raw.decode(enc).replace("\x00", "")
+            return raw.decode(enc).replace("\x00","")
         except UnicodeDecodeError as exc:
             last_error = exc
-    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
+    raise ValueError(f"Encodage non reconnu : {last_error}")
 
-def _read_broker_csv(uploaded_file):
-    """Read broker export with comma, semicolon, tab or auto-detected separator."""
-    text_csv = _decode_csv(uploaded_file)
+def _read_universal_csv(uploaded_file):
+    """Reads CSV-like broker exports regardless of extension/separator/encoding."""
     from io import StringIO
-    frames = []
-    # Certains exports broker/Excel sont en UTF-16 + tabulation ou point-virgule.
-    # On teste explicitement tous les formats courants et on garde celui qui
-    # ressemble le plus à l'en-tête attendu.
-    for sep in (";", "\t", ",", "|"):
+    text = _decode_csv(uploaded_file)
+    candidates = []
+    for sep in (";","\t",",","|"):
         try:
-            candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str, engine="python", keep_default_na=False)
-            cols = {str(c).strip().strip('\"').lower().replace(" ", "") for c in candidate.columns}
-            score = sum(x in cols for x in ("name", "isin", "quantity", "buyingprice", "lastprice"))
-            if len(candidate.columns) >= 2:
-                frames.append((score, len(candidate.columns), candidate))
+            df = pd.read_csv(StringIO(text), sep=sep, dtype=str, engine="python",
+                             keep_default_na=False)
+            if len(df.columns) < 2:
+                continue
+            normcols = [_norm_text(c) for c in df.columns]
+            score = 0
+            for aliases in FIELD_ALIASES.values():
+                if any(a in normcols for a in aliases):
+                    score += 1
+            # Accounting exports have DATE/LABEL/DEBIT/CREDIT and should score low.
+            candidates.append((score, len(df.columns), df))
         except Exception:
-            pass
-
-    if not frames:
-        # Dernier recours : tentative d'auto-détection.
-        try:
-            df = pd.read_csv(StringIO(text_csv), sep=None, engine="python", dtype=str, keep_default_na=False)
-        except Exception as exc:
-            raise ValueError(f"Impossible de lire le CSV : {exc}")
-    else:
-        # Priorité absolue à un fichier contenant les colonnes broker attendues.
-        _, _, df = max(frames, key=lambda x: (x[0], x[1]))
-
-    # Nettoyage robuste des noms de colonnes : casse, BOM, espaces, guillemets.
-    def norm_col(c):
-        return (str(c).replace("\ufeff", "").replace("\x00", "")
-                .strip().strip('\"').strip().lower().replace(" ", ""))
-    df.columns = [norm_col(c) for c in df.columns]
-
-    # Alias éventuels rencontrés dans les exports.
-    aliases = {
-        "buying_price": "buyingprice", "purchaseprice": "buyingprice",
-        "purchase_price": "buyingprice", "last_price": "lastprice",
-        "lastmovement_date": "lastmovementdate", "lastmovement": "lastmovementdate",
-    }
-    df = df.rename(columns=aliases)
+            continue
+    if not candidates:
+        raise ValueError("Impossible de lire le fichier comme CSV/texte délimité.")
+    _, _, df = max(candidates, key=lambda x:(x[0],x[1]))
+    df.columns = [str(c).replace("\ufeff","").replace("\x00","").strip().strip('"') for c in df.columns]
     return df
 
-def _centimes_or_euros(value, reference=None):
-    """Broker export stores prices such as 15956 for €159.56."""
-    x = _clean_num(value)
-    if not np.isfinite(x):
-        return np.nan
-    # Export examples use integer centimes. Keep already-decimal prices as euros.
-    if reference == "price" and x >= 100 and abs(x - round(x)) < 1e-9:
-        return x / 100.0
-    return x
+def _find_field(columns, field):
+    """Fuzzy, accent/space/case independent field detection."""
+    normalized = {_norm_text(c): c for c in columns}
+    aliases = {_norm_text(a) for a in FIELD_ALIASES.get(field, [])}
+    # Exact normalized aliases first.
+    for a in aliases:
+        if a in normalized:
+            return normalized[a]
+    # Then safe contains matching for broker-specific verbose headers.
+    for n, original in normalized.items():
+        if len(n) >= 4 and any(a in n or n in a for a in aliases if len(a) >= 4):
+            return original
+    return None
 
-def import_broker_pea(uploaded_file):
+def detect_file_type(df):
+    fields = {f:_find_field(df.columns,f) for f in FIELD_ALIASES}
+    found = {k:v for k,v in fields.items() if v}
+    accounting = sum(_norm_text(c) in {"date","label","debit","credit"} for c in df.columns)
+    position_score = sum(bool(found.get(k)) for k in ("name","isin","ticker","quantity","pru","last_price","value"))
+    if accounting >= 3 and position_score < 3:
+        return "comptabilite", fields
+    if position_score >= 2 and (found.get("quantity") or found.get("value")):
+        return "positions", fields
+    return "inconnu", fields
+
+def _resolve_ticker(ticker, isin, name):
+    t = str(ticker or "").strip().upper()
+    if t and t not in {"NAN","NONE","NULL","-"}:
+        # Common broker formats: remove exchange suffix only when clearly present?
+        # Keep the broker ticker; yfinance accepts many exchange-qualified symbols.
+        return t
+    i = str(isin or "").strip().upper()
+    if i in ISIN_TO_TICKER:
+        return ISIN_TO_TICKER[i]
+    n = str(name or "").strip().upper()
+    if n in NAME_TO_TICKER:
+        return NAME_TO_TICKER[n]
+    return ""
+
+def _parse_date(value):
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    # ISO dates (YYYY-MM-DD / timestamps) must be parsed without dayfirst.
+    if re.match(r"^\d{4}-\d{2}-\d{2}", text):
+        d = pd.to_datetime(text, errors="coerce")
+    else:
+        d = pd.to_datetime(text, dayfirst=True, errors="coerce")
+    return d.date() if pd.notna(d) else None
+
+def detect_broker(df, fields):
+    """Best-effort broker detection from headers. It never controls the import."""
+    cols = {_norm_text(c) for c in df.columns}
+    if {"name","isin","quantity","buyingprice"} <= cols:
+        return "BoursoBank / export positions compatible"
+    if any(x in cols for x in {"averagebuyin","averagebuyprice","totalreturn","netreturn"}) and (
+        "isin" in cols or "instrument" in cols
+    ):
+        return "Trade Republic / format proche"
+    if any(x in cols for x in {"openprice","closeprice","profitloss","profit","swap"}) and (
+        "symbol" in cols or "instrument" in cols
+    ):
+        return "XTB / format proche"
+    if {"date","label","debit","credit"} <= cols:
+        return "Comptabilité"
+    return "Courtier non identifié — format universel"
+
+
+def import_universal_broker_file(uploaded_file):
     """
-    Converts the user's broker export:
-    name, isin, quantity, buyingPrice, lastPrice, intradayVariation,
-    amount, amountVariation, variation, lastMovementDate, compensation
-    into the application's portfolio format.
+    Universal importer:
+      - detects accounting vs positions
+      - detects columns using aliases/fuzzy matching
+      - accepts ticker OR ISIN OR known company name
+      - accepts PRU under many broker names
+      - accepts European number formats
+      - does not invent ambiguous rows
     """
-    df = _read_broker_csv(uploaded_file)
-    required = {"name", "isin", "quantity", "buyingprice"}
-    missing = required - set(df.columns)
-    if missing:
+    df = _read_universal_csv(uploaded_file)
+    file_type, fields = detect_file_type(df)
+
+    if file_type == "comptabilite":
+        raise ValueError("Fichier comptable détecté (DATE/LABEL/DEBIT/CREDIT). Ce fichier ne contient pas de positions de portefeuille.")
+
+    if file_type != "positions":
         raise ValueError(
-            "Colonnes absentes : " + ", ".join(sorted(missing)) +
-            ". Format attendu : name, isin, quantity, buyingPrice, lastPrice, ..."
+            "Type de fichier non reconnu automatiquement. "
+            "Il faut au minimum une identification du titre (Ticker, ISIN ou Nom) "
+            "et une information de position (Quantité ou Valeur)."
+        )
+
+    # Quantity can be absent when a broker export contains only value; we refuse
+    # to invent a quantity because portfolio analytics would then be wrong.
+    if not fields.get("quantity"):
+        raise ValueError(
+            "Le fichier est bien un portefeuille, mais la colonne Quantité n'a pas été identifiée. "
+            "Je préfère bloquer plutôt que d'inventer une position."
         )
 
     rows, errors = [], []
     for idx, r in df.iterrows():
-        name = str(r.get("name", "")).strip()
-        isin = str(r.get("isin", "")).strip().upper()
-        qty = _clean_num(r.get("quantity"))
-        raw_pru = _clean_num(r.get("buyingprice"))
+        name = str(r.get(fields.get("name"), "")).strip() if fields.get("name") else ""
+        isin = str(r.get(fields.get("isin"), "")).strip().upper() if fields.get("isin") else ""
+        raw_ticker = r.get(fields.get("ticker"), "") if fields.get("ticker") else ""
+        ticker = _resolve_ticker(raw_ticker, isin, name)
 
-        ticker = ISIN_TO_TICKER.get(isin)
-        if not ticker:
-            ticker = NAME_TO_TICKER.get(name.upper())
+        qty = _clean_num(r.get(fields["quantity"]))
+        raw_pru = _clean_num(r.get(fields["pru"])) if fields.get("pru") else np.nan
+        raw_last = _clean_num(r.get(fields["last_price"])) if fields.get("last_price") else np.nan
+        raw_value = _clean_num(r.get(fields["value"])) if fields.get("value") else np.nan
+        currency = str(r.get(fields.get("currency"), "")).strip().upper() if fields.get("currency") else ""
+        dt = _parse_date(r.get(fields["date"])) if fields.get("date") else None
 
         if not ticker:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non reconnu"})
+            errors.append({"Ligne":idx+2,"Nom":name,"ISIN":isin,"Motif":"Titre non identifié (Ticker/ISIN/Nom inconnus)"})
             continue
         if not np.isfinite(qty) or qty <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Quantité invalide"})
-            continue
-        if not np.isfinite(raw_pru) or raw_pru <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "PRU invalide"})
+            errors.append({"Ligne":idx+2,"Nom":name,"ISIN":isin,"Ticker":ticker,"Motif":"Quantité invalide"})
             continue
 
-        pru = _centimes_or_euros(raw_pru, "price")
-        movement = pd.to_datetime(str(r.get("lastmovementdate", "")), dayfirst=True, errors="coerce")
-        purchase_date = movement.date() if pd.notna(movement) else None
+        # A missing PRU is allowed: position can still be imported, but flagged.
+        pru = raw_pru if np.isfinite(raw_pru) and raw_pru > 0 else 0.0
+        if pru == 0:
+            errors.append({"Ligne":idx+2,"Nom":name,"ISIN":isin,"Ticker":ticker,"Motif":"PRU absent : position importée mais PRU à compléter"})
 
         rows.append({
-            "Ticker": ticker,
-            "Quantité": qty,
-            "PRU": pru,
-            "Date achat": purchase_date,
+            "Ticker": ticker, "Quantité": qty, "PRU": pru, "Date achat": dt,
+            "_Nom": name, "_ISIN": isin, "_Devise": currency,
+            "_Cours import": raw_last if np.isfinite(raw_last) else np.nan,
+            "_Valeur import": raw_value if np.isfinite(raw_value) else np.nan,
         })
 
-    out = normalize_portfolio(pd.DataFrame(rows))
-    # Keep only one line per ticker; if duplicate lots exist, calculate weighted average PRU.
-    if not out.empty:
-        grouped = []
-        for ticker, g in out.groupby("Ticker", sort=True):
-            q = g["Quantité"].sum()
-            weighted_pru = (g["Quantité"] * g["PRU"]).sum() / q if q else 0
-            dates = [d for d in g["Date achat"] if pd.notna(d)]
-            grouped.append({
-                "Ticker": ticker,
-                "Quantité": q,
-                "PRU": weighted_pru,
-                "Date achat": min(dates) if dates else None,
-            })
-        out = pd.DataFrame(grouped, columns=["Ticker","Quantité","PRU","Date achat"])
+    if not rows:
+        return default_portfolio(), pd.DataFrame(errors), {"type":file_type, "fields":fields, "rows_read":len(df)}
 
-    return out, pd.DataFrame(errors)
+    out = pd.DataFrame(rows)
+    # Aggregate duplicates by ticker with weighted PRU. Preserve metadata.
+    grouped = []
+    for ticker, g in out.groupby("Ticker", sort=True):
+        q = g["Quantité"].sum()
+        positive_cost = g["PRU"] > 0
+        weighted_pru = ((g.loc[positive_cost,"Quantité"] * g.loc[positive_cost,"PRU"]).sum() /
+                        g.loc[positive_cost,"Quantité"].sum()) if positive_cost.any() else 0.0
+        dates = [d for d in g["Date achat"] if pd.notna(d)]
+        first = g.iloc[0]
+        grouped.append({
+            "Ticker":ticker, "Quantité":q, "PRU":weighted_pru,
+            "Date achat":min(dates) if dates else None,
+        })
+    portfolio = normalize_portfolio(pd.DataFrame(grouped))
+    meta = {"type":file_type, "broker":detect_broker(df, fields), "fields":fields, "rows_read":len(df), "rows_imported":len(portfolio)}
+    return portfolio, pd.DataFrame(errors), meta
+
+# Backward-compatible name used by the page.
+def import_broker_pea(uploaded_file):
+    portfolio, errors, meta = import_universal_broker_file(uploaded_file)
+    return portfolio, errors, meta
 
 def default_portfolio():
     return pd.DataFrame(columns=["Ticker","Quantité","PRU","Date achat"])
@@ -745,7 +829,7 @@ def arbitrage_table(metrics):
 
 def show_portfolio_page(title, key):
     st.header(title)
-    st.caption("Import compatible avec ton export broker : name / isin / quantity / buyingPrice / lastPrice / amount / lastMovementDate. Les cours et noms sont ensuite actualisés depuis la source de marché.")
+    st.caption("Import universel multi-courtiers : détection automatique du format, des colonnes, de l’encodage et du séparateur. Les cours et noms sont ensuite actualisés depuis la source de marché.")
 
     if key not in st.session_state:
         st.session_state[key] = load_portfolio_db(key)
@@ -762,9 +846,9 @@ def show_portfolio_page(title, key):
 
     upload = st.file_uploader(
         "📥 Importer ton export CSV PEA",
-        type=["csv"],
+        type=["csv","xls","txt"],
         key=f"{key}_upload",
-        help="Le fichier peut contenir name, isin, quantity, buyingPrice, lastPrice, amount, lastMovementDate, etc.",
+        help="Import universel : l’application détecte automatiquement le courtier, les colonnes, l’encodage et le séparateur.",
     )
 
     if upload is not None:
@@ -781,10 +865,17 @@ def show_portfolio_page(title, key):
             st.success("✅ Ce CSV est déjà enregistré. Aucun nouvel enregistrement n'est nécessaire.")
         elif st.session_state.get(f"{key}_last_import") != file_signature:
             try:
-                imported, errors = import_broker_pea(upload)
+                imported, errors, import_meta = import_broker_pea(upload)
                 st.session_state[key] = imported
                 st.session_state[f"{key}_last_import"] = file_signature
                 st.session_state[f"{key}_import_errors"] = errors
+                st.session_state[f"{key}_import_meta"] = import_meta
+
+                st.info(
+                    f"🔎 Format détecté : **{import_meta.get('broker','Universel')}** · "
+                    f"{import_meta.get('rows_read',0)} ligne(s) analysée(s) · "
+                    f"{len(imported)} position(s) reconnue(s)"
+                )
 
                 if imported.empty:
                     st.error("❌ 0 ligne importée. Vérifie le format de l'export.")
