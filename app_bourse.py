@@ -1,7 +1,5 @@
 
 import hashlib
-import csv
-from io import StringIO
 import math
 import os
 import sqlite3
@@ -19,7 +17,7 @@ import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="Trading Command Center — V6.1",
+    page_title="Trading Command Center — V6.2",
     page_icon="📈",
     layout="wide",
 )
@@ -89,32 +87,93 @@ def db_conn():
     conn.commit(); return conn
 
 def load_portfolio_db(account):
+    """Charge automatiquement le portefeuille persistant.
+    Aucun bouton Enregistrer n'est nécessaire à chaque connexion.
+    """
     if SUPABASE is not None:
         try:
-            res=SUPABASE.table("portfolio_positions").select("ticker,quantity,pru,purchase_date").eq("account",account).order("ticker").execute()
-            rows=getattr(res,"data",None) or []
+            res = (SUPABASE.table("portfolio_positions")
+                   .select("ticker,quantity,pru,purchase_date")
+                   .eq("account", account)
+                   .order("ticker")
+                   .execute())
+            rows = getattr(res, "data", None) or []
             if rows:
-                return normalize_portfolio(pd.DataFrame([{"Ticker":r.get("ticker",""),"Quantité":r.get("quantity",0),"PRU":r.get("pru",0),"Date achat":r.get("purchase_date","")} for r in rows]))
+                return normalize_portfolio(pd.DataFrame([
+                    {
+                        "Ticker": r.get("ticker", ""),
+                        "Quantité": r.get("quantity", 0),
+                        "PRU": r.get("pru", 0),
+                        "Date achat": r.get("purchase_date", ""),
+                    } for r in rows
+                ]))
             return default_portfolio()
         except Exception as exc:
-            st.warning(f"Supabase indisponible pour {account} : {exc}. Stockage local utilisé.")
+            st.error(f"Supabase indisponible pour {account} : {exc}")
+            return default_portfolio()
     return default_portfolio()
 
 def save_portfolio_db(account, portfolio):
-    portfolio=normalize_portfolio(portfolio)
-    if SUPABASE is not None:
-        try:
-            SUPABASE.table("portfolio_positions").delete().eq("account",account).execute()
-            rows=[]
-            for _,row in portfolio.iterrows():
-                d=row["Date achat"]; d=d.isoformat() if pd.notna(d) else None
-                rows.append({"account":account,"ticker":str(row["Ticker"]),"quantity":float(row["Quantité"]),"pru":float(row["PRU"]),"purchase_date":d})
-            if rows: SUPABASE.table("portfolio_positions").insert(rows).execute()
-            return True
-        except Exception as exc:
-            st.error(f"Échec de sauvegarde Supabase : {exc}")
-            return False
-    return False
+    """Remplace proprement les lignes d'un compte dans Supabase.
+    L'appel est fait automatiquement après un import CSV ou une modification validée.
+    """
+    portfolio = normalize_portfolio(portfolio)
+    if SUPABASE is None:
+        st.error("Supabase n'est pas configuré : ajoute SUPABASE_URL et SUPABASE_KEY dans les Secrets Streamlit.")
+        return False
+    try:
+        # On remplace uniquement le portefeuille du compte concerné.
+        SUPABASE.table("portfolio_positions").delete().eq("account", account).execute()
+        rows = []
+        for _, row in portfolio.iterrows():
+            d = row["Date achat"]
+            d = d.isoformat() if pd.notna(d) else None
+            rows.append({
+                "account": account,
+                "ticker": str(row["Ticker"]),
+                "quantity": float(row["Quantité"]),
+                "pru": float(row["PRU"]),
+                "purchase_date": d,
+            })
+        if rows:
+            SUPABASE.table("portfolio_positions").insert(rows).execute()
+        return True
+    except Exception as exc:
+        st.error(f"Échec de sauvegarde Supabase : {exc}")
+        return False
+
+def save_import_metadata(account, filename, file_hash, row_count, skipped_count):
+    """Enregistre la dernière synchronisation CSV pour pouvoir la tracer."""
+    if SUPABASE is None:
+        return False
+    try:
+        payload = {
+            "account": account,
+            "filename": filename,
+            "file_hash": file_hash,
+            "row_count": int(row_count),
+            "skipped_count": int(skipped_count),
+            "imported_at": datetime.utcnow().isoformat(),
+        }
+        SUPABASE.table("portfolio_imports").upsert(payload, on_conflict="account").execute()
+        return True
+    except Exception as exc:
+        st.warning(f"Portefeuille enregistré, mais historique de synchronisation indisponible : {exc}")
+        return False
+
+def load_import_metadata(account):
+    if SUPABASE is None:
+        return None
+    try:
+        res = (SUPABASE.table("portfolio_imports")
+               .select("filename,file_hash,row_count,skipped_count,imported_at")
+               .eq("account", account)
+               .limit(1)
+               .execute())
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
 
 def load_journal_db():
     if SUPABASE is not None:
@@ -445,304 +504,133 @@ def _clean_num(value):
     except Exception:
         return np.nan
 
-def _normalize_column_name(column):
-    """Normalise les noms de colonnes broker sans dépendre de la casse/BOM."""
-    return (
-        str(column)
-        .replace("\ufeff", "")
-        .strip()
-        .lower()
-        .replace(" ", "")
-        .replace("_", "")
-        .replace("-", "")
-    )
-
-
-def _normalize_column_name(column):
-    """Normalise les en-têtes sans dépendre de la casse, accents, espaces ou BOM."""
-    import unicodedata
-    value = str(column).replace("\ufeff", "").strip().lower()
-    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
-    return "".join(ch for ch in value if ch.isalnum())
-
-
-# Dictionnaire métier : variantes fréquentes entre brokers.
-_BROKER_ALIASES = {
-    "ticker": ["ticker", "symbol", "symbole", "code", "codevaleur", "marketcode", "instrumentticker", "ric"],
-    "name": ["name", "nom", "libelle", "designation", "instrument", "instrumentname", "securityname", "productname", "valeur", "label"],
-    "isin": ["isin", "isincode", "securityisin", "instrumentisin"],
-    "quantity": ["quantity", "quantite", "qty", "qte", "volume", "numberofshares", "shares", "units", "nombre", "positionquantity", "quantite detenue"],
-    "pru": ["buyingprice", "buyprice", "purchaseprice", "averageprice", "averagecost", "avgprice", "avgcost", "costprice", "prixachat", "prixdachat", "prixmoyen", "pru", "prixrevient", "coursmoyen"],
-    "cost": ["amountinvested", "investedamount", "cost", "costbasis", "totalcost", "purchaseamount", "buyingamount", "investi", "montantinvesti", "montantachat", "valorisationachat"],
-    "date": ["lastmovementdate", "purchasedate", "buydate", "acquisitiondate", "tradedate", "dateachat", "datedachat", "dateacquisition", "date"],
-}
-_BROKER_ALIASES = {k: [_normalize_column_name(x) for x in v] for k, v in _BROKER_ALIASES.items()}
-_BROKER_ALIASES_FLAT = set(x for vals in _BROKER_ALIASES.values() for x in vals)
-
-
-def _decode_bytes(raw):
+def _decode_csv(uploaded_file):
+    raw = uploaded_file.getvalue()
     last_error = None
-    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin1"):
+    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "utf-8", "cp1252", "latin1"):
         try:
-            return raw.decode(enc)
+            return raw.decode(enc).replace("\x00", "")
         except UnicodeDecodeError as exc:
             last_error = exc
-    raise ValueError(f"Encodage non reconnu : {last_error}")
-
-
-def _score_columns(columns):
-    cols = set(columns)
-    score = len(cols)
-    # PRIORITÉ ABSOLUE aux vrais exports de positions.
-    if {"name", "isin", "quantity"}.issubset(cols): score += 10000
-    if {"isin", "quantity", "buyingprice"}.issubset(cols): score += 8000
-    if {"ticker", "quantity"}.issubset(cols): score += 7000
-    score += 100 * len(cols & _BROKER_ALIASES_FLAT)
-    return score
-
+    raise ValueError(f"Encodage CSV non reconnu : {last_error}")
 
 def _read_broker_csv(uploaded_file):
-    """Lecture basée sur le CONTENU : séparateur, BOM, lignes parasites et faux .xls."""
+    """Read broker export with comma, semicolon, tab or auto-detected separator."""
+    text_csv = _decode_csv(uploaded_file)
     from io import StringIO
-    raw = uploaded_file.getvalue()
-    text = _decode_bytes(raw).lstrip("\ufeff\r\n \t")
-    lines = text.splitlines()
-    if not lines:
-        raise ValueError("Fichier vide.")
+    frames = []
+    # Certains exports broker/Excel sont en UTF-16 + tabulation ou point-virgule.
+    # On teste explicitement tous les formats courants et on garde celui qui
+    # ressemble le plus à l'en-tête attendu.
+    for sep in (";", "\t", ",", "|"):
+        try:
+            candidate = pd.read_csv(StringIO(text_csv), sep=sep, dtype=str, engine="python", keep_default_na=False)
+            cols = {str(c).strip().strip('\"').lower().replace(" ", "") for c in candidate.columns}
+            score = sum(x in cols for x in ("name", "isin", "quantity", "buyingprice", "lastprice"))
+            if len(candidate.columns) >= 2:
+                frames.append((score, len(candidate.columns), candidate))
+        except Exception:
+            pass
 
-    best_df, best_score = None, -10**9
-    # On essaie explicitement les séparateurs et les premières lignes comme en-têtes.
-    for skip in range(min(20, len(lines))):
-        for sep in (";", ",", "\t", "|"):
-            try:
-                candidate = pd.read_csv(
-                    StringIO(text), sep=sep, skiprows=skip, dtype=str,
-                    engine="python", keep_default_na=False, on_bad_lines="skip"
-                )
-                candidate.columns = [_normalize_column_name(c) for c in candidate.columns]
-                candidate = candidate.loc[:, ~candidate.columns.duplicated()]
-                if len(candidate.columns) <= 1:
-                    continue
-                score = _score_columns(candidate.columns)
-                if score > best_score:
-                    best_df, best_score = candidate, score
-            except Exception:
-                continue
+    if not frames:
+        # Dernier recours : tentative d'auto-détection.
+        try:
+            df = pd.read_csv(StringIO(text_csv), sep=None, engine="python", dtype=str, keep_default_na=False)
+        except Exception as exc:
+            raise ValueError(f"Impossible de lire le CSV : {exc}")
+    else:
+        # Priorité absolue à un fichier contenant les colonnes broker attendues.
+        _, _, df = max(frames, key=lambda x: (x[0], x[1]))
 
-    if best_df is None:
-        raise ValueError("Impossible de détecter la structure CSV.")
-    return best_df
+    # Nettoyage robuste des noms de colonnes : casse, BOM, espaces, guillemets.
+    def norm_col(c):
+        return (str(c).replace("\ufeff", "").replace("\x00", "")
+                .strip().strip('\"').strip().lower().replace(" ", ""))
+    df.columns = [norm_col(c) for c in df.columns]
 
+    # Alias éventuels rencontrés dans les exports.
+    aliases = {
+        "buying_price": "buyingprice", "purchaseprice": "buyingprice",
+        "purchase_price": "buyingprice", "last_price": "lastprice",
+        "lastmovement_date": "lastmovementdate", "lastmovement": "lastmovementdate",
+    }
+    df = df.rename(columns=aliases)
+    return df
 
-def _read_broker_file(uploaded_file):
-    """Accepte CSV/TXT même déguisé en .xls, puis vrais Excel en secours."""
-    raw = uploaded_file.getvalue()
-    # Toujours CSV d'abord : beaucoup de brokers nomment leurs CSV '.xls'.
-    try:
-        return _read_broker_csv(uploaded_file)
-    except Exception as csv_error:
-        from io import BytesIO
-        excel_errors = []
-        for engine in (None, "openpyxl", "xlrd"):
-            try:
-                kwargs = {"dtype": str}
-                if engine: kwargs["engine"] = engine
-                df = pd.read_excel(BytesIO(raw), **kwargs)
-                df.columns = [_normalize_column_name(c) for c in df.columns]
-                if len(df.columns) > 1:
-                    return df
-            except Exception as exc:
-                excel_errors.append(str(exc))
-        raise ValueError(f"Fichier illisible. CSV: {csv_error}. Excel: {' | '.join(excel_errors[-2:])}")
-
-
-def _find_column(df, logical_name):
-    cols = list(df.columns)
-    aliases = _BROKER_ALIASES[logical_name]
-    for alias in aliases:
-        if alias in cols:
-            return alias
-    for col in cols:
-        for alias in aliases:
-            if len(alias) >= 4 and (alias in col or col in alias):
-                return col
-    return None
-
-
-def _auto_map_broker_columns(df):
-    return {key: _find_column(df, key) for key in _BROKER_ALIASES}
-
-
-def _resolve_ticker(name, isin, raw_ticker):
-    raw_ticker = str(raw_ticker or "").strip().upper()
-    if raw_ticker and raw_ticker not in {"NAN", "NONE", "NULL"}:
-        return raw_ticker
-    isin = str(isin or "").strip().upper()
-    if isin in ISIN_TO_TICKER:
-        return ISIN_TO_TICKER[isin]
-    name = str(name or "").strip().upper()
-    if name in NAME_TO_TICKER:
-        return NAME_TO_TICKER[name]
-    return ""
-
-
-def _is_positions_export(mapping):
-    return bool(mapping.get("quantity") and any(mapping.get(k) for k in ("ticker", "isin", "name")) and (mapping.get("pru") or mapping.get("cost")))
-
-
-def _is_trade_republic_transactions(df):
-    """Détecte un export d'historique Trade Republic à partir de sa structure."""
-    cols = set(df.columns)
-    required = {"date", "category", "type", "name", "shares", "amount"}
-    return required.issubset(cols) and ("symbol" in cols or "price" in cols)
-
-
-def _transaction_asset_id(row):
-    """Clé stable d'un instrument : ISIN > symbole > nom."""
-    symbol = str(row.get("symbol", "") or "").strip().upper()
-    name = str(row.get("name", "") or "").strip()
-    # Trade Republic met parfois l'ISIN dans symbol.
-    if len(symbol) == 12 and symbol[:2].isalpha() and symbol[2:].isalnum():
-        return f"ISIN:{symbol}", symbol, name
-    return f"SYM:{symbol or name.upper()}", symbol, name
-
-
-def _reconstruct_trade_republic_portfolio(df):
-    """Reconstruit les positions ouvertes depuis BUY/SELL Trade Republic.
-
-    Le coût d'un achat est abs(amount) + abs(fee) + abs(tax), car amount est
-    le montant de l'ordre et les frais sont exportés séparément. Lors d'une
-    vente, on retire le coût moyen historique proportionnellement aux titres
-    vendus : le PRU des titres restants reste donc cohérent.
-    """
-    trades = df.copy()
-    for col in ("category", "type"):
-        trades[col] = trades[col].astype(str).str.strip().str.upper()
-
-    trades = trades[(trades["category"] == "TRADING") & trades["type"].isin(["BUY", "SELL"])].copy()
-    if trades.empty:
-        return default_portfolio(), pd.DataFrame()
-
-    trades["_date"] = pd.to_datetime(trades["date"], errors="coerce", utc=True)
-    trades = trades.sort_values(["_date"], kind="stable")
-
-    positions = {}
-    errors = []
-
-    for idx, row in trades.iterrows():
-        key, raw_symbol, name = _transaction_asset_id(row)
-        qty = _clean_num(row.get("shares", np.nan))
-        amount = abs(_clean_num(row.get("amount", np.nan)))
-        fee = abs(_clean_num(row.get("fee", 0))) if pd.notna(_clean_num(row.get("fee", 0))) else 0.0
-        tax = abs(_clean_num(row.get("tax", 0))) if pd.notna(_clean_num(row.get("tax", 0))) else 0.0
-
-        if not np.isfinite(qty) or qty <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Quantité de transaction invalide"})
-            continue
-
-        if key not in positions:
-            positions[key] = {"name": name, "symbol": raw_symbol, "quantity": 0.0,
-                              "cost_basis": 0.0, "first_date": row.get("_date")}
-        pos = positions[key]
-
-        if row["type"] == "BUY":
-            if not np.isfinite(amount) or amount <= 0:
-                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Montant d'achat invalide"})
-                continue
-            pos["quantity"] += qty
-            pos["cost_basis"] += amount + fee + tax
-            if pd.notna(row.get("_date")) and (pd.isna(pos["first_date"]) or row["_date"] < pos["first_date"]):
-                pos["first_date"] = row["_date"]
-
-        else:  # SELL
-            current_qty = pos["quantity"]
-            if current_qty <= 1e-10:
-                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol, "Motif": "Vente sans position ouverte correspondante"})
-                continue
-            # Tolérance pour les arrondis exportés par le broker.
-            if qty > current_qty + max(1e-8, current_qty * 1e-6):
-                errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": raw_symbol,
-                               "Motif": f"Vente ({qty}) supérieure à la position reconstruite ({current_qty})"})
-                qty = min(qty, current_qty)
-            avg_cost = pos["cost_basis"] / current_qty if current_qty > 0 else 0.0
-            pos["quantity"] = current_qty - qty
-            pos["cost_basis"] = max(0.0, pos["cost_basis"] - qty * avg_cost)
-            if abs(pos["quantity"]) <= max(1e-8, current_qty * 1e-8):
-                pos["quantity"] = 0.0
-                pos["cost_basis"] = 0.0
-
-    rows = []
-    for pos in positions.values():
-        qty = pos["quantity"]
-        if qty <= 1e-8:
-            continue  # entièrement vendu
-        raw_symbol = pos["symbol"]
-        isin = raw_symbol if len(raw_symbol) == 12 and raw_symbol[:2].isalpha() else ""
-        ticker = _resolve_ticker(pos["name"], isin, "" if isin else raw_symbol)
-        # Si aucun mapping Yahoo n'est connu, conserver l'identifiant plutôt que fabriquer un ticker.
-        if not ticker:
-            ticker = raw_symbol or pos["name"].upper()
-        pru = pos["cost_basis"] / qty
-        dt = pos["first_date"]
-        rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru,
-                     "Date achat": dt.date() if pd.notna(dt) else None})
-
-    out = normalize_portfolio(pd.DataFrame(rows)) if rows else default_portfolio()
-    return out, pd.DataFrame(errors)
-
+def _centimes_or_euros(value, reference=None):
+    """Broker export stores prices such as 15956 for €159.56."""
+    x = _clean_num(value)
+    if not np.isfinite(x):
+        return np.nan
+    # Export examples use integer centimes. Keep already-decimal prices as euros.
+    if reference == "price" and x >= 100 and abs(x - round(x)) < 1e-9:
+        return x / 100.0
+    return x
 
 def import_broker_pea(uploaded_file):
-    """Import universel : snapshot de positions OU historique Trade Republic."""
-    df = _read_broker_file(uploaded_file)
-
-    # PRIORITÉ : un historique Trade Republic doit être reconstruit, jamais lu
-    # comme un simple tableau de positions.
-    if _is_trade_republic_transactions(df):
-        return _reconstruct_trade_republic_portfolio(df)
-
-    mapping = _auto_map_broker_columns(df)
-
-    if not _is_positions_export(mapping):
-        cols = ", ".join(map(str, df.columns))
-        if {"date", "label", "debit", "credit"}.issubset(set(df.columns)):
-            raise ValueError("Le fichier est un relevé comptable (date, label, debit, credit), sans détail suffisant pour reconstruire les quantités.")
-        raise ValueError("Format lu mais insuffisant pour importer un portefeuille. Colonnes détectées : " + cols)
+    """
+    Converts the user's broker export:
+    name, isin, quantity, buyingPrice, lastPrice, intradayVariation,
+    amount, amountVariation, variation, lastMovementDate, compensation
+    into the application's portfolio format.
+    """
+    df = _read_broker_csv(uploaded_file)
+    required = {"name", "isin", "quantity", "buyingprice"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            "Colonnes absentes : " + ", ".join(sorted(missing)) +
+            ". Format attendu : name, isin, quantity, buyingPrice, lastPrice, ..."
+        )
 
     rows, errors = [], []
     for idx, r in df.iterrows():
-        def get(key):
-            col = mapping.get(key)
-            return r.get(col, "") if col else ""
+        name = str(r.get("name", "")).strip()
+        isin = str(r.get("isin", "")).strip().upper()
+        qty = _clean_num(r.get("quantity"))
+        raw_pru = _clean_num(r.get("buyingprice"))
 
-        name = str(get("name")).strip()
-        isin = str(get("isin")).strip().upper()
-        ticker = _resolve_ticker(name, isin, get("ticker"))
-        qty = _clean_num(get("quantity"))
-        pru = _clean_num(get("pru")) if mapping.get("pru") else np.nan
-        cost = _clean_num(get("cost")) if mapping.get("cost") else np.nan
-        if (not np.isfinite(pru) or pru <= 0) and np.isfinite(cost) and np.isfinite(qty) and qty > 0:
-            pru = cost / qty
-        raw_date = get("date")
-        movement = pd.to_datetime(str(raw_date), dayfirst=True, errors="coerce")
+        ticker = ISIN_TO_TICKER.get(isin)
         if not ticker:
-            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non résolu"}); continue
+            ticker = NAME_TO_TICKER.get(name.upper())
+
+        if not ticker:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Ticker non reconnu"})
+            continue
         if not np.isfinite(qty) or qty <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "Quantité invalide"}); continue
-        if not np.isfinite(pru) or pru <= 0:
-            errors.append({"Ligne": idx + 2, "Nom": name or ticker, "ISIN": isin, "Motif": "PRU invalide"}); continue
-        rows.append({"Ticker": ticker, "Quantité": qty, "PRU": pru,
-                     "Date achat": movement.date() if pd.notna(movement) else None})
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "Quantité invalide"})
+            continue
+        if not np.isfinite(raw_pru) or raw_pru <= 0:
+            errors.append({"Ligne": idx + 2, "Nom": name, "ISIN": isin, "Motif": "PRU invalide"})
+            continue
+
+        pru = _centimes_or_euros(raw_pru, "price")
+        movement = pd.to_datetime(str(r.get("lastmovementdate", "")), dayfirst=True, errors="coerce")
+        purchase_date = movement.date() if pd.notna(movement) else None
+
+        rows.append({
+            "Ticker": ticker,
+            "Quantité": qty,
+            "PRU": pru,
+            "Date achat": purchase_date,
+        })
 
     out = normalize_portfolio(pd.DataFrame(rows))
+    # Keep only one line per ticker; if duplicate lots exist, calculate weighted average PRU.
     if not out.empty:
         grouped = []
         for ticker, g in out.groupby("Ticker", sort=True):
             q = g["Quantité"].sum()
             weighted_pru = (g["Quantité"] * g["PRU"]).sum() / q if q else 0
             dates = [d for d in g["Date achat"] if pd.notna(d)]
-            grouped.append({"Ticker": ticker, "Quantité": q, "PRU": weighted_pru,
-                            "Date achat": min(dates) if dates else None})
-        out = pd.DataFrame(grouped, columns=["Ticker", "Quantité", "PRU", "Date achat"])
+            grouped.append({
+                "Ticker": ticker,
+                "Quantité": q,
+                "PRU": weighted_pru,
+                "Date achat": min(dates) if dates else None,
+            })
+        out = pd.DataFrame(grouped, columns=["Ticker","Quantité","PRU","Date achat"])
+
     return out, pd.DataFrame(errors)
 
 def default_portfolio():
@@ -862,16 +750,36 @@ def show_portfolio_page(title, key):
     if key not in st.session_state:
         st.session_state[key] = load_portfolio_db(key)
 
+    sync_meta = load_import_metadata(key)
+    if sync_meta:
+        st.success(
+            f"☁️ Portefeuille chargé automatiquement depuis Supabase — "
+            f"{sync_meta.get('row_count', 0)} ligne(s) — "
+            f"dernière synchro : {sync_meta.get('imported_at', 'inconnue')}"
+        )
+    else:
+        st.info("☁️ Aucun import CSV enregistré pour ce portefeuille. Le premier import sera sauvegardé automatiquement.")
+
     upload = st.file_uploader(
         "📥 Importer ton export CSV PEA",
-        type=["csv", "txt", "xls", "xlsx", "tsv"],
+        type=["csv"],
         key=f"{key}_upload",
         help="Le fichier peut contenir name, isin, quantity, buyingPrice, lastPrice, amount, lastMovementDate, etc.",
     )
 
     if upload is not None:
-        file_signature = f"{upload.name}_{upload.size}"
-        if st.session_state.get(f"{key}_last_import") != file_signature:
+        raw = upload.getvalue()
+        file_hash = hashlib.sha256(raw).hexdigest()
+        file_signature = f"{upload.name}_{len(raw)}_{file_hash}"
+        already_imported = (
+            sync_meta is not None
+            and sync_meta.get("file_hash") == file_hash
+            and sync_meta.get("filename") == upload.name
+        )
+
+        if already_imported:
+            st.success("✅ Ce CSV est déjà enregistré. Aucun nouvel enregistrement n'est nécessaire.")
+        elif st.session_state.get(f"{key}_last_import") != file_signature:
             try:
                 imported, errors = import_broker_pea(upload)
                 st.session_state[key] = imported
@@ -881,11 +789,16 @@ def show_portfolio_page(title, key):
                 if imported.empty:
                     st.error("❌ 0 ligne importée. Vérifie le format de l'export.")
                 else:
+                    # IMPORTANT : sauvegarde automatique. L'utilisateur n'a plus à cliquer
+                    # sur Enregistrer à chaque connexion.
                     ok = save_portfolio_db(key, imported)
                     if ok:
-                        st.success(f"✅ {len(imported)} ligne(s) importée(s) et enregistrée(s) dans Supabase.")
+                        save_import_metadata(key, upload.name, file_hash, len(imported), len(errors))
+                        st.success(
+                            f"☁️ Synchronisation terminée : {len(imported)} ligne(s) enregistrée(s) définitivement dans Supabase."
+                        )
                     else:
-                        st.warning(f"⚠️ {len(imported)} ligne(s) importée(s), mais la sauvegarde Supabase a échoué.")
+                        st.error("❌ Les données ont été lues mais n'ont pas pu être enregistrées dans Supabase.")
                 if not errors.empty:
                     st.warning(f"⚠️ {len(errors)} ligne(s) nécessitent une vérification.")
             except Exception as exc:
@@ -967,228 +880,6 @@ def show_portfolio_page(title, key):
     st.download_button("⬇️ Exporter le portefeuille CSV", csv, f"{key}.csv", "text/csv")
 
 
-
-
-# ==========================================================
-# MULTI-PORTFOLIOS — SUPABASE
-# ==========================================================
-PORTFOLIOS_TABLE = "portfolios"
-POSITIONS_TABLE = "portfolio_positions_v2"
-
-def sb_data(response):
-    return getattr(response, "data", None) or []
-
-def load_portfolios():
-    if SUPABASE is None:
-        return []
-    try:
-        return sb_data(
-            SUPABASE.table(PORTFOLIOS_TABLE)
-            .select("*").order("created_at").execute()
-        )
-    except Exception as exc:
-        st.warning(f"Impossible de charger les portefeuilles Supabase : {exc}")
-        return []
-
-def create_portfolio(name, portfolio_type, broker=""):
-    if SUPABASE is None:
-        raise RuntimeError("Supabase n'est pas configuré.")
-    name = str(name).strip()
-    if not name:
-        raise ValueError("Le nom du portefeuille est obligatoire.")
-    res = SUPABASE.table(PORTFOLIOS_TABLE).insert({
-        "name": name,
-        "portfolio_type": portfolio_type,
-        "broker": str(broker).strip() or None,
-    }).execute()
-    return sb_data(res)[0]
-
-def rename_portfolio(portfolio_id, new_name):
-    if SUPABASE is None:
-        raise RuntimeError("Supabase n'est pas configuré.")
-    SUPABASE.table(PORTFOLIOS_TABLE).update({
-        "name": str(new_name).strip(),
-        "updated_at": datetime.now().isoformat(),
-    }).eq("id", portfolio_id).execute()
-
-def delete_portfolio(portfolio_id):
-    if SUPABASE is None:
-        raise RuntimeError("Supabase n'est pas configuré.")
-    SUPABASE.table(PORTFOLIOS_TABLE).delete().eq("id", portfolio_id).execute()
-
-def load_positions_for_portfolio(portfolio_id):
-    if SUPABASE is None:
-        return default_portfolio()
-    try:
-        rows = sb_data(
-            SUPABASE.table(POSITIONS_TABLE).select("*")
-            .eq("portfolio_id", portfolio_id).order("ticker").execute()
-        )
-        if not rows:
-            return default_portfolio()
-        return normalize_portfolio(pd.DataFrame([{
-            "Ticker": r.get("ticker", ""),
-            "Quantité": r.get("quantity", 0),
-            "PRU": r.get("buying_price", 0),
-            "Date achat": r.get("purchase_date"),
-        } for r in rows]))
-    except Exception as exc:
-        st.error(f"Impossible de charger les positions : {exc}")
-        return default_portfolio()
-
-def replace_positions_for_portfolio(portfolio_id, portfolio):
-    if SUPABASE is None:
-        raise RuntimeError("Supabase n'est pas configuré.")
-    portfolio = normalize_portfolio(portfolio)
-    SUPABASE.table(POSITIONS_TABLE).delete().eq(
-        "portfolio_id", portfolio_id
-    ).execute()
-
-    rows = []
-    for _, row in portfolio.iterrows():
-        d = row["Date achat"]
-        rows.append({
-            "portfolio_id": portfolio_id,
-            "ticker": str(row["Ticker"]),
-            "isin": None,
-            "name": None,
-            "quantity": float(row["Quantité"]),
-            "buying_price": float(row["PRU"]),
-            "purchase_date": d.isoformat() if pd.notna(d) else None,
-            "currency": "EUR",
-        })
-    if rows:
-        SUPABASE.table(POSITIONS_TABLE).insert(rows).execute()
-
-def show_multi_portfolio_page(portfolio):
-    portfolio_id = portfolio["id"]
-    title = f"{'🏦' if portfolio.get('portfolio_type') == 'PEA' else '💼'} {portfolio.get('name','Portefeuille')}"
-    st.header(title)
-    st.caption(
-        f"Type : {portfolio.get('portfolio_type','')} • "
-        f"Broker : {portfolio.get('broker') or 'Personnalisé'}"
-    )
-
-    state_key = f"portfolio_{portfolio_id}"
-    if state_key not in st.session_state:
-        st.session_state[state_key] = load_positions_for_portfolio(portfolio_id)
-
-    tab1, tab2, tab3 = st.tabs(["📊 Positions", "📥 Import", "⚙️ Paramètres"])
-
-    with tab1:
-        edited = st.data_editor(
-            st.session_state[state_key],
-            num_rows="dynamic",
-            use_container_width=True,
-            key=f"{state_key}_editor",
-            column_config={
-                "Ticker": st.column_config.TextColumn("Ticker"),
-                "Quantité": st.column_config.NumberColumn("Quantité", min_value=0.0),
-                "PRU": st.column_config.NumberColumn("PRU", min_value=0.0, format="%.6f"),
-                "Date achat": st.column_config.DateColumn("Date achat"),
-            },
-        )
-        normalized = normalize_portfolio(edited)
-        st.session_state[state_key] = normalized
-
-        if st.button("💾 Enregistrer définitivement", key=f"{state_key}_save", type="primary"):
-            replace_positions_for_portfolio(portfolio_id, normalized)
-            st.success("✅ Positions enregistrées dans Supabase.")
-
-        if normalized.empty:
-            st.info("Aucune position. Utilise l'import ou ajoute une ligne manuellement.")
-        else:
-            metrics = portfolio_metrics(normalized)
-            if not metrics.empty:
-                total_value = metrics["Valeur"].sum()
-                total_cost = metrics["Investi"].sum()
-                total_pnl = metrics["Plus-value"].sum()
-                total_div = metrics["Dividendes"].sum()
-                total_perf = metrics["Perf totale"].sum()
-                total_pct = total_perf / total_cost * 100 if total_cost else 0
-
-                c1,c2,c3,c4,c5 = st.columns(5)
-                c1.metric("Valeur", f"{total_value:,.2f} €")
-                c2.metric("Investi", f"{total_cost:,.2f} €")
-                c3.metric("PV latente", f"{total_pnl:,.2f} €")
-                c4.metric("Dividendes", f"{total_div:,.2f} €")
-                c5.metric("Performance totale", f"{total_pct:+.2f}%")
-
-                st.subheader("📊 Positions — cours et entreprise")
-                st.dataframe(metrics, use_container_width=True, hide_index=True)
-
-    with tab2:
-        st.info("Le fichier est analysé puis converti en positions. Pour un export Trade Republic, les BUY/SELL sont reconstruits automatiquement.")
-        upload = st.file_uploader(
-            "📥 Importer un export broker",
-            type=["csv", "txt", "xls", "xlsx", "tsv"],
-            key=f"{state_key}_upload",
-        )
-        replace_mode = st.radio(
-            "Mode d'import",
-            ["🔄 Remplacer complètement les positions", "➕ Ajouter aux positions"],
-            horizontal=True,
-            key=f"{state_key}_import_mode",
-        )
-
-        if upload is not None:
-            try:
-                imported, errors = import_broker_pea(upload)
-
-                if imported.empty:
-                    st.error("❌ Aucune position ouverte détectée.")
-                else:
-                    st.success(f"✅ {len(imported)} position(s) détectée(s).")
-                    st.dataframe(imported, use_container_width=True, hide_index=True)
-
-                    if not errors.empty:
-                        with st.expander(f"⚠️ {len(errors)} ligne(s) à vérifier"):
-                            st.dataframe(errors, use_container_width=True, hide_index=True)
-
-                    if st.button("💾 Confirmer et enregistrer l'import", key=f"{state_key}_confirm_import", type="primary"):
-                        if replace_mode.startswith("🔄"):
-                            final = imported
-                        else:
-                            combined = pd.concat(
-                                [st.session_state[state_key], imported],
-                                ignore_index=True
-                            )
-                            grouped = []
-                            for ticker, g in normalize_portfolio(combined).groupby("Ticker", sort=True):
-                                qty = g["Quantité"].sum()
-                                pru = ((g["Quantité"] * g["PRU"]).sum() / qty) if qty else 0
-                                dates = [d for d in g["Date achat"] if pd.notna(d)]
-                                grouped.append({
-                                    "Ticker": ticker, "Quantité": qty,
-                                    "PRU": pru,
-                                    "Date achat": min(dates) if dates else None
-                                })
-                            final = pd.DataFrame(grouped)
-
-                        final = normalize_portfolio(final)
-                        replace_positions_for_portfolio(portfolio_id, final)
-                        st.session_state[state_key] = final
-                        st.success("🎉 Import enregistré définitivement dans Supabase.")
-                        st.rerun()
-            except Exception as exc:
-                st.error(f"❌ Erreur d'import : {exc}")
-
-    with tab3:
-        new_name = st.text_input("Nom du portefeuille", value=portfolio.get("name",""), key=f"{state_key}_name")
-        if st.button("✏️ Renommer", key=f"{state_key}_rename"):
-            rename_portfolio(portfolio_id, new_name)
-            st.success("Portefeuille renommé.")
-            st.rerun()
-
-        st.markdown("---")
-        confirm = st.checkbox("Je confirme vouloir supprimer ce portefeuille et toutes ses positions.", key=f"{state_key}_delete_confirm")
-        if st.button("🗑️ Supprimer définitivement", key=f"{state_key}_delete", disabled=not confirm):
-            delete_portfolio(portfolio_id)
-            st.session_state.pop("selected_portfolio_id", None)
-            st.success("Portefeuille supprimé.")
-            st.rerun()
-
-
 # ==========================================================
 # SIDEBAR
 # ==========================================================
@@ -1196,7 +887,7 @@ with st.sidebar:
     st.header("⚙️ Command Center")
     mode = st.radio(
         "Navigation",
-        ["🔎 Scanner", "📊 Analyse", "💼 Mes portefeuilles", "🌍 Dashboard global", "🧪 Simulation", "📓 Journal"],
+        ["🔎 Scanner", "📊 Analyse", "💼 CTO XTB", "🏦 PEA", "🧪 Simulation", "📓 Journal"],
     )
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"] = False
@@ -1333,81 +1024,15 @@ elif mode == "📊 Analyse":
         for n in news(symbol)[:8]:
             st.markdown(f"**{n['title']}** — {n['publisher']}")
 
-elif mode == "💼 Mes portefeuilles":
-    portfolios = load_portfolios()
+elif mode == "💼 CTO XTB":
+    st.header("💼 CTO XTB")
+    st.warning("La synchronisation directe avec XTB n'est pas utilisée : XTB indique que son accès API a été arrêté le 14 mars 2025. Les positions peuvent donc être saisies ou importées en CSV, puis les cours/actualités sont actualisés séparément.")
+    show_portfolio_page("💼 Suivi du CTO XTB", "cto_xtb")
 
-    if SUPABASE is None:
-        st.error("Supabase n'est pas configuré. Ajoute SUPABASE_URL et SUPABASE_KEY dans les Secrets Streamlit.")
-    else:
-        with st.expander("➕ Créer un nouveau portefeuille", expanded=not portfolios):
-            with st.form("create_portfolio_form", clear_on_submit=True):
-                new_name = st.text_input("Nom du portefeuille", placeholder="Ex : CTO Tech, PEA Principal...")
-                new_type = st.selectbox("Type", ["CTO", "PEA"])
-                new_broker = st.text_input("Broker", placeholder="Ex : Trade Republic, Boursobank...")
-                create_ok = st.form_submit_button("Créer le portefeuille", type="primary")
-                if create_ok:
-                    try:
-                        created = create_portfolio(new_name, new_type, new_broker)
-                        st.session_state["selected_portfolio_id"] = created["id"]
-                        st.success("✅ Portefeuille créé.")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"❌ {exc}")
-
-        if not portfolios:
-            st.info("Crée ton premier PEA ou CTO. Tu pourras ensuite en créer autant que tu veux.")
-        else:
-            labels = {
-                p["id"]: f"{'🏦' if p.get('portfolio_type') == 'PEA' else '💼'} {p.get('name')} — {p.get('broker') or p.get('portfolio_type')}"
-                for p in portfolios
-            }
-            ids = list(labels)
-            current = st.session_state.get("selected_portfolio_id", ids[0])
-            if current not in ids:
-                current = ids[0]
-
-            selected_id = st.radio(
-                "Mes portefeuilles",
-                ids,
-                index=ids.index(current),
-                format_func=lambda x: labels[x],
-                horizontal=False,
-            )
-            st.session_state["selected_portfolio_id"] = selected_id
-            selected = next(p for p in portfolios if p["id"] == selected_id)
-            show_multi_portfolio_page(selected)
-
-elif mode == "🌍 Dashboard global":
-    st.header("🌍 Dashboard global")
-    portfolios = load_portfolios()
-    all_metrics = []
-    for p in portfolios:
-        positions = load_positions_for_portfolio(p["id"])
-        metrics = portfolio_metrics(positions)
-        if not metrics.empty:
-            metrics["Portefeuille"] = p.get("name")
-            all_metrics.append(metrics)
-
-    if not all_metrics:
-        st.info("Aucune position enregistrée.")
-    else:
-        global_metrics = pd.concat(all_metrics, ignore_index=True)
-        total_value = global_metrics["Valeur"].sum()
-        total_cost = global_metrics["Investi"].sum()
-        total_perf = global_metrics["Perf totale"].sum()
-        total_pct = total_perf / total_cost * 100 if total_cost else 0
-
-        c1,c2,c3,c4 = st.columns(4)
-        c1.metric("Valeur totale", f"{total_value:,.2f} €")
-        c2.metric("Investi", f"{total_cost:,.2f} €")
-        c3.metric("Performance", f"{total_perf:+,.2f} €")
-        c4.metric("Performance %", f"{total_pct:+.2f}%")
-
-        allocation = global_metrics.groupby("Portefeuille", as_index=False)["Valeur"].sum()
-        st.subheader("Répartition par portefeuille")
-        st.bar_chart(allocation.set_index("Portefeuille"))
-        st.subheader("Toutes les positions")
-        st.dataframe(global_metrics, use_container_width=True, hide_index=True)
+elif mode == "🏦 PEA":
+    st.header("🏦 Suivi PEA")
+    st.info("Les lignes PEA sont saisies manuellement : ticker, quantité, PRU et date d'achat. Le moteur enrichit ensuite les lignes avec le nom de l'entreprise, le cours de marché, les dividendes et les indicateurs techniques.")
+    show_portfolio_page("🏦 Suivi PEA", "pea")
 
 elif mode == "🧪 Simulation":
     st.header("🧪 Simulation / ticket de trade")
@@ -1448,4 +1073,4 @@ else:
         st.info("Aucune opération enregistrée.")
 
 st.markdown("---")
-st.caption("V8 — Multi-portefeuilles persistants Supabase + import universel + reconstruction Trade Republic. Les cours peuvent être différés selon le marché et la source.")
+st.caption("V6 — Portefeuilles persistants + données de marché via yfinance. Les cours peuvent être différés selon le marché et la source. Aucun mot de passe XTB n'est demandé ni stocké par cette application.")
