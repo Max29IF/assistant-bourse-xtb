@@ -17,7 +17,7 @@ import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
 
 st.set_page_config(
-    page_title="Trading Command Center — V6.2",
+    page_title="Trading Command Center — VISION FUTURE",
     page_icon="📈",
     layout="wide",
 )
@@ -544,68 +544,165 @@ def _decode_csv(uploaded_file):
     return raw.decode("utf-8", errors="replace").replace("\x00", "")
 
 def _read_universal_csv(uploaded_file):
-    """Universal reader for CSV/TSV exports, even when extension is .xls or .txt."""
+    """
+    Lecteur universel de fichiers de courtier.
+    IMPORTANT : l'extension (.csv/.xls/.csv.xls/.txt) n'est jamais utilisée
+    pour décider du format. On inspecte d'abord les octets et le contenu réel.
+    """
+    import csv as _csv
     from io import StringIO, BytesIO
-    raw = uploaded_file.getvalue()
-    name = str(getattr(uploaded_file, "name", "")).lower()
 
-    # 1) True Excel workbook (binary XLS/XLSX) if pandas can identify it.
-    if raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" or raw[:4] == b"PK\x03\x04":
+    raw = uploaded_file.getvalue()
+    filename = str(getattr(uploaded_file, "name", "") or "")
+    if not raw:
+        raise ValueError(f"Le fichier '{filename}' est vide.")
+
+    # 1) Vrai XLS/XLSX : signature binaire.
+    is_xls = raw[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    is_xlsx = raw[:4] == b"PK\x03\x04"
+    if is_xls or is_xlsx:
         try:
-            xls = pd.ExcelFile(BytesIO(raw))
+            # xlsx est généralement disponible via openpyxl ; xls nécessite xlrd.
+            engine = "xlrd" if is_xls else "openpyxl"
+            xls = pd.ExcelFile(BytesIO(raw), engine=engine)
             frames = []
             for sheet in xls.sheet_names:
                 tmp = pd.read_excel(xls, sheet_name=sheet, dtype=str)
                 if tmp is not None and not tmp.empty:
                     frames.append(tmp)
             if frames:
-                candidates = []
-                for df in frames:
+                def excel_score(df):
                     normcols = [_norm_text(c) for c in df.columns]
-                    score = sum(any(a == n for a in aliases for n in normcols) for aliases in FIELD_ALIASES.values())
-                    candidates.append((score, len(df.columns), df))
-                return max(candidates, key=lambda x:(x[0],x[1]))[2]
-        except Exception:
-            pass
+                    return sum(
+                        2 if any(a == n for a in aliases for n in normcols)
+                        else 1 if any(any(a in n or n in a for a in aliases if len(a) >= 4) for n in normcols)
+                        else 0
+                        for aliases in FIELD_ALIASES.values()
+                    )
+                return max(frames, key=excel_score)
+        except Exception as exc:
+            # On continue : certains courtiers donnent un CSV texte avec extension .xls.
+            excel_error = str(exc)
+        else:
+            excel_error = ""
 
-    # 2) Text-delimited broker export. Do not trust the file extension.
+    # 2) Fichier texte : on décode les octets, indépendamment de l'extension.
     text = _decode_csv(uploaded_file)
+    text = text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
     if not text.strip():
-        raise ValueError("Le fichier est vide ou illisible.")
+        raise ValueError(f"Le fichier '{filename}' est vide après décodage.")
 
+    # Supprimer un éventuel BOM résiduel.
+    text = text.lstrip("\ufeff")
+    lines = [line for line in text.split("\n") if line.strip()]
+    if not lines:
+        raise ValueError(f"Le fichier '{filename}' ne contient aucune ligne exploitable.")
+
+    # 3) Détection du séparateur : csv.Sniffer + tests déterministes.
+    separators = [";", "\t", ",", "|", ":"]
     candidates = []
-    # Score delimiters by number of useful recognized headers AND column count.
-    for sep in (";", "\t", ",", "|", ":"):
+
+    sample = "\n".join(lines[:30])
+    try:
+        dialect = _csv.Sniffer().sniff(sample, delimiters=";\t,|:")
+        if dialect.delimiter in separators:
+            separators = [dialect.delimiter] + [s for s in separators if s != dialect.delimiter]
+    except Exception:
+        pass
+
+    for sep in separators:
         try:
+            # Lecture pandas : utile pour les guillemets et les nombres.
             df = pd.read_csv(
-                StringIO(text), sep=sep, dtype=str, engine="python",
-                keep_default_na=False, quotechar='"', on_bad_lines="warn"
+                StringIO(text),
+                sep=sep,
+                dtype=str,
+                engine="python",
+                keep_default_na=False,
+                quotechar='"',
+                on_bad_lines="skip",
             )
-            if len(df.columns) < 2:
+            if df is None or len(df.columns) < 2:
                 continue
+
             normcols = [_norm_text(c) for c in df.columns]
-            score = 0
+            exact_hits = 0
+            fuzzy_hits = 0
             for aliases in FIELD_ALIASES.values():
                 if any(a == n for a in aliases for n in normcols):
-                    score += 2
+                    exact_hits += 1
                 elif any(any(a in n or n in a for a in aliases if len(a) >= 4) for n in normcols):
-                    score += 1
-            # Prefer the separator that actually creates several meaningful columns.
-            score += min(len(df.columns), 20) * 0.05
-            candidates.append((score, len(df.columns), df))
+                    fuzzy_hits += 1
+
+            # Une vraie ligne d'en-tête contenant plusieurs champs connus est
+            # nettement prioritaire sur une découpe accidentelle.
+            score = exact_hits * 10 + fuzzy_hits * 3 + min(len(df.columns), 30) * 0.1
+            candidates.append((score, exact_hits, len(df.columns), df, sep))
         except Exception:
             continue
 
+    # 4) Fallback ultra-robuste avec csv.DictReader.
+    # Il permet de lire des exports que pandas refuse à cause d'une ligne mal formée.
     if not candidates:
+        for sep in separators:
+            try:
+                reader = _csv.reader(StringIO(text), delimiter=sep, quotechar='"')
+                rows = list(reader)
+                if not rows or len(rows[0]) < 2:
+                    continue
+                header = [str(x).strip().strip('"') for x in rows[0]]
+                width = len(header)
+                clean_rows = []
+                for row in rows[1:]:
+                    if not row:
+                        continue
+                    if len(row) < width:
+                        row = row + [""] * (width - len(row))
+                    elif len(row) > width:
+                        row = row[:width-1] + [sep.join(row[width-1:])]
+                    clean_rows.append(row)
+                df = pd.DataFrame(clean_rows, columns=header)
+                normcols = [_norm_text(c) for c in df.columns]
+                exact_hits = sum(any(a == n for a in aliases for n in normcols) for aliases in FIELD_ALIASES.values())
+                fuzzy_hits = sum(
+                    any(any(a in n or n in a for a in aliases if len(a) >= 4) for n in normcols)
+                    for aliases in FIELD_ALIASES.values()
+                )
+                score = exact_hits * 10 + fuzzy_hits * 3 + min(width, 30) * 0.1
+                candidates.append((score, exact_hits, width, df, sep))
+            except Exception:
+                continue
+
+    if not candidates:
+        preview = repr(raw[:160])
+        extra = f" Erreur Excel détectée : {excel_error}" if 'excel_error' in locals() and excel_error else ""
         raise ValueError(
-            f"Impossible de lire '{name}' comme fichier CSV/texte délimité. "
-            "Le fichier peut être un véritable Excel non supporté ou être vide."
+            f"Impossible de lire '{filename}' comme CSV/texte délimité.{extra} "
+            f"Début du fichier : {preview}"
         )
 
-    score, ncols, df = max(candidates, key=lambda x:(x[0],x[1]))
-    if ncols < 2:
-        raise ValueError("Aucune colonne exploitable n'a été détectée.")
-    df.columns = [str(c).replace("\ufeff", "").replace("\x00", "").strip().strip('"') for c in df.columns]
+    score, exact_hits, ncols, df, sep = max(
+        candidates, key=lambda x: (x[0], x[1], x[2])
+    )
+
+    if exact_hits == 0:
+        # On laisse le moteur supérieur décider si un mapping fuzzy est possible.
+        # Mais on donne une erreur explicite si le fichier n'a réellement rien
+        # d'identifiable.
+        df.columns = [
+            str(c).replace("\ufeff", "").replace("\x00", "").strip().strip('"')
+            for c in df.columns
+        ]
+    else:
+        df.columns = [
+            str(c).replace("\ufeff", "").replace("\x00", "").strip().strip('"')
+            for c in df.columns
+        ]
+
+    # Métadonnées conservées pour l'écran de diagnostic.
+    df.attrs["detected_separator"] = "\\t" if sep == "\t" else sep
+    df.attrs["detected_columns"] = list(df.columns)
+    df.attrs["source_filename"] = filename
     return df
 
 def _find_field(columns, field):
