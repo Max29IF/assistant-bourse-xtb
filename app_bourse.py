@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V7.1 Performance Engine"
+APP_VERSION = "V7.2 Auto Portfolio Sync"
 
 # ==========================================================
 # AUTHENTICATION
@@ -131,7 +131,7 @@ def load_positions(account: str):
         st.error(f"Impossible de charger les positions Supabase : {exc}")
         return pd.DataFrame(columns=cols)
 
-def save_positions(account: str, broker: str, df: pd.DataFrame):
+def save_positions(account: str, broker: str, df: pd.DataFrame, source: str = "document_import"):
     if SUPABASE is None:
         raise RuntimeError("Supabase n'est pas configuré.")
     # A positions export is a snapshot: replace this account+broker snapshot atomically enough for a personal app.
@@ -159,7 +159,7 @@ def save_positions(account: str, broker: str, df: pd.DataFrame):
             "last_price_imported": float(r.get("market_price")) if pd.notna(r.get("market_price")) else None,
             "market_value_imported": float(r.get("market_value")) if pd.notna(r.get("market_value")) else None,
             "purchase_date": purchase_date,
-            "source": "document_import",
+            "source": source,
             "updated_at": datetime.utcnow().isoformat(),
         })
     if rows:
@@ -201,6 +201,200 @@ def save_transactions(account: str, broker: str, df: pd.DataFrame):
         SUPABASE.table("transactions").upsert(rows, on_conflict="transaction_id").execute()
     return len(rows)
 
+
+
+def _transaction_key(row):
+    isin = str(row.get("isin") or "").strip().upper()
+    symbol = str(row.get("symbol") or "").strip().upper()
+    name = str(row.get("name") or "").strip()
+    return isin or symbol or norm_token(name)
+
+
+def _load_transactions_for_broker(account: str, broker: str):
+    if SUPABASE is None:
+        return pd.DataFrame()
+    try:
+        res = (SUPABASE.table("transactions")
+               .select("transaction_id,trade_date,occurred_at,type,category,asset_class,name,symbol,isin,quantity,price,amount,fee,tax,currency,broker,account,description")
+               .eq("account", account).eq("broker", broker)
+               .order("trade_date", desc=False).execute())
+        return pd.DataFrame(_sb_data(res))
+    except Exception as exc:
+        raise RuntimeError(f"Lecture des transactions impossible : {exc}")
+
+
+def rebuild_positions_from_transactions(account: str, broker: str):
+    """Rebuild the current portfolio automatically from the full broker ledger.
+
+    BUY adds cost basis including fees/taxes, SELL reduces quantity and cost basis
+    at weighted-average cost, BONUS_ISSUE adds zero-cost units, cancellations remove
+    zero-cost units, and paired SPLIT legs transfer cost basis to the replacement
+    instrument. This function is deterministic and can safely be rerun after every import.
+    """
+    tx = _load_transactions_for_broker(account, broker)
+    if tx.empty:
+        return {"positions": 0, "transactions": 0, "corporate_actions": 0, "issues": []}
+
+    x = tx.copy()
+    x["trade_date_dt"] = pd.to_datetime(x.get("trade_date"), errors="coerce")
+    x["type_norm"] = x.get("type", "").fillna("").astype(str).str.upper().str.strip()
+    for c in ("quantity", "price", "amount", "fee", "tax"):
+        x[c+"_num"] = pd.to_numeric(x.get(c), errors="coerce").fillna(0.0)
+    x = x.sort_values(["trade_date_dt", "occurred_at", "transaction_id"], na_position="last")
+
+    holdings = {}
+    issues = []
+    corporate_actions = 0
+
+    def ensure_holding(r):
+        key = _transaction_key(r)
+        if not key:
+            return None, None
+        h = holdings.setdefault(key, {
+            "quantity": 0.0, "cost": 0.0,
+            "ticker": str(r.get("symbol") or "").strip().upper(),
+            "isin": str(r.get("isin") or "").strip().upper(),
+            "name": str(r.get("name") or "").strip(),
+            "currency": str(r.get("currency") or "").strip().upper(),
+            "purchase_date": None, "last_price": None,
+        })
+        # Never treat an ISIN-looking value as a ticker.
+        if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", h["ticker"] or ""):
+            h["isin"] = h["isin"] or h["ticker"]
+            h["ticker"] = ISIN_TO_TICKER.get(h["isin"], "")
+        elif h["isin"] and not h["ticker"]:
+            h["ticker"] = ISIN_TO_TICKER.get(h["isin"], "")
+        return key, h
+
+    # Process each day in chronological order so corporate actions happen before later trades.
+    for day, day_rows in x.groupby(x["trade_date_dt"].dt.date, dropna=False, sort=True):
+        split_rows = []
+        for _, r in day_rows.iterrows():
+            typ = r["type_norm"]
+            if typ == "SPLIT":
+                split_rows.append(r)
+                continue
+            if typ not in BUY_TYPES | SELL_TYPES | {"BONUS_ISSUE", "BONUS_ISSUE_CANCELLED"}:
+                continue
+            key, h = ensure_holding(r)
+            if h is None:
+                issues.append(f"{typ}: instrument non identifiable")
+                continue
+            qty = abs(float(r["quantity_num"]))
+            signed_qty = float(r["quantity_num"])
+            price = abs(float(r["price_num"]))
+            amount = float(r["amount_num"])
+            fee = abs(float(r["fee_num"]))
+            tax = abs(float(r["tax_num"]))
+            trade_day = r["trade_date_dt"]
+
+            if typ in BUY_TYPES:
+                if qty <= 0:
+                    continue
+                trade_cost = abs(amount) if amount != 0 else qty * price
+                trade_cost += fee + tax
+                h["quantity"] += qty
+                h["cost"] += trade_cost
+                if price > 0:
+                    h["last_price"] = price
+                if h["purchase_date"] is None and pd.notna(trade_day):
+                    h["purchase_date"] = trade_day.date()
+            elif typ in SELL_TYPES:
+                if qty <= 0 or h["quantity"] <= 0:
+                    continue
+                sold = min(qty, h["quantity"])
+                avg = h["cost"] / h["quantity"] if h["quantity"] > 0 else 0.0
+                h["quantity"] -= sold
+                h["cost"] = max(0.0, h["cost"] - avg * sold)
+                if price > 0:
+                    h["last_price"] = price
+                if qty - sold > 1e-8:
+                    issues.append(f"Vente {key}: {qty-sold:.6g} unité(s) sans position correspondante")
+            elif typ == "BONUS_ISSUE":
+                corporate_actions += 1
+                if signed_qty > 0:
+                    h["quantity"] += signed_qty  # zero-cost shares
+                elif signed_qty < 0:
+                    h["quantity"] = max(0.0, h["quantity"] + signed_qty)
+            elif typ == "BONUS_ISSUE_CANCELLED":
+                corporate_actions += 1
+                # Broker exports generally encode cancellation as a negative quantity.
+                delta = signed_qty if signed_qty < 0 else -signed_qty
+                h["quantity"] = max(0.0, h["quantity"] + delta)
+
+        # Paired split/replacement legs: transfer cost basis from negative legs to positive legs.
+        if split_rows:
+            corporate_actions += len(split_rows)
+            removed_cost = 0.0
+            positives = []
+            for r in split_rows:
+                key, h = ensure_holding(r)
+                if h is None:
+                    continue
+                q = float(r["quantity_num"])
+                if q < 0:
+                    remove = min(abs(q), h["quantity"])
+                    avg = h["cost"] / h["quantity"] if h["quantity"] > 0 else 0.0
+                    removed_cost += avg * remove
+                    h["quantity"] -= remove
+                    h["cost"] = max(0.0, h["cost"] - avg * remove)
+                elif q > 0:
+                    positives.append((r, q))
+            total_pos = sum(q for _, q in positives)
+            for r, q in positives:
+                key, h = ensure_holding(r)
+                if h is None:
+                    continue
+                h["quantity"] += q
+                if total_pos > 0:
+                    h["cost"] += removed_cost * (q / total_pos)
+                if h["purchase_date"] is None and pd.notna(r["trade_date_dt"]):
+                    h["purchase_date"] = r["trade_date_dt"].date()
+
+    rows = []
+    for key, h in holdings.items():
+        qty = float(h["quantity"])
+        if qty <= 1e-10:
+            continue
+        pru = h["cost"] / qty if qty > 0 else np.nan
+        last_price = h.get("last_price")
+        rows.append({
+            "instrument_key": key,
+            "ticker": h.get("ticker") or "",
+            "isin": h.get("isin") or "",
+            "name": h.get("name") or key,
+            "quantity": qty,
+            "average_cost": pru,
+            "market_price": last_price if last_price and last_price > 0 else np.nan,
+            "market_value": qty * last_price if last_price and last_price > 0 else np.nan,
+            "currency": h.get("currency") or "",
+            "purchase_date": h.get("purchase_date"),
+        })
+    positions = pd.DataFrame(rows)
+    # Transaction ledger is authoritative for this account+broker snapshot.
+    save_positions(account, broker, positions, source="transactions_rebuild")
+    st.cache_data.clear()
+    return {
+        "positions": len(positions),
+        "transactions": len(tx),
+        "corporate_actions": corporate_actions,
+        "issues": issues,
+    }
+
+
+def ensure_transaction_positions(account: str):
+    """Automatically materialize positions when a ledger exists but no position snapshot does."""
+    tx = load_transactions(account)
+    if tx.empty or "broker" not in tx.columns:
+        return []
+    rebuilt = []
+    current = load_positions(account)
+    existing_brokers = set(current.get("Courtier", pd.Series(dtype=str)).dropna().astype(str)) if not current.empty else set()
+    for broker in sorted(set(tx["broker"].dropna().astype(str))):
+        if broker and broker not in existing_brokers:
+            stats = rebuild_positions_from_transactions(account, broker)
+            rebuilt.append((broker, stats))
+    return rebuilt
 
 def load_transactions(account: str | None = None):
     if SUPABASE is None:
@@ -913,16 +1107,30 @@ def show_import_page():
 
     if st.button("☁️ Valider et enregistrer dans Supabase", type="primary"):
         try:
+            rebuild_stats = None
             if doc == "POSITIONS":
                 count=save_positions(account, broker_override, result["normalized"])
             else:
                 count=save_transactions(account, broker_override, result["normalized"])
+                rebuild_stats = rebuild_positions_from_transactions(account, broker_override)
             upsert_import_record({
                 "file_hash":meta["hash"],"account":account,"filename":uploaded.name,"document_type":doc,
                 "broker":broker_override,"row_count":int(count),"status":"IMPORTED","imported_at":datetime.utcnow().isoformat(),
                 "metadata":json.dumps({k:v for k,v in meta.items() if k!="hash"},ensure_ascii=False),
             })
-            st.success(f"☁️ Import terminé : {count} ligne(s) enregistrée(s). Elles seront rechargées automatiquement aux prochaines connexions.")
+            if rebuild_stats is not None:
+                st.success(
+                    f"☁️ Import terminé : {count} transaction(s) synchronisée(s). "
+                    f"Portefeuille reconstruit automatiquement : {rebuild_stats['positions']} position(s) ouverte(s)."
+                )
+                if rebuild_stats.get("corporate_actions"):
+                    st.caption(f"{rebuild_stats['corporate_actions']} opération(s) sur titres intégrée(s) automatiquement.")
+                if rebuild_stats.get("issues"):
+                    with st.expander("⚠️ Points à vérifier"):
+                        for msg in rebuild_stats["issues"][:20]:
+                            st.write("•", msg)
+            else:
+                st.success(f"☁️ Import terminé : {count} position(s) enregistrée(s). Elles seront rechargées automatiquement aux prochaines connexions.")
             st.cache_data.clear()
         except Exception as exc:
             st.error(f"Échec d'enregistrement Supabase : {exc}")
@@ -932,7 +1140,14 @@ def show_portfolio_page(account, title):
     st.header(title)
     df=load_positions(account)
     if df.empty:
-        st.info("Aucune position enregistrée. Utilise la page « Import documents » une seule fois avec ton export de positions.")
+        try:
+            rebuilt = ensure_transaction_positions(account)
+            if rebuilt:
+                df = load_positions(account)
+        except Exception as exc:
+            st.warning(f"Les transactions sont présentes mais la reconstruction automatique du portefeuille a échoué : {exc}")
+    if df.empty:
+        st.info("Aucune position enregistrée pour ce compte. Importe un export de positions ou de transactions depuis « Import documents » ; la reconstruction est ensuite automatique.")
         return
     st.success(f"☁️ {len(df)} position(s) chargée(s) automatiquement depuis Supabase.")
     totals,m=portfolio_valuation(account,use_live=True)
