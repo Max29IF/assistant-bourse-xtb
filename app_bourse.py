@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V8.2 Unified Imports"
+APP_VERSION = "V8.4 Automatic Reconciliation"
 
 # ==========================================================
 # AUTHENTICATION
@@ -496,47 +496,221 @@ def available_brokers(account: str):
 
 
 def delete_import_record(import_row: dict, delete_generated_data: bool = False):
+    """
+    Supprime un import et, si demandé, les données qu'il a générées.
+    V8.3 ajoute une réconciliation finale : si plus aucun import ne reste
+    pour le couple compte + courtier, aucun snapshot/ledger orphelin ne subsiste.
+    """
     if SUPABASE is None:
         raise RuntimeError("Supabase n'est pas configuré.")
+
     import_id = import_row.get("id")
-    file_hash = str(import_row.get("file_hash") or "")
-    account = str(import_row.get("account") or "")
-    broker = str(import_row.get("broker") or "")
-    doc_type = str(import_row.get("document_type") or "").upper()
+    file_hash = _clean_text(import_row.get("file_hash"))
+    account = _clean_text(import_row.get("account"))
+    broker = _clean_text(import_row.get("broker"))
+    doc_type = _clean_text(import_row.get("document_type"), upper=True)
+
+    if not account:
+        raise RuntimeError("Compte introuvable pour cet import.")
 
     if delete_generated_data:
         if doc_type == "POSITIONS":
-            # New V8 imports are traceable by source_import_hash. For legacy snapshots,
-            # delete the account+broker snapshot only when no traceable rows exist.
-            linked = (SUPABASE.table("portfolio_positions").select("id")
-                      .eq("account", account).eq("broker", broker)
-                      .eq("source_import_hash", file_hash).execute())
-            linked_rows = _sb_data(linked)
+            # V8+ : suppression ciblée par empreinte de fichier.
+            linked_rows = []
+            if file_hash:
+                linked = (
+                    SUPABASE.table("portfolio_positions")
+                    .select("id")
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .eq("source_import_hash", file_hash)
+                    .execute()
+                )
+                linked_rows = _sb_data(linked)
+
             if linked_rows:
-                SUPABASE.table("portfolio_positions").delete().eq("account", account).eq("broker", broker).eq("source_import_hash", file_hash).execute()
+                (
+                    SUPABASE.table("portfolio_positions")
+                    .delete()
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .eq("source_import_hash", file_hash)
+                    .execute()
+                )
             else:
-                SUPABASE.table("portfolio_positions").delete().eq("account", account).eq("broker", broker).execute()
+                # Import legacy sans traçabilité : le snapshot courtier est indivisible.
+                (
+                    SUPABASE.table("portfolio_positions")
+                    .delete()
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .execute()
+                )
+
         elif doc_type == "TRANSACTIONS":
-            linked = (SUPABASE.table("transactions").select("id")
-                      .eq("account", account).eq("broker", broker)
-                      .eq("source_import_hash", file_hash).execute())
-            linked_rows = _sb_data(linked)
+            linked_rows = []
+            if file_hash:
+                linked = (
+                    SUPABASE.table("transactions")
+                    .select("id")
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .eq("source_import_hash", file_hash)
+                    .execute()
+                )
+                linked_rows = _sb_data(linked)
+
             if linked_rows:
-                SUPABASE.table("transactions").delete().eq("account", account).eq("broker", broker).eq("source_import_hash", file_hash).execute()
+                (
+                    SUPABASE.table("transactions")
+                    .delete()
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .eq("source_import_hash", file_hash)
+                    .execute()
+                )
             else:
-                # Legacy imports were not traceable per file. In that case only a full
-                # broker purge can be deterministic; the UI warns the user before this path.
-                SUPABASE.table("transactions").delete().eq("account", account).eq("broker", broker).execute()
-            # Always rebuild the current snapshot from what remains.
+                # Import legacy : pas de lien fichier -> transaction fiable.
+                (
+                    SUPABASE.table("transactions")
+                    .delete()
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .execute()
+                )
+
+            # Reconstruit le snapshot à partir de ce qui reste.
             try:
-                rebuild_positions_from_transactions(account, broker)
+                remaining_tx = (
+                    SUPABASE.table("transactions")
+                    .select("id")
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .limit(1)
+                    .execute()
+                )
+                if _sb_data(remaining_tx):
+                    rebuild_positions_from_transactions(account, broker)
+                else:
+                    (
+                        SUPABASE.table("portfolio_positions")
+                        .delete()
+                        .eq("account", account)
+                        .eq("broker", broker)
+                        .execute()
+                    )
             except Exception:
-                pass
+                # En cas de doute, on évite de conserver un snapshot transactionnel orphelin.
+                (
+                    SUPABASE.table("portfolio_positions")
+                    .delete()
+                    .eq("account", account)
+                    .eq("broker", broker)
+                    .eq("source", "transaction_rebuild")
+                    .execute()
+                )
+
+    # Supprime ensuite la ligne d'historique.
     if import_id is not None:
         SUPABASE.table("imports").delete().eq("id", import_id).execute()
-    else:
-        SUPABASE.table("imports").delete().eq("file_hash", file_hash).eq("account", account).execute()
+    elif file_hash:
+        (
+            SUPABASE.table("imports")
+            .delete()
+            .eq("file_hash", file_hash)
+            .eq("account", account)
+            .execute()
+        )
+
+    # Réconciliation finale V8.3 :
+    # s'il ne reste AUCUN import pour compte + courtier, on supprime les données orphelines.
+    if delete_generated_data and broker:
+        remaining_imports = (
+            SUPABASE.table("imports")
+            .select("id")
+            .eq("account", account)
+            .eq("broker", broker)
+            .limit(1)
+            .execute()
+        )
+        if not _sb_data(remaining_imports):
+            (
+                SUPABASE.table("portfolio_positions")
+                .delete()
+                .eq("account", account)
+                .eq("broker", broker)
+                .execute()
+            )
+            (
+                SUPABASE.table("transactions")
+                .delete()
+                .eq("account", account)
+                .eq("broker", broker)
+                .execute()
+            )
+
     st.cache_data.clear()
+
+
+def reconcile_orphan_portfolio_data():
+    """
+    Réconciliation automatique et silencieuse :
+    si un couple compte + courtier n'a plus aucun import, les positions/transactions
+    héritées de ces imports sont supprimées automatiquement.
+    """
+    if SUPABASE is None:
+        raise RuntimeError("Supabase n'est pas configuré.")
+
+    imports_df = load_imports()
+    valid_pairs = set()
+    if not imports_df.empty:
+        for _, r in imports_df.iterrows():
+            a = _clean_text(r.get("account"))
+            b = _clean_text(r.get("broker"))
+            if a and b:
+                valid_pairs.add((a, b))
+
+    cleaned = 0
+    positions = pd.DataFrame(_sb_data(
+        SUPABASE.table("portfolio_positions")
+        .select("account,broker")
+        .execute()
+    ))
+    transactions = pd.DataFrame(_sb_data(
+        SUPABASE.table("transactions")
+        .select("account,broker")
+        .execute()
+    ))
+
+    pairs = set()
+    for df in (positions, transactions):
+        if not df.empty:
+            for _, r in df.iterrows():
+                a = _clean_text(r.get("account"))
+                b = _clean_text(r.get("broker"))
+                if a and b:
+                    pairs.add((a, b))
+
+    for account, broker in pairs:
+        if (account, broker) not in valid_pairs:
+            (
+                SUPABASE.table("portfolio_positions")
+                .delete()
+                .eq("account", account)
+                .eq("broker", broker)
+                .execute()
+            )
+            (
+                SUPABASE.table("transactions")
+                .delete()
+                .eq("account", account)
+                .eq("broker", broker)
+                .execute()
+            )
+            cleaned += 1
+
+    st.cache_data.clear()
+    return cleaned
 
 
 def show_documents_page():
@@ -1312,6 +1486,11 @@ def position_calc(capital,risk_pct,entry,stop,target):
 # PAGES
 # ==========================================================
 def show_import_page():
+    try:
+        reconcile_orphan_portfolio_data()
+    except Exception:
+        pass
+
     st.header("📥 Imports & gestion des documents")
     st.caption(
         "Même espace pour importer, consulter et supprimer les documents. "
@@ -1538,35 +1717,18 @@ def show_import_page():
             row = options[selected]
 
             st.caption(
-                "La suppression de l'historique conserve les positions/transactions. "
-                "La suppression avec données retire aussi ce que le document a généré "
-                "puis reconstruit automatiquement le portefeuille si nécessaire."
+                "La suppression retire le document et les données qu'il a générées. "
+                "S'il reste d'autres transactions pour ce compte/courtier, le portefeuille "
+                "est reconstruit automatiquement ; sinon les positions résiduelles disparaissent."
             )
 
-            a, b = st.columns(2)
-
-            if a.button(
-                "🗑️ Supprimer seulement de l'historique",
-                use_container_width=True,
-                key="unified_delete_history"
-            ):
-                try:
-                    delete_import_record(row, delete_generated_data=False)
-                    st.success(
-                        "Document supprimé de l'historique. "
-                        "Les données de portefeuille sont conservées."
-                    )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Suppression impossible : {exc}")
-
-            confirm = b.checkbox(
-                "Je confirme la suppression des données liées",
+            confirm = st.checkbox(
+                "Je confirme la suppression de ce document et de ses données liées",
                 key=f"unified_confirm_delete_{row.get('id')}"
             )
 
-            if b.button(
-                "🧨 Supprimer document + données",
+            if st.button(
+                "🗑️ Supprimer",
                 type="primary",
                 use_container_width=True,
                 disabled=not confirm,
@@ -1574,16 +1736,20 @@ def show_import_page():
             ):
                 try:
                     delete_import_record(row, delete_generated_data=True)
-                    st.success(
-                        "Document et données liées supprimés. "
-                        "Les états calculés ont été actualisés."
-                    )
+                    reconcile_orphan_portfolio_data()
+                    st.cache_data.clear()
+                    st.success("Document supprimé et portefeuille actualisé automatiquement.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Suppression impossible : {exc}")
 
 
 def show_portfolio_page(account, title, broker: str | None = None):
+    try:
+        reconcile_orphan_portfolio_data()
+    except Exception:
+        pass
+
     st.header(title)
     df=load_positions(account, broker=broker)
     if df.empty:
