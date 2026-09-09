@@ -1,3 +1,4 @@
+import base64
 import csv
 import hashlib
 import io
@@ -24,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V20 Premium Experience"
+APP_VERSION = "V21 Brand & Agent Premium"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -229,6 +230,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n/* V21 — stronger atmosphere across the full product */\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 4% 3%, rgba(31,103,255,.23), transparent 24%),\n    radial-gradient(circle at 96% 4%, rgba(112,68,255,.20), transparent 28%),\n    radial-gradient(circle at 86% 96%, rgba(190,148,73,.12), transparent 23%),\n    linear-gradient(180deg,#f7f9ff 0%,#edf3fb 50%,#f7f3ff 100%) !important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 10% 2%,rgba(31,103,255,.16),transparent 28%),\n    linear-gradient(180deg,#fbfcff 0%,#f1f6ff 50%,#f8f3ff 100%) !important;\n  box-shadow:12px 0 36px rgba(34,47,84,.045);\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"],\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.98) 0%,rgba(244,248,255,.96) 67%,rgba(249,246,255,.94) 100%) !important;\n  border:1px solid rgba(66,96,169,.17) !important;\n}\ndiv[data-testid="stMetric"]{\n  box-shadow:\n    0 9px 24px rgba(39,58,103,.055),\n    inset 0 2px 0 rgba(53,107,255,.06) !important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  box-shadow:\n    0 12px 30px rgba(35,50,91,.05),\n    inset 0 1px 0 rgba(255,255,255,.85) !important;\n}\n.vf-page-shell{\n  background:\n    radial-gradient(circle at 90% 10%,rgba(112,68,255,.11),transparent 30%),\n    linear-gradient(135deg,rgba(255,255,255,.82),rgba(239,245,255,.79) 56%,rgba(248,244,255,.76)) !important;\n  border:1px solid rgba(59,91,171,.16) !important;\n}\n.vf-future-strip{\n  box-shadow:0 10px 28px rgba(39,58,103,.05);\n}\n.vf-logo-shell{\n  background:#ffffff !important;\n  border:1px solid rgba(64,94,166,.16) !important;\n  box-shadow:0 7px 17px rgba(33,48,87,.065) !important;\n}\n.vf-logo-shell img{\n  width:38px !important;\n  height:38px !important;\n  object-fit:contain !important;\n}\n.vf-name{\n  color:#111827 !important;\n  font-weight:900 !important;\n  letter-spacing:-.02em;\n}\n.vf-goldline{\n  width:66px !important;\n  height:2px !important;\n  background:linear-gradient(90deg,#2868ff,#7652ff,#b8904d) !important;\n}\n.vf-agent-callout{\n  background:\n    radial-gradient(circle at 100% 0%,rgba(112,68,255,.13),transparent 30%),\n    linear-gradient(120deg,#eef4ff,#f4efff 62%,#fbf5e8);\n  border:1px solid rgba(70,95,163,.16);\n  border-radius:17px;\n  padding:12px 14px;\n  margin:.35rem 0 .8rem;\n  box-shadow:0 8px 22px rgba(35,50,91,.045);\n}\n.vf-agent-title{font-size:.78rem;font-weight:900;letter-spacing:.08em;color:#5f6775;text-transform:uppercase;}\n.vf-agent-copy{font-size:.92rem;font-weight:760;color:#202a3d;margin-top:3px;}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n/* V20 — premium finance application, not just a themed Streamlit page */\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 0% 0%,rgba(38,100,255,.20),transparent 26%),\n    radial-gradient(circle at 100% 0%,rgba(119,79,255,.18),transparent 31%),\n    radial-gradient(circle at 88% 100%,rgba(188,145,72,.10),transparent 25%),\n    linear-gradient(180deg,#f8faff 0%,#eef3fb 50%,#f7f5ff 100%)!important;\n}\n[data-testid="stMainBlockContainer"]{\n  max-width:1500px!important;\n  padding:1rem 1.35rem 4rem!important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    linear-gradient(180deg,rgba(249,251,255,.99),rgba(242,247,255,.99) 52%,rgba(247,243,255,.99))!important;\n}\nsection[data-testid="stSidebar"] button[kind="primary"]{\n  background:linear-gradient(90deg,#2a68ff,#7550f5)!important;\n  color:#fff!important;\n  box-shadow:0 7px 18px rgba(69,79,206,.18)!important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]{\n  background:rgba(255,255,255,.70)!important;\n  border-color:transparent!important;\n  box-shadow:none!important;\n  text-align:left!important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]:hover{\n  background:linear-gradient(90deg,rgba(42,104,255,.09),rgba(117,80,245,.08))!important;\n  border-color:rgba(42,104,255,.10)!important;\n}\n.vf-hero{\n  min-height:108px;\n  display:flex;\n  flex-direction:column;\n  justify-content:center;\n}\n.vf-hero-title{font-size:1.8rem!important;}\n.vf-hero-sub{font-size:.92rem!important;max-width:850px;}\n.vf-page-shell{\n  background:linear-gradient(135deg,rgba(255,255,255,.76),rgba(242,247,255,.68),rgba(248,245,255,.66))!important;\n  box-shadow:0 13px 38px rgba(28,43,78,.045)!important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  backdrop-filter:blur(12px);\n}\n.vf-command-card{\n  background:\n    radial-gradient(circle at 95% 0%,rgba(42,104,255,.08),transparent 35%),\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,250,255,.93))!important;\n}\n.vf-name{font-size:1.02rem!important;}\n.vf-logo-shell{background:#fff!important;}\n.vf-logo-shell img{width:38px!important;height:38px!important;}\n</style>\n', unsafe_allow_html=True)
 
@@ -2831,14 +2835,50 @@ def show_import_page():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def vf_logo_dev_token():
+    token = ""
+    try:
+        token = _clean_text(st.secrets.get("LOGO_DEV_TOKEN", ""))
+    except Exception:
+        token = ""
+    if not token:
+        token = _clean_text(os.getenv("LOGO_DEV_TOKEN", ""))
+    return token
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def vf_fetch_logo_data_uri(url):
+    """Fetch the logo server-side and embed it as a data URI.
+    This prevents broken <img> placeholders in the browser.
+    """
+    if not url:
+        return ""
+    try:
+        from urllib.request import Request, urlopen
+        req = Request(url, headers={"User-Agent": "VISION-FUTURE/21"})
+        with urlopen(req, timeout=6) as resp:
+            content_type = str(resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            data = resp.read(500_000)
+        if not data or not content_type.startswith("image/"):
+            return ""
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    except Exception:
+        return ""
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def vf_company_brand_data(symbol, name="", isin=""):
     """
-    Premium brand identity resolution.
-    Priority:
-      1) explicit logo URL from finance provider
-      2) Logo.dev by ticker / ISIN when LOGO_DEV_TOKEN is configured
-      3) monogram fallback
+    Identity priority:
+    1. explicit finance-provider logo URL
+    2. Logo.dev by official company domain (preferred)
+    3. Logo.dev by ticker
+    4. Logo.dev by ISIN
+    5. clean monogram fallback
+
+    Supports a Logo.dev publishable key directly. If a secret key (sk_*) is
+    supplied, Brand API is used server-side when a company domain is known.
     """
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name)
@@ -2849,53 +2889,95 @@ def vf_company_brand_data(symbol, name="", isin=""):
     except Exception:
         info = {}
 
+    finance_name = _clean_text(info.get("longName") or info.get("shortName"))
     finance_logo = _clean_text(
         info.get("logo_url")
         or info.get("logoUrl")
         or info.get("companyLogoUrl")
     )
-    finance_name = _clean_text(info.get("longName") or info.get("shortName"))
     website = _clean_text(info.get("website"))
 
     if finance_logo.startswith("http"):
-        return {
-            "url": finance_logo,
-            "source": "Source financière",
-            "name": finance_name or name,
-            "website": website,
-        }
+        data_uri = vf_fetch_logo_data_uri(finance_logo)
+        if data_uri:
+            return {
+                "url": data_uri,
+                "source": "Source financière",
+                "name": finance_name or name,
+                "website": website,
+            }
 
-    token = ""
-    try:
-        token = _clean_text(st.secrets.get("LOGO_DEV_TOKEN", ""))
-    except Exception:
-        token = ""
-    if not token:
-        token = _clean_text(os.getenv("LOGO_DEV_TOKEN", ""))
+    domain = ""
+    if website:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(website if "://" in website else "https://" + website)
+            domain = (parsed.netloc or parsed.path).split(":")[0].lower().strip()
+            if domain.startswith("www."):
+                domain = domain[4:]
+        except Exception:
+            domain = ""
 
+    token = vf_logo_dev_token()
     if token:
         from urllib.parse import quote
+
+        # Secret-key path: resolve full Brand API server-side.
+        if token.startswith("sk_") and domain:
+            try:
+                from urllib.request import Request, urlopen
+                req = Request(
+                    f"https://api.logo.dev/brand/{quote(domain)}",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "User-Agent": "VISION-FUTURE/21",
+                    },
+                )
+                with urlopen(req, timeout=6) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                logo_url = _clean_text(payload.get("logo"))
+                if logo_url:
+                    data_uri = vf_fetch_logo_data_uri(logo_url)
+                    if data_uri:
+                        return {
+                            "url": data_uri,
+                            "source": "Logo.dev",
+                            "name": _clean_text(payload.get("name")) or finance_name or name,
+                            "website": domain,
+                        }
+            except Exception:
+                pass
+
+        # Publishable-key or generic token path.
+        candidates = []
+        if domain:
+            candidates.append(
+                f"https://img.logo.dev/{quote(domain)}?token={quote(token)}&size=128&format=png&retina=true"
+            )
         if symbol:
-            # Logo.dev supports ticker lookup. Exchange suffixes are kept when useful.
-            return {
-                "url": f"https://img.logo.dev/ticker/{quote(symbol)}?token={quote(token)}&size=128&format=png",
-                "source": "Logo.dev",
-                "name": finance_name or name,
-                "website": website,
-            }
+            candidates.append(
+                f"https://img.logo.dev/ticker/{quote(symbol)}?token={quote(token)}&size=128&format=png"
+            )
         if isin:
-            return {
-                "url": f"https://img.logo.dev/isin/{quote(isin)}?token={quote(token)}&size=128&format=png",
-                "source": "Logo.dev",
-                "name": finance_name or name,
-                "website": website,
-            }
+            candidates.append(
+                f"https://img.logo.dev/isin/{quote(isin)}?token={quote(token)}&size=128&format=png"
+            )
+
+        for candidate in candidates:
+            data_uri = vf_fetch_logo_data_uri(candidate)
+            if data_uri:
+                return {
+                    "url": data_uri,
+                    "source": "Logo.dev",
+                    "name": finance_name or name,
+                    "website": domain or website,
+                }
 
     return {
         "url": "",
         "source": "",
         "name": finance_name or name,
-        "website": website,
+        "website": domain or website,
     }
 
 
@@ -2967,14 +3049,11 @@ def vf_identity_html(symbol, name, isin="", resolve=False):
     resolution = ""
     if not symbol and identity.get("symbol"):
         resolution = (
-            f'<div class="vf-resolution-note">Résolu automatiquement : '
-            f'{identity.get("source")} • confiance {identity.get("confidence")}%</div>'
+            f'<div class="vf-resolution-note">Résolu : {identity.get("source")} • '
+            f'confiance {identity.get("confidence")}%</div>'
         )
     elif not identity.get("symbol"):
-        resolution = '<div class="vf-resolution-note">Instrument à résoudre — fiche disponible avec résolution assistée.</div>'
-
-    logo_source = brand.get("source","")
-    logo_note = f'<div class="vf-resolution-note">Logo : {logo_source}</div>' if logo_source else ""
+        resolution = '<div class="vf-resolution-note">Instrument à résoudre — fiche assistée disponible.</div>'
 
     return (
         '<div class="vf-instrument-identity">'
@@ -2983,7 +3062,6 @@ def vf_identity_html(symbol, name, isin="", resolve=False):
         + f'<div class="vf-name">{shown_symbol} • {shown_name}</div>'
         + f'<div class="vf-isin">{subtitle}</div>'
         + resolution
-        + logo_note
         + '<div class="vf-goldline"></div>'
         + '</div></div>'
     )
@@ -3244,6 +3322,15 @@ with st.sidebar:
             st.session_state["_pending_nav_mode"] = label
             st.rerun()
 
+    st.markdown(
+        '<div class="vf-agent-callout">'
+        '<div class="vf-agent-title">Agent Intelligence</div>'
+        '<div class="vf-agent-copy">Surveillance marché, scoring et alertes automatiques.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    _nav_button("🛰️ Agent marché", "nav_agent_top")
+
     st.markdown('<div class="vf-group-title">Vue d’ensemble</div>', unsafe_allow_html=True)
     _nav_button("🏠 Dashboard", "nav_dashboard")
     _nav_button("⭐ Watchlist", "nav_watchlist")
@@ -3257,7 +3344,7 @@ with st.sidebar:
 
     st.markdown('<div class="vf-group-title">Marché</div>', unsafe_allow_html=True)
     _nav_button("🔎 Scanner", "nav_scanner")
-    _nav_button("🛰️ Agent marché", "nav_agent")
+    _nav_button("🛰️ Agent marché", "nav_agent_market")
 
     st.markdown('<div class="vf-group-title">Analyse</div>', unsafe_allow_html=True)
     _nav_button("📊 Instrument", "nav_instrument")
@@ -3796,9 +3883,6 @@ def vf_full_instrument_page(symbol, row=None):
             '</div>',
             unsafe_allow_html=True
         )
-        logo_meta = vf_company_brand_data(symbol, name, isin)
-        if logo_meta.get("url"):
-            st.caption("Logo fourni par la source financière")
         badge_parts=[]
         if _clean_text(row.get("Source")):
             badge_parts.append(vf_board_badge(_clean_text(row.get("Source")),"blue"))
@@ -4803,4 +4887,4 @@ else:
     else: st.warning("Setup indisponible.")
 
 st.markdown("---")
-st.caption(f"VISION FUTURE • {APP_VERSION} • {APP_TAGLINE} • Les scénarios analytiques ne constituent pas des garanties de performance.")
+st.caption(f"VISION FUTURE • {APP_VERSION} • {APP_TAGLINE} • Analyse décisionnelle, portefeuille et agent marché.")
