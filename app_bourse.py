@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V10 Event Driven"
+APP_VERSION = "V10.1 Identity UI"
 
 # ==========================================================
 # AUTHENTICATION
@@ -1591,6 +1591,94 @@ def compatible_scan_symbols(brokers, markets):
     })
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_instrument_directory():
+    """Référentiel central ticker -> nom complet + ISIN + marché/courtier."""
+    rows = []
+    if SUPABASE is None:
+        return pd.DataFrame(columns=["symbol","name","isin","market","broker"])
+    try:
+        p = _sb_data(SUPABASE.table("portfolio_positions")
+                     .select("ticker,name,isin,broker")
+                     .execute())
+        for r in p:
+            sym = _clean_text(r.get("ticker"), upper=True)
+            if sym:
+                rows.append({"symbol":sym,"name":_clean_text(r.get("name")),"isin":_clean_text(r.get("isin"), upper=True),
+                             "market":"","broker":_clean_text(r.get("broker"))})
+    except Exception:
+        pass
+    try:
+        u = _sb_data(SUPABASE.table("broker_universe")
+                     .select("symbol,name,isin,market,broker")
+                     .eq("enabled", True).execute())
+        for r in u:
+            sym = _clean_text(r.get("symbol"), upper=True)
+            if sym:
+                rows.append({"symbol":sym,"name":_clean_text(r.get("name")),"isin":_clean_text(r.get("isin"), upper=True),
+                             "market":_clean_text(r.get("market")),"broker":_clean_text(r.get("broker"))})
+    except Exception:
+        pass
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame(columns=["symbol","name","isin","market","broker"])
+    # Prefer rows with most identity information.
+    df["_quality"] = df[["name","isin"]].notna().sum(axis=1)
+    df = df.sort_values("_quality", ascending=False).drop_duplicates("symbol").drop(columns="_quality")
+    return df
+
+
+def instrument_identity(symbol, row=None):
+    """Always return (symbol, full_name, isin). Existing alert fields win, then central directory."""
+    sym = _clean_text(symbol, upper=True)
+    row = row or {}
+    name = _clean_text(row.get("name") if hasattr(row, "get") else None)
+    isin = _clean_text(row.get("isin") if hasattr(row, "get") else None, upper=True)
+    if sym and (not name or not isin):
+        try:
+            d = load_instrument_directory()
+            hit = d[d["symbol"] == sym]
+            if not hit.empty:
+                rr = hit.iloc[0]
+                name = name or _clean_text(rr.get("name"))
+                isin = isin or _clean_text(rr.get("isin"), upper=True)
+        except Exception:
+            pass
+    # Last-resort name only; never invent an ISIN.
+    if sym and not name:
+        try:
+            name = _clean_text(live_quote(sym).get("name"))
+        except Exception:
+            pass
+    return sym, name or "Nom non renseigné", isin or "ISIN non renseigné"
+
+
+def add_identity_columns(df, symbol_col="Ticker"):
+    """Adds a human-readable identity column to tabular views."""
+    if df is None or df.empty or symbol_col not in df.columns:
+        return df
+    out = df.copy()
+    directory = load_instrument_directory()
+    lookup = directory.set_index("symbol") if not directory.empty else None
+    labels=[]; names=[]; isins=[]
+    for _, r in out.iterrows():
+        sym=_clean_text(r.get(symbol_col), upper=True)
+        name=_clean_text(r.get("Entreprise") or r.get("Nom") or r.get("name"))
+        isin=_clean_text(r.get("ISIN") or r.get("isin"), upper=True)
+        if lookup is not None and sym in lookup.index:
+            rr=lookup.loc[sym]
+            if isinstance(rr, pd.DataFrame): rr=rr.iloc[0]
+            name=name or _clean_text(rr.get("name"))
+            isin=isin or _clean_text(rr.get("isin"), upper=True)
+        names.append(name or "Nom non renseigné")
+        isins.append(isin or "ISIN non renseigné")
+        labels.append(f"{sym} • {name or 'Nom non renseigné'} • {isin or 'ISIN non renseigné'}")
+    out["Entreprise"] = names
+    out["ISIN"] = isins
+    out.insert(0, "Valeur", labels)
+    return out
+
+
 @st.cache_data(ttl=30, show_spinner=False)
 def load_market_alerts(limit=100, status=None):
     if SUPABASE is None:
@@ -1622,50 +1710,85 @@ def acknowledge_alert(alert_id):
 
 
 def show_market_agent_page():
-    st.header("🛰️ Agent marché — veille automatique")
+    st.header("🛰️ Agent marché — alertes actionnables")
     st.caption(
-        "V10 n’affiche que les événements de trading actionnables produits par VISION FUTURE. "
-        "Le worker surveille les positions et les meilleurs setups, puis peut consulter "
-        "un modèle OpenAI avec recherche web lorsque OPENAI_API_KEY est configurée."
+        "Chaque valeur est affichée avec son ticker, son nom complet et son ISIN. "
+        "V10.1 masque les anciennes analyses POSITION répétitives et ne garde que les événements de trading."
     )
+
+    st.markdown("""
+    <style>
+    .vf-pill {display:inline-block;padding:0.28rem 0.62rem;border-radius:999px;font-size:.84rem;font-weight:700;margin-left:.25rem;}
+    .vf-score {background:#e7f0ff;color:#124eaa;}
+    .vf-entry {background:#dcfce7;color:#047857;}
+    .vf-risk {background:#fff3cd;color:#9a6700;}
+    .vf-exit {background:#fee2e2;color:#b42318;}
+    .vf-info {background:#ede9fe;color:#6d28d9;}
+    .vf-id {color:#64748b;font-size:.93rem;margin-top:-.2rem;margin-bottom:.4rem;}
+    .vf-title {font-size:1.08rem;font-weight:750;color:#0f172a;line-height:1.2;}
+    div[data-testid="stMetric"] {background:transparent;border:0;padding:0.15rem 0;}
+    div[data-testid="stMetricValue"] {font-size:1.62rem;}
+    </style>
+    """, unsafe_allow_html=True)
 
     alerts = load_market_alerts(limit=200)
     if alerts.empty:
-        st.info(
-            "Aucune alerte pour l'instant. Une fois le worker planifié, les nouvelles alertes "
-            "apparaîtront automatiquement ici."
-        )
+        st.info("Aucune nouvelle alerte actionnable pour l'instant.")
         return
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Alertes actionnables", len(alerts))
-    c2.metric("Entrées", int((alerts.get("alert_type","") == "ENTRY").sum()) if "alert_type" in alerts else 0)
+    c2.metric("Entrées", int((alerts["alert_type"] == "ENTRY").sum()) if "alert_type" in alerts else 0)
     risk_types = {"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
     c3.metric("Gestion / sorties", int(alerts["alert_type"].isin(risk_types).sum()) if "alert_type" in alerts else 0)
 
+    def _pill_class(t):
+        return "vf-entry" if t in {"ENTRY","TAKE_PROFIT"} else "vf-exit" if t == "EXIT" else "vf-risk" if t in {"RISK","PROTECT","INVALIDATED"} else "vf-info"
+
     for _, r in alerts.head(50).iterrows():
-        typ = r.get("alert_type","ALERT")
-        symbol = r.get("symbol","")
-        score = r.get("score")
-        title = f"{typ} • {symbol}"
-        if pd.notna(score):
-            title += f" • score {float(score):.0f}"
-        with st.expander(title, expanded=(r.get("status") == "NEW")):
-            cols = st.columns(4)
-            if pd.notna(r.get("entry")): cols[0].metric("Entrée", f"{float(r.get('entry')):.2f}")
-            if pd.notna(r.get("stop")): cols[1].metric("Stop", f"{float(r.get('stop')):.2f}")
-            if pd.notna(r.get("tp1")): cols[2].metric("TP1", f"{float(r.get('tp1')):.2f}")
-            if pd.notna(r.get("tp2")): cols[3].metric("TP2", f"{float(r.get('tp2')):.2f}")
-            if r.get("headline"):
-                st.write("**Contexte :**", r.get("headline"))
-            if r.get("analysis"):
-                st.write(r.get("analysis"))
-            st.caption(
-                f"{r.get('broker','')} • {r.get('market','')} • "
-                f"{r.get('created_at','')} • statut {r.get('status','NEW')}"
-            )
+        typ = _clean_text(r.get("alert_type"), upper=True) or "ALERT"
+        symbol, full_name, isin = instrument_identity(r.get("symbol"), r)
+        score = pd.to_numeric(pd.Series([r.get("score")]), errors="coerce").iloc[0]
+
+        with st.container(border=True):
+            h1, h2 = st.columns([5,2])
+            with h1:
+                st.markdown(f'<div class="vf-title">{symbol} • {full_name}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="vf-id">ISIN : {isin}</div>', unsafe_allow_html=True)
+            with h2:
+                score_txt = f"score {float(score):.0f}" if pd.notna(score) else "score —"
+                st.markdown(
+                    f'<div style="text-align:right"><span class="vf-pill vf-score">{score_txt}</span>'
+                    f'<span class="vf-pill {_pill_class(typ)}">{typ}</span></div>',
+                    unsafe_allow_html=True
+                )
+
+            vals = st.columns(6)
+            metric_specs = [
+                ("Entrée", r.get("entry"), ""), ("Stop", r.get("stop"), ""),
+                ("TP1", r.get("tp1"), ""), ("TP2", r.get("tp2"), ""),
+                ("Potentiel", r.get("upside"), "%"), ("R/R", r.get("rr"), "")
+            ]
+            for col, (label, value, suffix) in zip(vals, metric_specs):
+                num = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+                col.metric(label, f"{float(num):.2f}{suffix}" if pd.notna(num) else "—")
+
+            if _clean_text(r.get("headline")):
+                st.markdown(f"**📰 {_clean_text(r.get('headline'))}**")
+            if _clean_text(r.get("analysis")):
+                st.write(_clean_text(r.get("analysis")))
+
+            news_risk = _clean_text(r.get("news_risk"), upper=True)
+            footer = f"{_clean_text(r.get('broker')) or 'Courtier non renseigné'}"
+            if _clean_text(r.get("market")):
+                footer += f" • {_clean_text(r.get('market'))}"
+            footer += f" • {r.get('created_at','')} • statut {_clean_text(r.get('status')) or 'NEW'}"
+            if news_risk:
+                footer += f" • news {news_risk}"
+            st.caption(footer)
+
             if r.get("status") == "NEW" and r.get("id") is not None:
-                if st.button("Marquer comme lu", key=f"ack_{r.get('id')}"):
+                if st.button("🔖 Marquer comme lu", key=f"ack_{r.get('id')}"):
                     acknowledge_alert(r.get("id"))
                     st.rerun()
 
@@ -1997,6 +2120,7 @@ def show_portfolio_page(account, title, broker: str | None = None):
     c4.metric("Sans valorisation",totals['unpriced'])
     if totals.get("live_value", 0) > 0:
         st.caption(f"Estimation live disponible : {totals['live_value']:,.2f} € — séparée du snapshot courtier.")
+    m = add_identity_columns(m, "Ticker")
     st.dataframe(m,use_container_width=True,hide_index=True)
     st.caption(
         "Pour un export de positions, la valeur totale et le P/L latent utilisent le snapshot courtier "
@@ -2131,14 +2255,15 @@ elif mode=="🔎 Scanner":
         else:
             names={sym:live_quote(sym).get("name",sym) for sym in out["Ticker"].tolist()}
             out.insert(1,"Entreprise",out["Ticker"].map(names))
+            out = add_identity_columns(out, "Ticker")
             if only_confirmed:
                 out=out[out["Confirmé 1h"]=="✅"]
             st.success(f"{len(out)} configuration(s) retenue(s).")
-            visible=["Ticker","Entreprise","Score combiné","Score","Confirmation 1h","Confirmé 1h","Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"]
-            st.dataframe(out[visible],use_container_width=True,hide_index=True)
+            visible=["Valeur","Ticker","Entreprise","ISIN","Score combiné","Score","Confirmation 1h","Confirmé 1h","Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"]
+            st.dataframe(out[[c for c in visible if c in out.columns]],use_container_width=True,hide_index=True)
             st.subheader("Pourquoi ces candidats ?")
             for _,r in out.head(10).iterrows():
-                with st.expander(f"{r['Ticker']} • score {r['Score combiné']} • potentiel {r['Potentiel %']:.1f}% • R/R {r['R/R']:.2f}"):
+                with st.expander(f"{r['Ticker']} • {r.get('Entreprise','')} • {r.get('ISIN','')} • score {r['Score combiné']} • potentiel {r['Potentiel %']:.1f}% • R/R {r['R/R']:.2f}"):
                     st.write(r.get("Raisons") or "Analyse technique disponible.")
                     st.caption(
                         "Entrée/SL/TP sont des niveaux analytiques. Le worker d'agent peut ensuite "
@@ -2155,17 +2280,23 @@ elif mode=="📊 Analyse":
     if not t: st.warning("Données insuffisantes pour calculer le setup.")
     else:
         c=st.columns(7); c[0].metric("Cours",f"{t['price']:.2f}"); c[1].metric("Entrée",f"{t['entry']:.2f}"); c[2].metric("SL",f"{t['stop']:.2f}"); c[3].metric("TP1",f"{t['tp1']:.2f}"); c[4].metric("TP2",f"{t['tp2']:.2f}"); c[5].metric("Potentiel",f"{t['upside']:.1f}%"); c[6].metric("R/R",f"{t['rr']:.2f}")
-        st.write(f"**{q['name']}** • Score {t['score']}/100 • {t['quality']}")
+        sym_i, name_i, isin_i = instrument_identity(symbol, {"name": q.get("name", "")})
+        st.write(f"**{sym_i} • {name_i}**")
+        st.caption(f"ISIN : {isin_i}")
+        st.write(f"Score {t['score']}/100 • {t['quality']}")
         st.write(" • ".join(t["reasons"]))
 
 else:
     st.header("🧪 Simulation")
     symbol=st.text_input("Ticker","AAPL").upper().strip(); t=trade_setup(history(symbol,"6mo","1d"))
     if t:
+        sym_i, name_i, isin_i = instrument_identity(symbol)
+        st.markdown(f"**{sym_i} • {name_i}**")
+        st.caption(f"ISIN : {isin_i}")
         entry=st.number_input("Entrée",value=float(t["entry"])); stop=st.number_input("Stop",value=float(t["stop"])); target=st.number_input("TP2",value=float(t["tp2"]))
         risk_e,qty,exposure,profit,rr=position_calc(capital,risk_pct,entry,stop,target)
         c=st.columns(5); c[0].metric("Risque max",f"{risk_e:.2f} €"); c[1].metric("Quantité",qty); c[2].metric("Exposition",f"{exposure:.2f} €"); c[3].metric("Gain cible",f"{profit:.2f} €"); c[4].metric("R/R",f"{rr:.2f}")
     else: st.warning("Setup indisponible.")
 
 st.markdown("---")
-st.caption("VISION FUTURE V9 Market Intelligence Agent. Les cours yfinance peuvent être différés. Les scénarios Entrée/SL/TP sont des aides analytiques, pas des garanties de performance.")
+st.caption("VISION FUTURE V10.1 Event Driven + Identity UI. Les cours yfinance peuvent être différés. Les scénarios Entrée/SL/TP sont des aides analytiques, pas des garanties de performance.")
