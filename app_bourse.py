@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.4 Intelligence Dashboard"
+APP_VERSION = "V11.5 Global Discovery"
 
 
 # ==========================================================
@@ -1731,6 +1731,108 @@ def fast_scan(symbols, min_upside=3.0, min_rr=2.0, min_score=72, top_n=20):
     return out
 
 
+
+YF_DISCOVERY_REGIONS = {
+    "USA": "us",
+    "Canada": "ca",
+    "Royaume-Uni": "gb",
+    "France": "fr",
+    "Allemagne": "de",
+    "Pays-Bas": "nl",
+    "Espagne": "es",
+    "Italie": "it",
+    "Suisse": "ch",
+    "Japon": "jp",
+    "Australie": "au",
+    "Suède": "se",
+}
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def discover_yahoo_equities(region_labels, max_per_region=20):
+    """
+    Découverte dynamique via le screener Yahoo/yfinance.
+    Important : ces instruments ne sont PAS considérés comme vérifiés chez XTB/TR.
+    """
+    rows = []
+    for label in region_labels:
+        region = YF_DISCOVERY_REGIONS.get(label)
+        if not region:
+            continue
+        try:
+            q = yf.EquityQuery("and", [
+                yf.EquityQuery("eq", ["region", region]),
+                yf.EquityQuery("gte", ["intradaymarketcap", 500_000_000]),
+                yf.EquityQuery("gte", ["intradayprice", 2]),
+                yf.EquityQuery("gte", ["avgdailyvol3m", 100_000]),
+            ])
+            resp = yf.screen(
+                q,
+                size=int(max_per_region),
+                sortField="dayvolume",
+                sortAsc=False,
+            )
+            quotes = (resp or {}).get("quotes", []) if isinstance(resp, dict) else []
+            for x in quotes:
+                sym = _clean_text(x.get("symbol"), upper=True)
+                if not sym:
+                    continue
+                quote_type = _clean_text(x.get("quoteType"), upper=True)
+                if quote_type and quote_type not in {"EQUITY", "ETF"}:
+                    continue
+                rows.append({
+                    "symbol": sym,
+                    "name": _clean_text(x.get("longName") or x.get("shortName")),
+                    "isin": "",
+                    "market": label,
+                    "asset_type": quote_type or "EQUITY",
+                    "broker": "À vérifier",
+                    "enabled": True,
+                    "source": "Découverte Yahoo",
+                    "market_cap": x.get("marketCap") or x.get("intradaymarketcap"),
+                    "volume": x.get("regularMarketVolume") or x.get("dayvolume"),
+                })
+        except Exception:
+            continue
+
+    if not rows:
+        return pd.DataFrame(columns=[
+            "symbol","name","isin","market","asset_type","broker","enabled",
+            "source","market_cap","volume"
+        ])
+    df = pd.DataFrame(rows)
+    return df.drop_duplicates(subset=["symbol"]).reset_index(drop=True)
+
+
+def scanner_universe_frame(brokers, markets, include_discovery=False, discovery_regions=None, max_per_region=20):
+    frames = []
+
+    # Référentiel vérifié / géré par l'utilisateur.
+    base = load_broker_universe(brokers=brokers, markets=markets)
+    if not base.empty:
+        base = base.copy()
+        base["source"] = "Référentiel courtier"
+        frames.append(base)
+
+    # Découverte dynamique : volontairement séparée de la compatibilité courtier.
+    if include_discovery and discovery_regions:
+        disc = discover_yahoo_equities(discovery_regions, max_per_region=max_per_region)
+        if not disc.empty:
+            frames.append(disc)
+
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True, sort=False)
+    out["symbol"] = out["symbol"].map(lambda x: _clean_text(x, upper=True))
+    out = out[out["symbol"].astype(bool)]
+    # Si le même ticker existe dans le référentiel courtier et en découverte,
+    # le référentiel courtier gagne.
+    out["_priority"] = out["source"].map({"Référentiel courtier": 0, "Découverte Yahoo": 1}).fillna(2)
+    out = out.sort_values("_priority").drop_duplicates("symbol").drop(columns="_priority")
+    return out.reset_index(drop=True)
+
+
+
 def _fallback_universe():
     rows = []
     for market, symbols in UNIVERSE.items():
@@ -2521,59 +2623,183 @@ elif mode=="⚖️ Arbitrage":
     show_arbitrage_page()
 
 elif mode=="🔎 Scanner":
-    st.header("⚡ Scanner mondial — CTO compatible")
-    st.caption(
-        "Le scanner utilise en priorité la table Supabase broker_universe. "
-        "Elle permet de marquer précisément les instruments disponibles chez XTB, Trade Republic ou les deux. "
-        "En l'absence de cette table renseignée, un univers global liquide de secours est utilisé."
+    vf_page_header(
+        "⚡ Scanner mondial",
+        "Référentiel courtier + découverte dynamique des marchés mondiaux, puis confirmation technique 1H."
     )
 
-    c1,c2,c3,c4=st.columns(4)
-    brokers=c1.multiselect(
-        "Courtiers compatibles",
+    # Top visual controls
+    f1,f2,f3,f4 = st.columns(4)
+    brokers = f1.multiselect(
+        "Courtiers vérifiés",
         ["XTB","Trade Republic"],
-        default=["XTB","Trade Republic"]
+        default=["XTB","Trade Republic"],
+        help="Filtre uniquement le référentiel broker_universe."
     )
     available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
     default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
-    markets=c2.multiselect("Marchés", available_markets, default=default_markets)
-    min_upside=c3.number_input("Potentiel minimum (%)",1.0,30.0,3.0,.5)
-    min_rr=c4.number_input("R/R minimum",1.0,5.0,2.0,.1)
+    markets = f2.multiselect("Marchés du référentiel", available_markets, default=default_markets)
+    min_upside = f3.number_input("Potentiel min. (%)", 1.0, 30.0, 3.0, .5)
+    min_rr = f4.number_input("R/R min.", 1.0, 5.0, 2.0, .1)
 
-    c5,c6,c7=st.columns(3)
-    min_score=c5.slider("Score minimum",50,100,72)
-    top_n=c6.slider("Finalistes à confirmer",5,50,20)
-    only_confirmed=c7.checkbox("Uniquement confirmés 1h",False)
+    g1,g2,g3,g4 = st.columns(4)
+    min_score = g1.slider("Score minimum", 50, 100, 72)
+    top_n = g2.slider("Finalistes", 5, 50, 20)
+    only_confirmed = g3.checkbox("Confirmés 1H seulement", False)
+    include_discovery = g4.toggle("Découverte mondiale", value=True)
 
-    pool=compatible_scan_symbols(brokers, markets)
-    st.caption(
-        f"Univers actif : {len(pool)} instrument(s) • potentiel ≥ {min_upside:.1f}% • "
-        f"R/R ≥ {min_rr:.1f}. Les disponibilités exactes dépendent du référentiel broker_universe."
-    )
+    discovery_regions = []
+    max_per_region = 20
+    if include_discovery:
+        r1,r2 = st.columns([4,1])
+        with r1:
+            discovery_regions = st.multiselect(
+                "Zones de découverte",
+                list(YF_DISCOVERY_REGIONS.keys()),
+                default=["USA","France","Allemagne","Royaume-Uni","Canada","Japon"],
+            )
+        with r2:
+            max_per_region = st.selectbox("Titres / zone", [10,15,20,25,30], index=2)
 
-    if not pool:
-        st.warning("Aucun instrument dans l'univers sélectionné.")
+    with st.spinner("Construction de l'univers mondial…"):
+        universe_df = scanner_universe_frame(
+            brokers=brokers,
+            markets=markets,
+            include_discovery=include_discovery,
+            discovery_regions=discovery_regions,
+            max_per_region=max_per_region,
+        )
+
+    if universe_df.empty:
+        st.warning("Aucun instrument disponible pour les filtres sélectionnés.")
     else:
-        with st.spinner("Analyse groupée mondiale…"):
-            out=fast_scan(pool,min_upside=min_upside,min_rr=min_rr,min_score=min_score,top_n=top_n)
+        verified_count = int((universe_df.get("source") == "Référentiel courtier").sum()) if "source" in universe_df else 0
+        discovery_count = int((universe_df.get("source") == "Découverte Yahoo").sum()) if "source" in universe_df else 0
+        symbols = universe_df["symbol"].dropna().astype(str).tolist()
+
+        k1,k2,k3,k4 = st.columns(4)
+        k1.metric("Univers analysé", len(symbols))
+        k2.metric("Courtier vérifié", verified_count)
+        k3.metric("Découverte", discovery_count)
+        k4.metric("Seuil setup", f"{min_upside:.1f}% / R-R {min_rr:.1f}")
+
+        if discovery_count:
+            st.info(
+                "Les valeurs « Découverte Yahoo » élargissent la recherche mais leur disponibilité chez XTB "
+                "ou Trade Republic n'est pas garantie. Elles sont donc affichées « courtier à vérifier »."
+            )
+
+        with st.spinner("Analyse technique groupée puis confirmation 1H…"):
+            out = fast_scan(
+                symbols,
+                min_upside=min_upside,
+                min_rr=min_rr,
+                min_score=min_score,
+                top_n=top_n
+            )
+
         if out.empty:
             st.warning("Aucune configuration ne passe les filtres actuels.")
         else:
-            names={sym:live_quote(sym).get("name",sym) for sym in out["Ticker"].tolist()}
-            out.insert(1,"Entreprise",out["Ticker"].map(names))
+            meta = universe_df.set_index("symbol")
+            names, isins, sources, broker_labels, market_labels = [], [], [], [], []
+            for sym in out["Ticker"].tolist():
+                if sym in meta.index:
+                    rr = meta.loc[sym]
+                    if isinstance(rr, pd.DataFrame):
+                        rr = rr.iloc[0]
+                    names.append(_clean_text(rr.get("name")) or live_quote(sym).get("name", sym))
+                    isins.append(_clean_text(rr.get("isin"), upper=True))
+                    sources.append(_clean_text(rr.get("source")))
+                    broker_labels.append(_clean_text(rr.get("broker")))
+                    market_labels.append(_clean_text(rr.get("market")))
+                else:
+                    names.append(live_quote(sym).get("name", sym))
+                    isins.append("")
+                    sources.append("")
+                    broker_labels.append("")
+                    market_labels.append("")
+
+            out["Entreprise"] = names
+            out["ISIN"] = isins
+            out["Source"] = sources
+            out["Courtier"] = broker_labels
+            out["Marché"] = market_labels
             out = add_identity_columns(out, "Ticker")
+
             if only_confirmed:
-                out=out[out["Confirmé 1h"]=="✅"]
-            st.success(f"{len(out)} configuration(s) retenue(s).")
-            visible=["Valeur","Ticker","Entreprise","ISIN","Score combiné","Score","Confirmation 1h","Confirmé 1h","Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"]
-            st.dataframe(out[[c for c in visible if c in out.columns]],use_container_width=True,hide_index=True)
-            st.subheader("Pourquoi ces candidats ?")
-            for _,r in out.head(10).iterrows():
-                with st.expander(f"{r['Ticker']} • {r.get('Entreprise','')} • {r.get('ISIN','')} • score {r['Score combiné']} • potentiel {r['Potentiel %']:.1f}% • R/R {r['R/R']:.2f}"):
-                    st.write(r.get("Raisons") or "Analyse technique disponible.")
-                    st.caption(
-                        "Entrée/SL/TP sont des niveaux analytiques. Le worker d'agent peut ensuite "
-                        "croiser ces setups avec l'actualité mondiale et générer une alerte persistante."
+                out = out[out["Confirmé 1h"]=="✅"]
+
+            if out.empty:
+                st.warning("Aucun finaliste n'est confirmé en 1H.")
+            else:
+                st.success(f"{len(out)} configuration(s) retenue(s).")
+
+                # DA: charts before dense table
+                ca,cb = st.columns(2)
+                with ca:
+                    vf_bar(
+                        out.nlargest(min(12,len(out)), "Score combiné"),
+                        "Valeur","Score combiné","Meilleurs scores"
+                    )
+                with cb:
+                    vf_bar(
+                        out.nlargest(min(12,len(out)), "Potentiel %"),
+                        "Valeur","Potentiel %","Potentiel des finalistes"
+                    )
+
+                # Highlight cards
+                st.subheader("🎯 Sélection prioritaire")
+                for _, r in out.head(6).iterrows():
+                    with st.container(border=True):
+                        a,b = st.columns([5,2])
+                        with a:
+                            st.markdown(
+                                f"<div class='vf-name'>{r['Ticker']} • {r.get('Entreprise','')}</div>"
+                                f"<div class='vf-isin'>ISIN : {r.get('ISIN','ISIN non renseigné')}</div>",
+                                unsafe_allow_html=True
+                            )
+                            source = r.get("Source","")
+                            broker_txt = r.get("Courtier","")
+                            market_txt = r.get("Marché","")
+                            if source == "Découverte Yahoo":
+                                st.markdown(
+                                    "<span class='vf-badge vf-amber'>Découverte</span>"
+                                    "<span class='vf-badge vf-violet'>Courtier à vérifier</span>",
+                                    unsafe_allow_html=True
+                                )
+                            else:
+                                st.markdown(
+                                    f"<span class='vf-badge vf-green'>Référentiel courtier</span>"
+                                    f"<span class='vf-badge vf-blue'>{broker_txt or 'Compatible'}</span>",
+                                    unsafe_allow_html=True
+                                )
+                            if market_txt:
+                                st.caption(market_txt)
+                        with b:
+                            st.metric("Score combiné", f"{float(r['Score combiné']):.1f}/100")
+                            st.metric("Confirmation 1H", r.get("Confirmé 1h","—"))
+
+                        m = st.columns(6)
+                        m[0].metric("Prix", f"{r['Prix']:.2f}")
+                        m[1].metric("Entrée", f"{r['Entrée']:.2f}")
+                        m[2].metric("Stop", f"{r['Stop']:.2f}")
+                        m[3].metric("TP2", f"{r['TP2']:.2f}")
+                        m[4].metric("Potentiel", f"{r['Potentiel %']:.1f}%")
+                        m[5].metric("R/R", f"{r['R/R']:.2f}")
+                        if r.get("Raisons"):
+                            st.caption(r.get("Raisons"))
+
+                with st.expander("📋 Voir le tableau complet"):
+                    visible = [
+                        "Valeur","Ticker","Entreprise","ISIN","Marché","Courtier","Source",
+                        "Score combiné","Score","Confirmation 1h","Confirmé 1h",
+                        "Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"
+                    ]
+                    st.dataframe(
+                        out[[c for c in visible if c in out.columns]],
+                        use_container_width=True,
+                        hide_index=True
                     )
 
 elif mode=="🛰️ Agent marché":
