@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V17 Premium Navigation"
+APP_VERSION = "V18 Immersive Future DA"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -229,6 +229,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n/* =========================================================\n   V18 — IMMERSIVE FUTURE DA\n   Electric blue + violet + discreet gold across the full app\n   ========================================================= */\nhtml, body, [data-testid="stAppViewContainer"], .stApp{\n  background:\n    radial-gradient(circle at 8% 4%, rgba(52,112,255,.18), transparent 25%),\n    radial-gradient(circle at 90% 8%, rgba(126,86,255,.16), transparent 28%),\n    radial-gradient(circle at 88% 88%, rgba(199,162,89,.10), transparent 23%),\n    linear-gradient(180deg,#f8faff 0%,#f4f7fc 48%,#f7f7ff 100%) !important;\n  background-attachment: fixed !important;\n}\n\n[data-testid="stAppViewContainer"]::before{\n  content:"";\n  position:fixed;\n  inset:0;\n  pointer-events:none;\n  z-index:0;\n  background-image:\n    linear-gradient(rgba(74,103,164,.025) 1px, transparent 1px),\n    linear-gradient(90deg, rgba(74,103,164,.025) 1px, transparent 1px);\n  background-size:34px 34px;\n  mask-image:linear-gradient(to bottom,rgba(0,0,0,.55),transparent 78%);\n}\n\n[data-testid="stMain"]{\n  position:relative;\n  z-index:1;\n}\n\n.block-container{\n  max-width:1540px !important;\n  padding-top:1rem !important;\n  padding-bottom:4rem !important;\n}\n\n/* Sidebar as part of the same visual universe */\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 0% 0%, rgba(63,124,255,.12), transparent 32%),\n    linear-gradient(180deg,rgba(255,255,255,.97) 0%,rgba(245,248,255,.98) 55%,rgba(248,245,255,.98) 100%) !important;\n  border-right:1px solid rgba(77,104,171,.14) !important;\n  box-shadow:10px 0 35px rgba(31,45,78,.025);\n}\n\n/* Global containers / cards */\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"],\ndiv[data-testid="stDataFrame"],\ndiv[data-testid="stForm"],\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  background:linear-gradient(145deg,rgba(255,255,255,.96),rgba(249,251,255,.94)) !important;\n  border-color:rgba(97,119,175,.16) !important;\n  box-shadow:\n    0 8px 24px rgba(35,49,88,.045),\n    inset 0 1px 0 rgba(255,255,255,.75);\n}\n\n/* Cards get subtle future glow */\ndiv[data-testid="stMetric"]:hover,\ndiv[data-testid="stVerticalBlockBorderWrapper"]:hover{\n  border-color:rgba(63,124,255,.24) !important;\n  box-shadow:\n    0 10px 26px rgba(53,84,160,.07),\n    0 0 0 1px rgba(124,92,255,.035);\n  transition:.18s ease;\n}\n\n/* Inputs / select / text fields */\ndiv[data-baseweb="select"] > div,\ninput,\ntextarea{\n  background:rgba(255,255,255,.90) !important;\n  border-color:rgba(88,112,172,.18) !important;\n  border-radius:14px !important;\n}\ndiv[data-baseweb="select"] > div:focus-within,\ninput:focus,\ntextarea:focus{\n  border-color:rgba(63,124,255,.45) !important;\n  box-shadow:0 0 0 3px rgba(63,124,255,.08) !important;\n}\n\n/* Buttons */\nbutton[kind="secondary"]{\n  background:linear-gradient(180deg,#ffffff,#f7f9fd) !important;\n  border:1px solid rgba(89,113,171,.18) !important;\n  border-radius:13px !important;\n  box-shadow:0 4px 12px rgba(37,54,95,.035);\n}\nbutton[kind="secondary"]:hover{\n  border-color:rgba(63,124,255,.34) !important;\n  background:linear-gradient(90deg,rgba(238,244,255,.98),rgba(245,241,255,.98)) !important;\n}\nbutton[kind="primary"]{\n  background:linear-gradient(90deg,#3476ff,#7354f4) !important;\n  border:0 !important;\n  color:white !important;\n  border-radius:13px !important;\n  box-shadow:0 8px 20px rgba(76,84,214,.18);\n}\n\n/* Tabs */\ndiv[data-testid="stTabs"] [data-baseweb="tab-list"]{\n  gap:6px;\n  padding:5px;\n  border:1px solid rgba(93,116,171,.12);\n  border-radius:15px;\n  background:rgba(255,255,255,.60);\n  backdrop-filter:blur(8px);\n}\ndiv[data-testid="stTabs"] button[role="tab"]{\n  border-radius:11px !important;\n  padding:.45rem .75rem !important;\n}\ndiv[data-testid="stTabs"] button[aria-selected="true"]{\n  background:linear-gradient(90deg,rgba(63,124,255,.12),rgba(124,92,255,.12)) !important;\n}\n\n/* Tables */\ndiv[data-testid="stDataFrame"]{\n  overflow:hidden;\n  border-radius:17px !important;\n}\n\n/* Alerts */\ndiv[data-testid="stAlert"]{\n  border-radius:15px !important;\n  border:1px solid rgba(95,118,174,.14) !important;\n  box-shadow:0 6px 18px rgba(35,49,88,.035);\n}\n\n/* Hero / headers */\n.vf-hero{\n  position:relative;\n  overflow:hidden;\n  background:\n    radial-gradient(circle at 85% 18%, rgba(124,92,255,.13), transparent 28%),\n    radial-gradient(circle at 15% 15%, rgba(63,124,255,.13), transparent 30%),\n    linear-gradient(135deg,rgba(255,255,255,.98),rgba(241,246,255,.98) 52%,rgba(248,244,255,.98) 78%,rgba(253,248,237,.96)) !important;\n  border:1px solid rgba(88,112,172,.16) !important;\n}\n.vf-hero::after{\n  content:"";\n  position:absolute;\n  width:220px;height:220px;\n  right:-90px;top:-120px;\n  border-radius:50%;\n  background:radial-gradient(circle,rgba(199,162,89,.12),transparent 68%);\n}\n\n.vf-section-title{\n  letter-spacing:-.02em;\n}\n.vf-section-title::before{\n  content:"";\n  display:inline-block;\n  width:4px;height:16px;\n  border-radius:999px;\n  margin-right:8px;\n  vertical-align:-2px;\n  background:linear-gradient(180deg,#3476ff,#7c5cff 68%,#c7a259);\n}\n\n/* Full-width section ambiance */\n.vf-future-strip{\n  position:relative;\n  overflow:hidden;\n  background:\n    linear-gradient(120deg,rgba(238,244,255,.94),rgba(245,241,255,.92) 55%,rgba(252,247,236,.90));\n  border:1px solid rgba(95,118,174,.15);\n  border-radius:20px;\n  padding:16px 18px;\n  margin:6px 0 16px;\n  box-shadow:0 8px 24px rgba(35,49,88,.04);\n}\n.vf-future-strip-title{\n  font-size:.78rem;\n  text-transform:uppercase;\n  letter-spacing:.08em;\n  color:#6a7280;\n  font-weight:900;\n}\n.vf-future-strip-text{\n  margin-top:4px;\n  font-size:1rem;\n  font-weight:760;\n  color:#192235;\n}\n\n/* Instrument identity */\n.vf-instrument-identity{\n  display:flex;\n  align-items:center;\n  gap:12px;\n}\n.vf-logo-shell{\n  width:46px;height:46px;\n  min-width:46px;\n  border-radius:14px;\n  display:flex;\n  align-items:center;\n  justify-content:center;\n  background:linear-gradient(145deg,#fff,#f2f5fb);\n  border:1px solid rgba(91,114,171,.15);\n  box-shadow:0 5px 14px rgba(34,49,87,.05);\n  overflow:hidden;\n}\n.vf-logo-shell img{\n  width:32px;height:32px;object-fit:contain;border-radius:7px;\n}\n.vf-logo-fallback{\n  width:32px;height:32px;border-radius:9px;\n  display:flex;align-items:center;justify-content:center;\n  font-size:.70rem;font-weight:900;color:#355ab8;\n  background:linear-gradient(135deg,#eaf1ff,#f2edff);\n}\n\n/* Decorative gold micro accents */\n.vf-goldline{\n  height:2px;\n  width:56px;\n  margin:7px 0 0;\n  border-radius:999px;\n  background:linear-gradient(90deg,#3476ff,#7c5cff,#c7a259);\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\nsection[data-testid="stSidebar"] div[data-baseweb="select"] > div{\n  border-radius:14px;\n  border-color:rgba(63,124,255,.22);\n  background:linear-gradient(90deg,rgba(238,244,255,.95),rgba(245,241,255,.95));\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label{\n  padding:.45rem .5rem;\n  border-radius:12px;\n  transition:background .15s ease,border-color .15s ease;\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label:hover{\n  background:linear-gradient(90deg,rgba(63,124,255,.08),rgba(124,92,255,.08));\n}\n</style>\n', unsafe_allow_html=True)
 
@@ -2462,11 +2465,7 @@ def show_market_agent_page():
         with st.container(border=True):
             a,b=st.columns([5,1.2])
             with a:
-                st.markdown(f'<div class="vf-name">{symbol} • {full_name}</div>',unsafe_allow_html=True)
-                st.markdown(
-                    f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
-                    unsafe_allow_html=True
-                )
+                st.markdown(vf_identity_html(symbol, full_name, isin), unsafe_allow_html=True)
             with b:
                 st.markdown(vf_alert_chip(typ), unsafe_allow_html=True)
                 if pd.notna(score):
@@ -2820,6 +2819,70 @@ def show_import_page():
 
 
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def vf_company_logo_url(symbol):
+    """
+    Best-effort company logo.
+    Uses the official company website returned by yfinance and a public favicon
+    endpoint. No API key is required. If unavailable, the UI falls back to initials.
+    """
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return ""
+    try:
+        info = yf.Ticker(symbol).info or {}
+        website = _clean_text(info.get("website"))
+        if not website:
+            return ""
+        from urllib.parse import urlparse, quote
+        parsed = urlparse(website if "://" in website else "https://" + website)
+        domain = parsed.netloc or parsed.path
+        domain = domain.split(":")[0].strip().lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if not domain:
+            return ""
+        return f"https://www.google.com/s2/favicons?domain={quote(domain)}&sz=128"
+    except Exception:
+        return ""
+
+
+def vf_logo_html(symbol, name="", size=46):
+    symbol = _clean_text(symbol, upper=True)
+    name = _clean_text(name)
+    url = vf_company_logo_url(symbol)
+    initials = "".join([p[:1] for p in (name or symbol).split()[:2]]).upper() or symbol[:2]
+    if url:
+        return (
+            f'<div class="vf-logo-shell" style="width:{size}px;height:{size}px;min-width:{size}px">'
+            f'<img src="{url}" alt="{symbol} logo" />'
+            '</div>'
+        )
+    return (
+        f'<div class="vf-logo-shell" style="width:{size}px;height:{size}px;min-width:{size}px">'
+        f'<div class="vf-logo-fallback">{initials[:3]}</div>'
+        '</div>'
+    )
+
+
+def vf_identity_html(symbol, name, isin=""):
+    symbol = _clean_text(symbol, upper=True)
+    name = _clean_text(name) or symbol
+    isin = _clean_text(isin, upper=True)
+    subtitle = f"ISIN : {isin}" if isin else "ISIN non renseigné"
+    return (
+        '<div class="vf-instrument-identity">'
+        + vf_logo_html(symbol, name)
+        + '<div>'
+        + f'<div class="vf-name">{symbol} • {name}</div>'
+        + f'<div class="vf-isin">{subtitle}</div>'
+        + '<div class="vf-goldline"></div>'
+        + '</div></div>'
+    )
+
+
+
 def vf_board_badge(text, kind="blue"):
     cls = {
         "blue":"vf-blue","green":"vf-green","red":"vf-red",
@@ -2843,11 +2906,7 @@ def vf_position_card(row, key_prefix="pos"):
     with st.container(border=True):
         a,b = st.columns([4.7,1.3])
         with a:
-            st.markdown(f'<div class="vf-name">{symbol} • {name}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
-                unsafe_allow_html=True
-            )
+            st.markdown(vf_identity_html(symbol, name, isin), unsafe_allow_html=True)
         with b:
             if pd.notna(weight):
                 st.metric("Poids", f"{weight:.1f}%")
@@ -2885,11 +2944,7 @@ def vf_setup_card(row, key_prefix="setup", show_expand=False):
     with st.container(border=True):
         a,b = st.columns([4.7,1.3])
         with a:
-            st.markdown(f'<div class="vf-name">{symbol} • {name}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
-                unsafe_allow_html=True
-            )
+            st.markdown(vf_identity_html(symbol, name, isin), unsafe_allow_html=True)
             badges=[]
             if source == "Découverte Yahoo":
                 badges.append(vf_board_badge("Découverte","amber"))
@@ -3105,8 +3160,7 @@ with st.sidebar:
     else:
         st.success("Supabase connecté")
 
-st.title(f"🔭 {APP_NAME}")
-st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • {APP_TAGLINE} • UI analytique + graphiques + stockage persistant")
+st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • {APP_TAGLINE}")
 
 
 
@@ -3577,7 +3631,15 @@ def vf_full_instrument_page(symbol, row=None):
     left, right = st.columns([5,2])
     with left:
         st.markdown('<div class="vf-eyebrow">INSTRUMENT BOARD</div>', unsafe_allow_html=True)
-        st.markdown(f"# {symbol} • {name}")
+        st.markdown(
+            '<div class="vf-instrument-identity">'
+            + vf_logo_html(symbol, name, size=56)
+            + '<div>'
+            + f'<div style="font-size:1.9rem;font-weight:900;letter-spacing:-.04em;color:#111827">{symbol} • {name}</div>'
+            + '<div class="vf-goldline"></div>'
+            + '</div></div>',
+            unsafe_allow_html=True
+        )
         meta = []
         if isin:
             meta.append(f"ISIN {isin}")
@@ -3588,6 +3650,13 @@ def vf_full_instrument_page(symbol, row=None):
         if fundamentals.get("currency"):
             meta.append(str(fundamentals.get("currency")))
         st.caption(" • ".join(meta) if meta else "Instrument")
+        st.markdown(
+            '<div class="vf-future-strip">'
+            '<div class="vf-future-strip-title">Vision Future</div>'
+            '<div class="vf-future-strip-text">Build the Future of Your Capital — lecture technique, risque et potentiel réunis dans une seule fiche.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
         badge_parts=[]
         if _clean_text(row.get("Source")):
             badge_parts.append(vf_board_badge(_clean_text(row.get("Source")),"blue"))
@@ -4024,7 +4093,7 @@ def vf_watchlist_board():
         with st.container(border=True):
             a,b = st.columns([4,1.2])
             with a:
-                st.markdown(f"**{symbol} • {name}**")
+                st.markdown(vf_identity_html(symbol, name, ""), unsafe_allow_html=True)
                 meta=[]
                 if pd.notna(score): meta.append(f"Score {score:.0f}")
                 if pd.notna(upside): meta.append(f"Potentiel {upside:.1f}%")
@@ -4043,6 +4112,13 @@ def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
         "VISION FUTURE — portefeuille, marché, opportunités, risques et watchlist dans une lecture premium."
+    )
+    st.markdown(
+        '<div class="vf-future-strip">'
+        '<div class="vf-future-strip-title">Vision • Step Up • Glow Up</div>'
+        '<div class="vf-future-strip-text">Build the Future of Your Capital — une lecture globale pour faire progresser ton capital avec méthode, discipline et visibilité.</div>'
+        '</div>',
+        unsafe_allow_html=True
     )
 
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -4148,7 +4224,7 @@ def vf_dashboard_command_center():
                 pnl_pct=_vf_num(r.get("P/L %"))
                 value=_vf_num(r.get("Valeur référence"))
                 with st.container(border=True):
-                    st.markdown(f"**{symbol} • {name}**")
+                    st.markdown(vf_identity_html(symbol, name, _clean_text(r.get("ISIN"), upper=True)), unsafe_allow_html=True)
                     st.metric("P/L",f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else "—")
                     if pd.notna(value):
                         st.caption(f"Valeur : {value:,.0f} €")
