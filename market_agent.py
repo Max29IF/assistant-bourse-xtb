@@ -20,7 +20,7 @@ except Exception:
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 MIN_UPSIDE = 3.0
@@ -174,6 +174,43 @@ def recent_event(symbol, alert_type, hours=24):
         return bool(rows)
     except Exception:
         return False
+
+
+
+def gemini_healthcheck():
+    """
+    Runs only for a manual GitHub Actions launch (workflow_dispatch).
+    Scheduled runs do not spend an extra Gemini request just for diagnostics.
+    """
+    if os.getenv("GITHUB_EVENT_NAME", "") != "workflow_dispatch":
+        return None
+
+    if not GEMINI_API_KEY:
+        diagnostics.append("gemini_healthcheck:API_KEY_MISSING")
+        return "GEMINI_ERROR: API_KEY_MISSING"
+
+    if genai is None:
+        diagnostics.append("gemini_healthcheck:GOOGLE_GENAI_NOT_INSTALLED")
+        return "GEMINI_ERROR: GOOGLE_GENAI_NOT_INSTALLED"
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents="Réponds uniquement avec GEMINI_OK"
+        )
+        text = str(getattr(response, "text", "") or "").strip()
+
+        if "GEMINI_OK" in text.upper():
+            return f"GEMINI_OK | model={GEMINI_MODEL}"
+
+        diagnostics.append(f"gemini_healthcheck:UNEXPECTED_RESPONSE:{text[:120]}")
+        return f"GEMINI_ERROR: UNEXPECTED_RESPONSE | {text[:120]}"
+
+    except Exception as exc:
+        msg = f"{type(exc).__name__}: {str(exc)[:220]}"
+        diagnostics.append(f"gemini_healthcheck:{msg}")
+        return f"GEMINI_ERROR: {msg}"
 
 
 def _extract_yahoo_news(symbol, limit=6):
@@ -423,7 +460,17 @@ def run():
                 created += 1
             save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
 
-    details = "; ".join(diagnostics[-20:]) if diagnostics else None
+    # Manual runs perform one harmless Gemini connectivity test.
+    # Scheduled runs skip it automatically.
+    health = gemini_healthcheck()
+
+    parts = []
+    if health:
+        parts.append(health)
+    if diagnostics:
+        parts.append("DIAGNOSTICS: " + "; ".join(diagnostics[-20:]))
+    details = " | ".join(parts) if parts else None
+
     sb.table("agent_runs").insert({
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "created_alerts": created,
