@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V21 Brand & Agent Premium"
+APP_VERSION = "V22 Brand Resolver"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2848,14 +2848,11 @@ def vf_logo_dev_token():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def vf_fetch_logo_data_uri(url):
-    """Fetch the logo server-side and embed it as a data URI.
-    This prevents broken <img> placeholders in the browser.
-    """
     if not url:
         return ""
     try:
         from urllib.request import Request, urlopen
-        req = Request(url, headers={"User-Agent": "VISION-FUTURE/21"})
+        req = Request(url, headers={"User-Agent": "VISION-FUTURE/22"})
         with urlopen(req, timeout=6) as resp:
             content_type = str(resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             data = resp.read(500_000)
@@ -2868,17 +2865,58 @@ def vf_fetch_logo_data_uri(url):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
+def vf_logo_dev_search_company(name):
+    """
+    Name -> canonical domain/logo using Logo.dev Search API.
+    This endpoint requires a secret key (sk_*). If the user configured only a
+    publishable key, we simply skip this step and keep the other logo fallbacks.
+    """
+    name = _clean_text(name)
+    token = vf_logo_dev_token()
+    if not name or not token.startswith("sk_"):
+        return {}
+
+    try:
+        from urllib.parse import quote
+        from urllib.request import Request, urlopen
+
+        url = f"https://api.logo.dev/search?q={quote(name)}&strategy=match"
+        req = Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "VISION-FUTURE/22",
+            },
+        )
+        with urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        if not isinstance(payload, list) or not payload:
+            return {}
+
+        # Pick first exact-ish result; Search API is ranked.
+        first = payload[0] or {}
+        return {
+            "name": _clean_text(first.get("name")),
+            "domain": _clean_text(first.get("domain")),
+            "logo_url": _clean_text(first.get("logo_url")),
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def vf_company_brand_data(symbol, name="", isin=""):
     """
-    Identity priority:
-    1. explicit finance-provider logo URL
-    2. Logo.dev by official company domain (preferred)
-    3. Logo.dev by ticker
-    4. Logo.dev by ISIN
-    5. clean monogram fallback
+    Brand identity resolver.
 
-    Supports a Logo.dev publishable key directly. If a secret key (sk_*) is
-    supplied, Brand API is used server-side when a company domain is known.
+    Priority:
+      1. explicit logo URL from finance provider
+      2. official website domain from finance provider
+      3. Logo.dev company-name search -> canonical domain (secret key only)
+      4. ticker lookup
+      5. ISIN lookup
+      6. clean monogram fallback
     """
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name)
@@ -2919,65 +2957,82 @@ def vf_company_brand_data(symbol, name="", isin=""):
             domain = ""
 
     token = vf_logo_dev_token()
-    if token:
-        from urllib.parse import quote
+    from urllib.parse import quote
 
-        # Secret-key path: resolve full Brand API server-side.
-        if token.startswith("sk_") and domain:
-            try:
-                from urllib.request import Request, urlopen
-                req = Request(
-                    f"https://api.logo.dev/brand/{quote(domain)}",
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "User-Agent": "VISION-FUTURE/21",
-                    },
-                )
-                with urlopen(req, timeout=6) as resp:
-                    payload = json.loads(resp.read().decode("utf-8"))
-                logo_url = _clean_text(payload.get("logo"))
-                if logo_url:
-                    data_uri = vf_fetch_logo_data_uri(logo_url)
-                    if data_uri:
-                        return {
-                            "url": data_uri,
-                            "source": "Logo.dev",
-                            "name": _clean_text(payload.get("name")) or finance_name or name,
-                            "website": domain,
-                        }
-            except Exception:
-                pass
+    # 1) Domain from Yahoo / provider
+    if token and domain:
+        candidate = f"https://img.logo.dev/{quote(domain)}?token={quote(token)}&size=128&format=png&retina=true"
+        data_uri = vf_fetch_logo_data_uri(candidate)
+        if data_uri:
+            return {
+                "url": data_uri,
+                "source": "Logo.dev • domaine",
+                "name": finance_name or name,
+                "website": domain,
+            }
 
-        # Publishable-key or generic token path.
-        candidates = []
-        if domain:
-            candidates.append(
-                f"https://img.logo.dev/{quote(domain)}?token={quote(token)}&size=128&format=png&retina=true"
-            )
-        if symbol:
-            candidates.append(
-                f"https://img.logo.dev/ticker/{quote(symbol)}?token={quote(token)}&size=128&format=png"
-            )
-        if isin:
-            candidates.append(
-                f"https://img.logo.dev/isin/{quote(isin)}?token={quote(token)}&size=128&format=png"
-            )
+    # 2) Resolve by company name to canonical domain.
+    searched = vf_logo_dev_search_company(finance_name or name)
+    searched_domain = _clean_text(searched.get("domain"))
+    searched_logo = _clean_text(searched.get("logo_url"))
 
-        for candidate in candidates:
+    if searched_logo:
+        # If search returns a ready-to-use image URL, fetch it server-side.
+        data_uri = vf_fetch_logo_data_uri(searched_logo)
+        if data_uri:
+            return {
+                "url": data_uri,
+                "source": "Logo.dev • nom",
+                "name": _clean_text(searched.get("name")) or finance_name or name,
+                "website": searched_domain,
+            }
+
+    if token and searched_domain:
+        candidate = f"https://img.logo.dev/{quote(searched_domain)}?token={quote(token)}&size=128&format=png&retina=true"
+        data_uri = vf_fetch_logo_data_uri(candidate)
+        if data_uri:
+            return {
+                "url": data_uri,
+                "source": "Logo.dev • nom",
+                "name": _clean_text(searched.get("name")) or finance_name or name,
+                "website": searched_domain,
+            }
+
+    # 3) Ticker lookup.
+    if token and symbol:
+        candidates = [symbol]
+        # For some European values, Logo.dev may know the base ticker better.
+        if "." in symbol:
+            candidates.append(symbol.split(".")[0])
+
+        for ticker_candidate in candidates:
+            candidate = f"https://img.logo.dev/ticker/{quote(ticker_candidate)}?token={quote(token)}&size=128&format=png"
             data_uri = vf_fetch_logo_data_uri(candidate)
             if data_uri:
                 return {
                     "url": data_uri,
-                    "source": "Logo.dev",
+                    "source": "Logo.dev • ticker",
                     "name": finance_name or name,
-                    "website": domain or website,
+                    "website": domain or searched_domain,
                 }
+
+    # 4) ISIN lookup.
+    if token and isin:
+        candidate = f"https://img.logo.dev/isin/{quote(isin)}?token={quote(token)}&size=128&format=png"
+        data_uri = vf_fetch_logo_data_uri(candidate)
+        if data_uri:
+            return {
+                "url": data_uri,
+                "source": "Logo.dev • ISIN",
+                "name": finance_name or name,
+                "website": domain or searched_domain,
+            }
 
     return {
         "url": "",
         "source": "",
         "name": finance_name or name,
-        "website": domain or website,
+        "website": domain or searched_domain,
     }
 
 
