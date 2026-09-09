@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V22 Brand Resolver"
+APP_VERSION = "V24 Sober Premium"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -230,6 +230,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n/* =========================================================\n   V24 — SOBER PREMIUM\n   80% neutral / 15% blue-violet / 5% discreet gold\n   ========================================================= */\n\n:root{\n  --vf-bg:#f6f7f9;\n  --vf-panel:#ffffff;\n  --vf-panel-soft:#fafbfc;\n  --vf-text:#151922;\n  --vf-muted:#6b7280;\n  --vf-border:#e3e7ee;\n  --vf-blue:#315ff4;\n  --vf-violet:#6f56d9;\n  --vf-gold:#b38b47;\n  --vf-green:#138a63;\n  --vf-red:#c84646;\n}\n\n/* Whole app */\nhtml, body, .stApp, [data-testid="stAppViewContainer"]{\n  background:#f6f7f9 !important;\n  color:var(--vf-text) !important;\n}\n\n[data-testid="stAppViewContainer"]::before{\n  display:none !important;\n}\n\n[data-testid="stMainBlockContainer"]{\n  max-width:1480px !important;\n  padding:1.1rem 1.4rem 4rem !important;\n}\n\n/* Sidebar */\nsection[data-testid="stSidebar"]{\n  background:#fbfbfc !important;\n  border-right:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\nsection[data-testid="stSidebar"]::after{\n  display:none !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]{\n  background:transparent !important;\n  border:1px solid transparent !important;\n  box-shadow:none !important;\n  color:#2f3746 !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]:hover{\n  background:#f2f4f7 !important;\n  border-color:#edf0f4 !important;\n}\nsection[data-testid="stSidebar"] button[kind="primary"]{\n  background:#eef3ff !important;\n  color:#2447b8 !important;\n  border:1px solid #d9e3ff !important;\n  box-shadow:none !important;\n}\n.vf-group-title{\n  color:#8a909b !important;\n  font-size:.70rem !important;\n  letter-spacing:.07em !important;\n}\n\n/* Main surfaces */\ndiv[data-testid="stVerticalBlockBorderWrapper"],\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"],\ndiv[data-testid="stDataFrame"],\ndiv[data-testid="stForm"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:0 2px 10px rgba(25,33,48,.028) !important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  border-radius:16px !important;\n}\ndiv[data-testid="stMetric"]{\n  border-radius:14px !important;\n}\ndiv[data-testid="stMetric"]:hover,\ndiv[data-testid="stVerticalBlockBorderWrapper"]:hover{\n  transform:none !important;\n  border-color:#d8dee8 !important;\n  box-shadow:0 3px 12px rgba(25,33,48,.035) !important;\n}\n\n/* Typography */\nh1,h2,h3,h4{\n  color:var(--vf-text) !important;\n  letter-spacing:-.02em !important;\n}\n.vf-name{\n  color:#151922 !important;\n  font-weight:800 !important;\n}\n.vf-isin,\n.vf-resolution-note,\n.vf-section-sub,\n.vf-command-note,\n.vf-hero-sub{\n  color:var(--vf-muted) !important;\n}\n\n/* Hero/header */\n.vf-page-shell{\n  background:transparent !important;\n  border:none !important;\n  box-shadow:none !important;\n  padding:0 !important;\n  margin-bottom:8px !important;\n}\n.vf-hero{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:18px !important;\n  min-height:92px !important;\n  padding:20px 22px !important;\n}\n.vf-hero::after{\n  display:none !important;\n}\n.vf-hero-title{\n  background:none !important;\n  -webkit-text-fill-color:initial !important;\n  color:#151922 !important;\n  font-size:1.55rem !important;\n}\n.vf-premium-divider{\n  height:1px !important;\n  background:#eceff3 !important;\n  opacity:1 !important;\n  margin:10px 0 16px !important;\n}\n\n/* Future strip becomes editorial, not decorative */\n.vf-future-strip{\n  background:#fbfbfc !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:14px !important;\n  padding:13px 15px !important;\n}\n.vf-future-strip-title{\n  color:#7b8190 !important;\n  font-size:.70rem !important;\n  letter-spacing:.08em !important;\n}\n.vf-future-strip-text{\n  color:#2d3442 !important;\n  font-size:.92rem !important;\n  font-weight:650 !important;\n}\n\n/* Section title */\n.vf-section-title{\n  color:#202633 !important;\n  font-size:1.05rem !important;\n  margin-top:12px !important;\n}\n.vf-section-title::before{\n  width:3px !important;\n  height:14px !important;\n  background:#315ff4 !important;\n}\n\n/* Accent line = mostly blue, tiny gold */\n.vf-goldline{\n  width:48px !important;\n  height:2px !important;\n  background:linear-gradient(90deg,#315ff4 0 68%,#6f56d9 68% 88%,#b38b47 88% 100%) !important;\n  opacity:.9 !important;\n}\n\n/* Badges */\n.vf-badge,\n.vf-chip{\n  box-shadow:none !important;\n  border:1px solid transparent !important;\n}\n.vf-blue,.vf-chip-info{\n  background:#eef3ff !important;\n  color:#3155c6 !important;\n}\n.vf-violet{\n  background:#f3f0ff !important;\n  color:#654bc3 !important;\n}\n.vf-amber,.vf-chip-risk{\n  background:#fbf5e8 !important;\n  color:#8d6d34 !important;\n}\n.vf-green,.vf-chip-entry{\n  background:#edf8f3 !important;\n  color:#137654 !important;\n}\n.vf-red,.vf-chip-exit{\n  background:#fceeee !important;\n  color:#b64040 !important;\n}\n.vf-muted-badge{\n  background:#f1f3f6 !important;\n  color:#667085 !important;\n}\n\n/* Buttons */\nbutton[kind="secondary"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:11px !important;\n}\nbutton[kind="secondary"]:hover{\n  background:#f8f9fb !important;\n  border-color:#d8dee8 !important;\n}\nbutton[kind="primary"]{\n  background:#315ff4 !important;\n  color:#fff !important;\n  border:none !important;\n  box-shadow:none !important;\n  border-radius:11px !important;\n}\n\n/* Inputs */\ndiv[data-baseweb="select"] > div,\ninput,\ntextarea{\n  background:#ffffff !important;\n  border-color:var(--vf-border) !important;\n  box-shadow:none !important;\n}\ndiv[data-baseweb="select"] > div:focus-within,\ninput:focus,\ntextarea:focus{\n  border-color:#9fb4ff !important;\n  box-shadow:0 0 0 2px rgba(49,95,244,.07) !important;\n}\n\n/* Tabs */\ndiv[data-testid="stTabs"] [data-baseweb="tab-list"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\ndiv[data-testid="stTabs"] button[aria-selected="true"]{\n  background:#f1f4ff !important;\n  color:#3155c6 !important;\n}\n\n/* Logo shell */\n.vf-logo-shell{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n.vf-logo-fallback{\n  background:#f0f3f8 !important;\n  color:#46546a !important;\n}\n\n/* Agent box: sober, visible */\n.vf-agent-callout{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n.vf-agent-title{\n  color:#3155c6 !important;\n}\n.vf-agent-copy{\n  color:#414956 !important;\n}\n\n/* Alert / status boxes */\n[data-testid="stAlert"]{\n  border-radius:12px !important;\n  box-shadow:none !important;\n}\n\n/* Charts/table containers cleaner */\ndiv[data-testid="stDataFrame"]{\n  border-radius:14px !important;\n}\n\n/* Remove extra glow from command cards */\n.vf-command-card{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n\n/* Editorial hierarchy words */\n.vf-eyebrow{\n  color:#3155c6 !important;\n  letter-spacing:.09em !important;\n  font-size:.68rem !important;\n}\n\n/* Footer */\nhr{\n  border-color:#e6e9ee !important;\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n/* V21 — stronger atmosphere across the full product */\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 4% 3%, rgba(31,103,255,.23), transparent 24%),\n    radial-gradient(circle at 96% 4%, rgba(112,68,255,.20), transparent 28%),\n    radial-gradient(circle at 86% 96%, rgba(190,148,73,.12), transparent 23%),\n    linear-gradient(180deg,#f7f9ff 0%,#edf3fb 50%,#f7f3ff 100%) !important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 10% 2%,rgba(31,103,255,.16),transparent 28%),\n    linear-gradient(180deg,#fbfcff 0%,#f1f6ff 50%,#f8f3ff 100%) !important;\n  box-shadow:12px 0 36px rgba(34,47,84,.045);\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"],\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.98) 0%,rgba(244,248,255,.96) 67%,rgba(249,246,255,.94) 100%) !important;\n  border:1px solid rgba(66,96,169,.17) !important;\n}\ndiv[data-testid="stMetric"]{\n  box-shadow:\n    0 9px 24px rgba(39,58,103,.055),\n    inset 0 2px 0 rgba(53,107,255,.06) !important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  box-shadow:\n    0 12px 30px rgba(35,50,91,.05),\n    inset 0 1px 0 rgba(255,255,255,.85) !important;\n}\n.vf-page-shell{\n  background:\n    radial-gradient(circle at 90% 10%,rgba(112,68,255,.11),transparent 30%),\n    linear-gradient(135deg,rgba(255,255,255,.82),rgba(239,245,255,.79) 56%,rgba(248,244,255,.76)) !important;\n  border:1px solid rgba(59,91,171,.16) !important;\n}\n.vf-future-strip{\n  box-shadow:0 10px 28px rgba(39,58,103,.05);\n}\n.vf-logo-shell{\n  background:#ffffff !important;\n  border:1px solid rgba(64,94,166,.16) !important;\n  box-shadow:0 7px 17px rgba(33,48,87,.065) !important;\n}\n.vf-logo-shell img{\n  width:38px !important;\n  height:38px !important;\n  object-fit:contain !important;\n}\n.vf-name{\n  color:#111827 !important;\n  font-weight:900 !important;\n  letter-spacing:-.02em;\n}\n.vf-goldline{\n  width:66px !important;\n  height:2px !important;\n  background:linear-gradient(90deg,#2868ff,#7652ff,#b8904d) !important;\n}\n.vf-agent-callout{\n  background:\n    radial-gradient(circle at 100% 0%,rgba(112,68,255,.13),transparent 30%),\n    linear-gradient(120deg,#eef4ff,#f4efff 62%,#fbf5e8);\n  border:1px solid rgba(70,95,163,.16);\n  border-radius:17px;\n  padding:12px 14px;\n  margin:.35rem 0 .8rem;\n  box-shadow:0 8px 22px rgba(35,50,91,.045);\n}\n.vf-agent-title{font-size:.78rem;font-weight:900;letter-spacing:.08em;color:#5f6775;text-transform:uppercase;}\n.vf-agent-copy{font-size:.92rem;font-weight:760;color:#202a3d;margin-top:3px;}\n</style>\n', unsafe_allow_html=True)
 
@@ -3441,7 +3444,7 @@ with st.sidebar:
 
 mode = st.session_state.get("nav_mode", "🏠 Dashboard")
 
-st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • {APP_TAGLINE}")
+st.caption(f"{APP_SUBTITLE} — {APP_VERSION}")
 
 
 
@@ -4392,12 +4395,12 @@ def vf_watchlist_board():
 def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
-        "VISION FUTURE — portefeuille, marché, opportunités, risques et watchlist dans une lecture premium."
+        "Pilotage, opportunités et croissance du capital dans une lecture claire et structurée."
     )
     st.markdown(
         '<div class="vf-future-strip">'
-        '<div class="vf-future-strip-title">Vision • Step Up • Glow Up</div>'
-        '<div class="vf-future-strip-text">Build the Future of Your Capital — une lecture globale pour faire progresser ton capital avec méthode, discipline et visibilité.</div>'
+        '<div class="vf-future-strip-title">Vision • Momentum • Growth</div>'
+        '<div class="vf-future-strip-text">Build the Future of Your Capital — Vision, Conviction, Precision et Capital Intelligence au service de vos décisions.</div>'
         '</div>',
         unsafe_allow_html=True
     )
@@ -4524,6 +4527,105 @@ def vf_dashboard_command_center():
     a,b=st.columns(2)
     with a: vf_pie(d,"Compte","Valeur","Allocation")
     with b: vf_signed_bar(d,"Compte","P/L latent","P/L latent")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def vf_analysis_universe():
+    rows = []
+
+    for acc in ["pea","cto_xtb","cto_trade_republic","cto_autre"]:
+        try:
+            df = load_positions(acc)
+        except Exception:
+            df = pd.DataFrame()
+        if df is None or df.empty:
+            continue
+        for _, r in df.iterrows():
+            symbol = _clean_text(r.get("ticker") or r.get("Ticker"), upper=True)
+            name = _clean_text(r.get("name") or r.get("Entreprise") or r.get("Nom"))
+            isin = _clean_text(r.get("isin") or r.get("ISIN"), upper=True)
+            if symbol:
+                rows.append({"symbol":symbol,"name":name or symbol,"isin":isin,"source":"Portefeuille"})
+
+    try:
+        bu = load_broker_universe()
+    except Exception:
+        bu = pd.DataFrame()
+    if bu is not None and not bu.empty:
+        for _, r in bu.iterrows():
+            symbol = _clean_text(r.get("symbol"), upper=True)
+            if symbol:
+                rows.append({
+                    "symbol":symbol,
+                    "name":_clean_text(r.get("name")) or symbol,
+                    "isin":_clean_text(r.get("isin"), upper=True),
+                    "source":"Référentiel"
+                })
+
+    try:
+        disc = discover_yahoo_equities(list(YF_DISCOVERY_REGIONS.keys()), max_per_region=20)
+    except Exception:
+        disc = pd.DataFrame()
+    if disc is not None and not disc.empty:
+        for _, r in disc.iterrows():
+            symbol = _clean_text(r.get("symbol"), upper=True)
+            if symbol:
+                rows.append({
+                    "symbol":symbol,
+                    "name":_clean_text(r.get("name")) or symbol,
+                    "isin":_clean_text(r.get("isin"), upper=True),
+                    "source":"Découverte"
+                })
+
+    if not rows:
+        return pd.DataFrame(columns=["symbol","name","isin","source"])
+
+    out = pd.DataFrame(rows)
+    out["_prio"] = out["source"].map({"Portefeuille":0,"Référentiel":1,"Découverte":2}).fillna(3)
+    out = out.sort_values("_prio").drop_duplicates("symbol").drop(columns="_prio")
+    return out.reset_index(drop=True)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def vf_yahoo_search_instruments(query, limit=12):
+    query = _clean_text(query)
+    if len(query) < 2:
+        return pd.DataFrame(columns=["symbol","name","isin","source"])
+
+    try:
+        search = yf.Search(query, max_results=limit)
+        quotes = getattr(search, "quotes", None) or []
+    except Exception:
+        quotes = []
+
+    rows = []
+    for q in quotes:
+        symbol = _clean_text(q.get("symbol"), upper=True)
+        qtype = _clean_text(q.get("quoteType"), upper=True)
+        if not symbol or (qtype and qtype not in {"EQUITY","ETF","MUTUALFUND","INDEX"}):
+            continue
+        name = _clean_text(q.get("longname") or q.get("shortname") or q.get("name")) or symbol
+        rows.append({"symbol":symbol,"name":name,"isin":"","source":"Recherche Yahoo"})
+
+    return pd.DataFrame(rows).drop_duplicates("symbol").reset_index(drop=True) if rows else pd.DataFrame(
+        columns=["symbol","name","isin","source"]
+    )
+
+
+def vf_analysis_option_label(row):
+    symbol = _clean_text(row.get("symbol"), upper=True)
+    name = _clean_text(row.get("name")) or symbol
+    isin = _clean_text(row.get("isin"), upper=True)
+    source = _clean_text(row.get("source"))
+    extra = []
+    if isin:
+        extra.append(isin)
+    if source:
+        extra.append(source)
+    suffix = " — " + " • ".join(extra) if extra else ""
+    return f"{symbol} • {name}{suffix}"
+
+
 
 vf_global_topbar()
 
@@ -4917,17 +5019,143 @@ elif mode=="🛰️ Agent marché":
     show_market_agent_page()
 
 elif mode=="📊 Analyse":
-    st.header("📊 Analyse détaillée")
-    symbol=st.text_input("Ticker","AAPL").upper().strip(); timeframe=st.selectbox("Timeframe",list(TF),index=2); period=st.selectbox("Historique",TF[timeframe]["periods"],index=min(1,len(TF[timeframe]["periods"])-1))
-    t=trade_setup(history(symbol,period,TF[timeframe]["interval"])); q=live_quote(symbol)
-    if not t: st.warning("Données insuffisantes pour calculer le setup.")
+    vf_page_header(
+        "📊 Analyse détaillée",
+        "Recherche par ticker ou nom d'entreprise, puis analyse technique multi-timeframe."
+    )
+
+    st.markdown(
+        '<div class="vf-future-strip">'
+        '<div class="vf-future-strip-title">Smart Search</div>'
+        '<div class="vf-future-strip-text">Recherche une société par son nom ou son ticker. La liste combine portefeuille, référentiel, découverte mondiale et Yahoo.</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    base = vf_analysis_universe()
+
+    q1,q2 = st.columns([2.2,1])
+    search_query = q1.text_input(
+        "Rechercher une valeur",
+        placeholder="Ex. TotalEnergies, LVMH, Tesla, AAPL…",
+        key="analysis_search_query"
+    )
+
+    yahoo_matches = vf_yahoo_search_instruments(search_query) if search_query.strip() else pd.DataFrame()
+
+    frames = []
+    if yahoo_matches is not None and not yahoo_matches.empty:
+        frames.append(yahoo_matches)
+    if base is not None and not base.empty:
+        frames.append(base)
+
+    if frames:
+        candidates = pd.concat(frames, ignore_index=True, sort=False).drop_duplicates("symbol")
     else:
-        c=st.columns(7); c[0].metric("Cours",f"{t['price']:.2f}"); c[1].metric("Entrée",f"{t['entry']:.2f}"); c[2].metric("SL",f"{t['stop']:.2f}"); c[3].metric("TP1",f"{t['tp1']:.2f}"); c[4].metric("TP2",f"{t['tp2']:.2f}"); c[5].metric("Potentiel",f"{t['upside']:.1f}%"); c[6].metric("R/R",f"{t['rr']:.2f}")
-        sym_i, name_i, isin_i = instrument_identity(symbol, {"name": q.get("name", "")})
-        st.write(f"**{sym_i} • {name_i}**")
-        st.caption(f"ISIN : {isin_i}")
-        st.write(f"Score {t['score']}/100 • {t['quality']}")
-        st.write(" • ".join(t["reasons"]))
+        candidates = pd.DataFrame(columns=["symbol","name","isin","source"])
+
+    if search_query.strip() and not candidates.empty:
+        query_norm = search_query.strip().lower()
+        mask = (
+            candidates["symbol"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["name"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["isin"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["source"].fillna("").eq("Recherche Yahoo")
+        )
+        filtered = candidates[mask].copy()
+        if not filtered.empty:
+            candidates = filtered
+
+    labels = []
+    label_to_row = {}
+    for _, rr in candidates.head(500).iterrows():
+        label = vf_analysis_option_label(rr)
+        labels.append(label)
+        label_to_row[label] = rr.to_dict()
+
+    if labels:
+        default_index = 0
+        if not search_query.strip():
+            for i, lab in enumerate(labels):
+                if lab.startswith("AAPL •"):
+                    default_index = i
+                    break
+        selected_label = q1.selectbox(
+            "Valeur",
+            labels,
+            index=default_index,
+            key="analysis_value_select",
+            help="Le menu est recherchable : tape un ticker ou un nom pour filtrer."
+        )
+    else:
+        selected_label = q1.selectbox(
+            "Valeur",
+            ["Aucun résultat"],
+            index=0,
+            key="analysis_value_select_empty"
+        )
+
+    manual_symbol = q2.text_input(
+        "Ticker libre",
+        placeholder="MC.PA",
+        key="analysis_manual_ticker",
+        help="Option de secours si la valeur n'apparaît pas dans la recherche."
+    )
+
+    selected_row = {}
+    symbol = ""
+    if manual_symbol.strip():
+        symbol = _clean_text(manual_symbol, upper=True)
+    elif selected_label in label_to_row:
+        selected_row = label_to_row[selected_label]
+        symbol = _clean_text(selected_row.get("symbol"), upper=True)
+
+    if not symbol:
+        st.warning("Sélectionne une valeur dans le menu ou saisis un ticker.")
+    else:
+        f1,f2 = st.columns(2)
+        timeframe = f1.selectbox("Timeframe", list(TF), index=2, key="analysis_timeframe")
+        period = f2.selectbox(
+            "Historique",
+            TF[timeframe]["periods"],
+            index=min(1, len(TF[timeframe]["periods"])-1),
+            key="analysis_period"
+        )
+
+        with st.spinner(f"Analyse de {symbol}…"):
+            t = trade_setup(history(symbol, period, TF[timeframe]["interval"]))
+            q = live_quote(symbol)
+
+        selected_name = _clean_text(selected_row.get("name")) or _clean_text(q.get("name")) or symbol
+        selected_isin = _clean_text(selected_row.get("isin"), upper=True)
+
+        st.markdown(
+            vf_identity_html(symbol, selected_name, selected_isin, resolve=True),
+            unsafe_allow_html=True
+        )
+
+        if not t:
+            st.warning("Données insuffisantes pour calculer le setup.")
+        else:
+            c = st.columns(7)
+            c[0].metric("Cours", f"{t['price']:.2f}")
+            c[1].metric("Entrée", f"{t['entry']:.2f}")
+            c[2].metric("SL", f"{t['stop']:.2f}")
+            c[3].metric("TP1", f"{t['tp1']:.2f}")
+            c[4].metric("TP2", f"{t['tp2']:.2f}")
+            c[5].metric("Potentiel", f"{t['upside']:.1f}%")
+            c[6].metric("R/R", f"{t['rr']:.2f}")
+
+            a,b = st.columns([3,1])
+            with a:
+                st.markdown(f"**Score {t['score']}/100 • {t['quality']}**")
+                st.caption(" • ".join(t["reasons"]))
+            with b:
+                if st.button("📊 Ouvrir la fiche Instrument", key=f"analysis_open_{symbol}", use_container_width=True):
+                    open_instrument_identity(symbol, selected_name, selected_isin)
+
+            vf_trade_chart(symbol, t, period=period, interval=TF[timeframe]["interval"])
+
 
 else:
     st.header("🧪 Simulation")
