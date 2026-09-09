@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V18 Immersive Future DA"
+APP_VERSION = "V19 Premium Identity System"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -230,6 +230,9 @@ div[data-testid="stTabs"] button{
 </style>
 """, unsafe_allow_html=True)
 
+st.markdown('\n<style>\n/* V19 — full-page premium identity */\n:root{\n  --vf-electric:#2868ff;\n  --vf-electric-2:#5b7cff;\n  --vf-violet:#7652ff;\n  --vf-gold:#b8904d;\n  --vf-ink:#111827;\n  --vf-ink-soft:#344054;\n  --vf-surface:rgba(255,255,255,.93);\n  --vf-surface-blue:rgba(244,248,255,.94);\n  --vf-surface-violet:rgba(248,245,255,.94);\n  --vf-hairline:rgba(83,105,160,.15);\n}\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 7% 4%, rgba(40,104,255,.16), transparent 24%),\n    radial-gradient(circle at 93% 7%, rgba(118,82,255,.14), transparent 27%),\n    radial-gradient(circle at 88% 92%, rgba(184,144,77,.09), transparent 22%),\n    linear-gradient(180deg,#f9fbff 0%,#f3f6fb 47%,#f6f7ff 100%) !important;\n  background-attachment:fixed !important;\n}\n[data-testid="stMainBlockContainer"]{\n  padding-top:.7rem !important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 15% 3%,rgba(40,104,255,.12),transparent 30%),\n    linear-gradient(180deg,#ffffff 0%,#f5f8ff 54%,#faf7ff 100%) !important;\n  border-right:1px solid rgba(84,105,160,.13)!important;\n}\nsection[data-testid="stSidebar"]::after{\n  content:"";\n  display:block;\n  height:2px;\n  margin:10px 20px;\n  border-radius:99px;\n  background:linear-gradient(90deg,var(--vf-electric),var(--vf-violet),var(--vf-gold));\n  opacity:.65;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,250,255,.95) 58%,rgba(250,247,255,.92))!important;\n  border:1px solid var(--vf-hairline)!important;\n  border-radius:20px!important;\n  box-shadow:0 9px 28px rgba(28,43,76,.045)!important;\n}\ndiv[data-testid="stMetric"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(246,249,255,.94))!important;\n  border:1px solid rgba(78,104,171,.14)!important;\n  border-radius:17px!important;\n  box-shadow:0 7px 20px rgba(31,47,85,.04)!important;\n}\ndiv[data-testid="stMetric"]:hover{\n  transform:translateY(-1px);\n  border-color:rgba(40,104,255,.25)!important;\n  box-shadow:0 11px 26px rgba(44,76,154,.07)!important;\n}\ndiv[data-testid="stExpander"]{\n  background:rgba(255,255,255,.90)!important;\n  border:1px solid rgba(78,104,171,.14)!important;\n  border-radius:17px!important;\n}\ndiv[data-testid="stDataFrame"]{\n  border:1px solid rgba(78,104,171,.13)!important;\n  border-radius:17px!important;\n  box-shadow:0 7px 22px rgba(31,47,85,.035)!important;\n}\n[data-testid="stAlert"]{\n  background:linear-gradient(110deg,rgba(244,248,255,.95),rgba(249,247,255,.93))!important;\n  border:1px solid rgba(77,102,166,.14)!important;\n  border-radius:15px!important;\n}\n.vf-page-shell{\n  background:\n    linear-gradient(135deg,rgba(255,255,255,.72),rgba(245,249,255,.68) 55%,rgba(250,247,255,.65));\n  border:1px solid rgba(91,113,169,.10);\n  border-radius:24px;\n  padding:12px 14px 4px;\n  margin-bottom:10px;\n  box-shadow:0 10px 34px rgba(34,51,91,.025);\n}\n.vf-premium-divider{\n  height:2px;width:100%;\n  background:linear-gradient(90deg,transparent,var(--vf-electric),var(--vf-violet),var(--vf-gold),transparent);\n  opacity:.24;border-radius:999px;margin:10px 0 14px;\n}\n.vf-instrument-identity{\n  display:flex;align-items:center;gap:12px;\n}\n.vf-logo-shell{\n  width:48px;height:48px;min-width:48px;\n  display:flex;align-items:center;justify-content:center;\n  border-radius:15px;\n  background:linear-gradient(145deg,#fff,#f2f5fb);\n  border:1px solid rgba(76,101,164,.14);\n  box-shadow:0 7px 18px rgba(30,48,88,.05);\n  overflow:hidden;\n}\n.vf-logo-shell img{\n  width:36px;height:36px;object-fit:contain;\n}\n.vf-logo-fallback{\n  width:34px;height:34px;border-radius:10px;\n  display:flex;align-items:center;justify-content:center;\n  font-size:.72rem;font-weight:900;letter-spacing:.02em;\n  color:#3659b8;\n  background:linear-gradient(135deg,#eaf1ff,#f3edff 70%,#faf2df);\n}\n.vf-resolution-note{\n  color:#7b8493;font-size:.74rem;margin-top:2px;\n}\n.vf-card-action{\n  border-top:1px solid rgba(84,105,160,.10);\n  padding-top:8px;margin-top:9px;\n}\n.vf-future-strip{\n  background:\n    radial-gradient(circle at 88% 20%,rgba(118,82,255,.10),transparent 28%),\n    linear-gradient(120deg,rgba(239,245,255,.94),rgba(247,243,255,.92) 58%,rgba(253,248,238,.90))!important;\n}\n.vf-section-title::before{\n  background:linear-gradient(180deg,var(--vf-electric),var(--vf-violet) 65%,var(--vf-gold))!important;\n}\n</style>\n', unsafe_allow_html=True)
+
+
 st.markdown('\n<style>\n/* =========================================================\n   V18 — IMMERSIVE FUTURE DA\n   Electric blue + violet + discreet gold across the full app\n   ========================================================= */\nhtml, body, [data-testid="stAppViewContainer"], .stApp{\n  background:\n    radial-gradient(circle at 8% 4%, rgba(52,112,255,.18), transparent 25%),\n    radial-gradient(circle at 90% 8%, rgba(126,86,255,.16), transparent 28%),\n    radial-gradient(circle at 88% 88%, rgba(199,162,89,.10), transparent 23%),\n    linear-gradient(180deg,#f8faff 0%,#f4f7fc 48%,#f7f7ff 100%) !important;\n  background-attachment: fixed !important;\n}\n\n[data-testid="stAppViewContainer"]::before{\n  content:"";\n  position:fixed;\n  inset:0;\n  pointer-events:none;\n  z-index:0;\n  background-image:\n    linear-gradient(rgba(74,103,164,.025) 1px, transparent 1px),\n    linear-gradient(90deg, rgba(74,103,164,.025) 1px, transparent 1px);\n  background-size:34px 34px;\n  mask-image:linear-gradient(to bottom,rgba(0,0,0,.55),transparent 78%);\n}\n\n[data-testid="stMain"]{\n  position:relative;\n  z-index:1;\n}\n\n.block-container{\n  max-width:1540px !important;\n  padding-top:1rem !important;\n  padding-bottom:4rem !important;\n}\n\n/* Sidebar as part of the same visual universe */\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 0% 0%, rgba(63,124,255,.12), transparent 32%),\n    linear-gradient(180deg,rgba(255,255,255,.97) 0%,rgba(245,248,255,.98) 55%,rgba(248,245,255,.98) 100%) !important;\n  border-right:1px solid rgba(77,104,171,.14) !important;\n  box-shadow:10px 0 35px rgba(31,45,78,.025);\n}\n\n/* Global containers / cards */\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"],\ndiv[data-testid="stDataFrame"],\ndiv[data-testid="stForm"],\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  background:linear-gradient(145deg,rgba(255,255,255,.96),rgba(249,251,255,.94)) !important;\n  border-color:rgba(97,119,175,.16) !important;\n  box-shadow:\n    0 8px 24px rgba(35,49,88,.045),\n    inset 0 1px 0 rgba(255,255,255,.75);\n}\n\n/* Cards get subtle future glow */\ndiv[data-testid="stMetric"]:hover,\ndiv[data-testid="stVerticalBlockBorderWrapper"]:hover{\n  border-color:rgba(63,124,255,.24) !important;\n  box-shadow:\n    0 10px 26px rgba(53,84,160,.07),\n    0 0 0 1px rgba(124,92,255,.035);\n  transition:.18s ease;\n}\n\n/* Inputs / select / text fields */\ndiv[data-baseweb="select"] > div,\ninput,\ntextarea{\n  background:rgba(255,255,255,.90) !important;\n  border-color:rgba(88,112,172,.18) !important;\n  border-radius:14px !important;\n}\ndiv[data-baseweb="select"] > div:focus-within,\ninput:focus,\ntextarea:focus{\n  border-color:rgba(63,124,255,.45) !important;\n  box-shadow:0 0 0 3px rgba(63,124,255,.08) !important;\n}\n\n/* Buttons */\nbutton[kind="secondary"]{\n  background:linear-gradient(180deg,#ffffff,#f7f9fd) !important;\n  border:1px solid rgba(89,113,171,.18) !important;\n  border-radius:13px !important;\n  box-shadow:0 4px 12px rgba(37,54,95,.035);\n}\nbutton[kind="secondary"]:hover{\n  border-color:rgba(63,124,255,.34) !important;\n  background:linear-gradient(90deg,rgba(238,244,255,.98),rgba(245,241,255,.98)) !important;\n}\nbutton[kind="primary"]{\n  background:linear-gradient(90deg,#3476ff,#7354f4) !important;\n  border:0 !important;\n  color:white !important;\n  border-radius:13px !important;\n  box-shadow:0 8px 20px rgba(76,84,214,.18);\n}\n\n/* Tabs */\ndiv[data-testid="stTabs"] [data-baseweb="tab-list"]{\n  gap:6px;\n  padding:5px;\n  border:1px solid rgba(93,116,171,.12);\n  border-radius:15px;\n  background:rgba(255,255,255,.60);\n  backdrop-filter:blur(8px);\n}\ndiv[data-testid="stTabs"] button[role="tab"]{\n  border-radius:11px !important;\n  padding:.45rem .75rem !important;\n}\ndiv[data-testid="stTabs"] button[aria-selected="true"]{\n  background:linear-gradient(90deg,rgba(63,124,255,.12),rgba(124,92,255,.12)) !important;\n}\n\n/* Tables */\ndiv[data-testid="stDataFrame"]{\n  overflow:hidden;\n  border-radius:17px !important;\n}\n\n/* Alerts */\ndiv[data-testid="stAlert"]{\n  border-radius:15px !important;\n  border:1px solid rgba(95,118,174,.14) !important;\n  box-shadow:0 6px 18px rgba(35,49,88,.035);\n}\n\n/* Hero / headers */\n.vf-hero{\n  position:relative;\n  overflow:hidden;\n  background:\n    radial-gradient(circle at 85% 18%, rgba(124,92,255,.13), transparent 28%),\n    radial-gradient(circle at 15% 15%, rgba(63,124,255,.13), transparent 30%),\n    linear-gradient(135deg,rgba(255,255,255,.98),rgba(241,246,255,.98) 52%,rgba(248,244,255,.98) 78%,rgba(253,248,237,.96)) !important;\n  border:1px solid rgba(88,112,172,.16) !important;\n}\n.vf-hero::after{\n  content:"";\n  position:absolute;\n  width:220px;height:220px;\n  right:-90px;top:-120px;\n  border-radius:50%;\n  background:radial-gradient(circle,rgba(199,162,89,.12),transparent 68%);\n}\n\n.vf-section-title{\n  letter-spacing:-.02em;\n}\n.vf-section-title::before{\n  content:"";\n  display:inline-block;\n  width:4px;height:16px;\n  border-radius:999px;\n  margin-right:8px;\n  vertical-align:-2px;\n  background:linear-gradient(180deg,#3476ff,#7c5cff 68%,#c7a259);\n}\n\n/* Full-width section ambiance */\n.vf-future-strip{\n  position:relative;\n  overflow:hidden;\n  background:\n    linear-gradient(120deg,rgba(238,244,255,.94),rgba(245,241,255,.92) 55%,rgba(252,247,236,.90));\n  border:1px solid rgba(95,118,174,.15);\n  border-radius:20px;\n  padding:16px 18px;\n  margin:6px 0 16px;\n  box-shadow:0 8px 24px rgba(35,49,88,.04);\n}\n.vf-future-strip-title{\n  font-size:.78rem;\n  text-transform:uppercase;\n  letter-spacing:.08em;\n  color:#6a7280;\n  font-weight:900;\n}\n.vf-future-strip-text{\n  margin-top:4px;\n  font-size:1rem;\n  font-weight:760;\n  color:#192235;\n}\n\n/* Instrument identity */\n.vf-instrument-identity{\n  display:flex;\n  align-items:center;\n  gap:12px;\n}\n.vf-logo-shell{\n  width:46px;height:46px;\n  min-width:46px;\n  border-radius:14px;\n  display:flex;\n  align-items:center;\n  justify-content:center;\n  background:linear-gradient(145deg,#fff,#f2f5fb);\n  border:1px solid rgba(91,114,171,.15);\n  box-shadow:0 5px 14px rgba(34,49,87,.05);\n  overflow:hidden;\n}\n.vf-logo-shell img{\n  width:32px;height:32px;object-fit:contain;border-radius:7px;\n}\n.vf-logo-fallback{\n  width:32px;height:32px;border-radius:9px;\n  display:flex;align-items:center;justify-content:center;\n  font-size:.70rem;font-weight:900;color:#355ab8;\n  background:linear-gradient(135deg,#eaf1ff,#f2edff);\n}\n\n/* Decorative gold micro accents */\n.vf-goldline{\n  height:2px;\n  width:56px;\n  margin:7px 0 0;\n  border-radius:999px;\n  background:linear-gradient(90deg,#3476ff,#7c5cff,#c7a259);\n}\n</style>\n', unsafe_allow_html=True)
 
 
@@ -248,7 +251,13 @@ st.markdown('\n<style>\nsection[data-testid="stSidebar"]{\n  background:linear-g
 
 def vf_page_header(title: str, subtitle: str = ""):
     sub = f'<div class="vf-hero-sub">{subtitle}</div>' if subtitle else ""
-    st.markdown(f'<div class="vf-hero"><div class="vf-hero-title">{title}</div>{sub}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="vf-page-shell">'
+        f'<div class="vf-hero"><div class="vf-hero-title">{title}</div>{sub}</div>'
+        '<div class="vf-premium-divider"></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
 
 
 def vf_currency(v):
@@ -1441,17 +1450,13 @@ def resolve_ticker_from_identity(name="", isin=""):
 
 
 def open_instrument(symbol):
-    """
-    Safe Streamlit navigation.
-    Do NOT mutate nav_mode after the radio widget has been instantiated.
-    Store a pending navigation request, then apply it before the radio is created
-    on the next rerun.
-    """
     symbol = _clean_text(symbol, upper=True)
     if not symbol:
         return
     st.session_state["instrument_symbol"] = symbol
+    st.session_state.pop("instrument_unresolved", None)
     st.session_state["_pending_nav_mode"] = "📊 Instrument"
+    st.session_state["_pending_nav_group"] = "Analyse"
     st.rerun()
 
 
@@ -1578,7 +1583,9 @@ def show_arbitrage_page():
         a,b=st.columns([4,1])
         selected=a.selectbox("Position", list(labels.keys()), key="arb_open_symbol")
         if b.button("📊 Fiche instrument", use_container_width=True):
-            open_instrument(labels[selected])
+            _sym = labels[selected]
+            _row = resolved_rows[resolved_rows["Ticker"] == _sym].iloc[0]
+            open_instrument_identity(_sym, _row.get("Nom complet",""), _row.get("ISIN",""))
 
     if unresolved:
         st.warning(
@@ -2498,8 +2505,8 @@ def show_market_agent_page():
 
             ba,bb = st.columns([1,1])
             with ba:
-                if st.button("📊 Ouvrir la fiche", key=f"open_alert_{r.get('id','x')}_{symbol}", use_container_width=True):
-                    open_instrument(symbol)
+                if st.button("📊 Ouvrir la fiche", key=f"open_alert_{r.get('id','x')}_{vf_identity_key(symbol, full_name, isin)}", use_container_width=True):
+                    open_instrument_identity(symbol, full_name, isin)
             with bb:
                 if r.get("status")=="NEW" and r.get("id") is not None:
                     if st.button("🔖 Marquer comme lu",key=f"ack_{r.get('id')}", use_container_width=True):
@@ -2821,38 +2828,39 @@ def show_import_page():
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def vf_company_logo_url(symbol):
+@st.cache_data(ttl=86400, show_spinner=False)
+def vf_company_logo_data(symbol):
     """
-    Best-effort company logo.
-    Uses the official company website returned by yfinance and a public favicon
-    endpoint. No API key is required. If unavailable, the UI falls back to initials.
+    Returns only a logo URL explicitly supplied by the financial source.
+    We no longer disguise a website favicon as an official company logo.
     """
     symbol = _clean_text(symbol, upper=True)
     if not symbol:
-        return ""
+        return {"url":"", "source":"", "name":""}
     try:
         info = yf.Ticker(symbol).info or {}
-        website = _clean_text(info.get("website"))
-        if not website:
-            return ""
-        from urllib.parse import urlparse, quote
-        parsed = urlparse(website if "://" in website else "https://" + website)
-        domain = parsed.netloc or parsed.path
-        domain = domain.split(":")[0].strip().lower()
-        if domain.startswith("www."):
-            domain = domain[4:]
-        if not domain:
-            return ""
-        return f"https://www.google.com/s2/favicons?domain={quote(domain)}&sz=128"
     except Exception:
-        return ""
+        info = {}
+
+    url = _clean_text(
+        info.get("logo_url")
+        or info.get("logoUrl")
+        or info.get("companyLogoUrl")
+    )
+    name = _clean_text(info.get("longName") or info.get("shortName"))
+    return {
+        "url": url if url.startswith("http") else "",
+        "source": "Source financière" if url.startswith("http") else "",
+        "name": name,
+    }
 
 
-def vf_logo_html(symbol, name="", size=46):
+def vf_logo_html(symbol, name="", size=48):
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name)
-    url = vf_company_logo_url(symbol)
-    initials = "".join([p[:1] for p in (name or symbol).split()[:2]]).upper() or symbol[:2]
+    logo = vf_company_logo_data(symbol) if symbol else {"url":"","source":"","name":""}
+    url = logo.get("url","")
+    initials = "".join([p[:1] for p in (name or symbol or "?").split()[:2]]).upper() or "?"
     if url:
         return (
             f'<div class="vf-logo-shell" style="width:{size}px;height:{size}px;min-width:{size}px">'
@@ -2866,20 +2874,105 @@ def vf_logo_html(symbol, name="", size=46):
     )
 
 
-def vf_identity_html(symbol, name, isin=""):
+@st.cache_data(ttl=21600, show_spinner=False)
+def vf_resolve_identity(symbol="", name="", isin=""):
     symbol = _clean_text(symbol, upper=True)
-    name = _clean_text(name) or symbol
+    name = _clean_text(name)
     isin = _clean_text(isin, upper=True)
+
+    if symbol and symbol not in {"NAN","NONE","NULL","<NA>"}:
+        return {
+            "symbol": symbol,
+            "confidence": 100,
+            "source": "Ticker",
+            "name": name,
+            "isin": isin,
+        }
+
+    resolved, confidence, source = resolve_ticker_from_identity(name, isin)
+    return {
+        "symbol": _clean_text(resolved, upper=True),
+        "confidence": int(confidence or 0),
+        "source": _clean_text(source),
+        "name": name,
+        "isin": isin,
+    }
+
+
+def vf_identity_html(symbol, name, isin="", resolve=False):
+    symbol = _clean_text(symbol, upper=True)
+    name = _clean_text(name)
+    isin = _clean_text(isin, upper=True)
+
+    identity = vf_resolve_identity(symbol, name, isin) if resolve else {
+        "symbol":symbol,"confidence":100 if symbol else 0,"source":"Ticker" if symbol else "",
+        "name":name,"isin":isin
+    }
+    shown_symbol = identity.get("symbol") or "À RÉSOUDRE"
+    shown_name = name or vf_company_logo_data(identity.get("symbol")).get("name") or shown_symbol
     subtitle = f"ISIN : {isin}" if isin else "ISIN non renseigné"
+
+    resolution = ""
+    if not symbol and identity.get("symbol"):
+        resolution = (
+            f'<div class="vf-resolution-note">Résolu automatiquement : '
+            f'{identity.get("source")} • confiance {identity.get("confidence")}%</div>'
+        )
+    elif not identity.get("symbol"):
+        resolution = '<div class="vf-resolution-note">Instrument à résoudre — fiche disponible avec résolution assistée.</div>'
+
     return (
         '<div class="vf-instrument-identity">'
-        + vf_logo_html(symbol, name)
+        + vf_logo_html(identity.get("symbol"), shown_name)
         + '<div>'
-        + f'<div class="vf-name">{symbol} • {name}</div>'
+        + f'<div class="vf-name">{shown_symbol} • {shown_name}</div>'
         + f'<div class="vf-isin">{subtitle}</div>'
+        + resolution
         + '<div class="vf-goldline"></div>'
         + '</div></div>'
     )
+
+
+def open_instrument_identity(symbol="", name="", isin=""):
+    """
+    Universal instrument entry point.
+    Every card can open an Instrument page, even when its ticker is missing.
+    """
+    symbol = _clean_text(symbol, upper=True)
+    name = _clean_text(name)
+    isin = _clean_text(isin, upper=True)
+
+    identity = vf_resolve_identity(symbol, name, isin)
+    resolved = identity.get("symbol","")
+
+    if resolved:
+        st.session_state["instrument_symbol"] = resolved
+        st.session_state["instrument_identity_context"] = {
+            "name": name,
+            "isin": isin,
+            "resolution_source": identity.get("source",""),
+            "resolution_confidence": identity.get("confidence",0),
+        }
+        st.session_state.pop("instrument_unresolved", None)
+    else:
+        st.session_state["instrument_symbol"] = ""
+        st.session_state["instrument_unresolved"] = {
+            "name": name,
+            "isin": isin,
+        }
+
+    st.session_state["_pending_nav_mode"] = "📊 Instrument"
+    st.session_state["_pending_nav_group"] = "Analyse"
+    st.rerun()
+
+
+def vf_identity_key(symbol="", name="", isin=""):
+    raw = "|".join([
+        _clean_text(symbol, upper=True),
+        _clean_text(name),
+        _clean_text(isin, upper=True)
+    ])
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 
@@ -2920,8 +3013,9 @@ def vf_position_card(row, key_prefix="pos"):
             k2.metric("P/L latent", "—")
         k3.metric("Cours", f"{price:.2f}" if pd.notna(price) else "—")
 
-        if symbol and st.button("📊 Ouvrir la fiche", key=f"{key_prefix}_{symbol}", use_container_width=True):
-            open_instrument(symbol)
+        identity_key = vf_identity_key(symbol, name, isin)
+        if st.button("📊 Ouvrir la fiche", key=f"{key_prefix}_{identity_key}", use_container_width=True):
+            open_instrument_identity(symbol, name, isin)
 
 
 def vf_setup_card(row, key_prefix="setup", show_expand=False):
@@ -2972,8 +3066,9 @@ def vf_setup_card(row, key_prefix="setup", show_expand=False):
         m4.metric("Stop", f"{stop:.2f}" if pd.notna(stop) else "—")
         m5.metric("TP2", f"{tp2:.2f}" if pd.notna(tp2) else "—")
 
-        if symbol and st.button("📊 Fiche instrument", key=f"{key_prefix}_{symbol}", use_container_width=True):
-            open_instrument(symbol)
+        identity_key = vf_identity_key(symbol, name, isin)
+        if st.button("📊 Fiche instrument", key=f"{key_prefix}_{identity_key}", use_container_width=True):
+            open_instrument_identity(symbol, name, isin)
 
         if show_expand and symbol:
             with st.expander("Voir l'analyse détaillée"):
@@ -3076,6 +3171,9 @@ def show_transactions_page():
 # ==========================================================
 # Apply navigation requests before instantiating widgets.
 _pending_nav = st.session_state.pop("_pending_nav_mode", None)
+_pending_group = st.session_state.pop("_pending_nav_group", None)
+if _pending_group:
+    st.session_state["nav_group"] = _pending_group
 if _pending_nav:
     st.session_state["nav_mode"] = _pending_nav
 
@@ -3657,6 +3755,9 @@ def vf_full_instrument_page(symbol, row=None):
             '</div>',
             unsafe_allow_html=True
         )
+        logo_meta = vf_company_logo_data(symbol)
+        if logo_meta.get("url"):
+            st.caption("Logo fourni par la source financière")
         badge_parts=[]
         if _clean_text(row.get("Source")):
             badge_parts.append(vf_board_badge(_clean_text(row.get("Source")),"blue"))
@@ -4101,7 +4202,7 @@ def vf_watchlist_board():
                 if meta: st.caption(" • ".join(meta))
             with b:
                 if st.button("📊 Ouvrir", key=f"watch_open_{symbol}", use_container_width=True):
-                    open_instrument(symbol)
+                    open_instrument_identity(symbol, name, "")
             if st.button("Retirer", key=f"watch_delete_{symbol}", use_container_width=True):
                 vf_watchlist_remove(symbol)
                 st.rerun()
@@ -4228,8 +4329,8 @@ def vf_dashboard_command_center():
                     st.metric("P/L",f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else "—")
                     if pd.notna(value):
                         st.caption(f"Valeur : {value:,.0f} €")
-                    if symbol and st.button("📊 Fiche",key=f"v15_risk_{symbol}",use_container_width=True):
-                        open_instrument(symbol)
+                    if st.button("📊 Fiche",key=f"v19_risk_{vf_identity_key(symbol, name, _clean_text(r.get('ISIN'), upper=True))}",use_container_width=True):
+                        open_instrument_identity(symbol, name, _clean_text(r.get("ISIN"), upper=True))
 
     vf_section("Allocation","Répartition des comptes et contribution au P/L.")
     d=pd.DataFrame(cards)
@@ -4557,8 +4658,70 @@ elif mode=="📊 Instrument":
                 selected_row = row
                 break
 
+    unresolved_ctx = st.session_state.get("instrument_unresolved") or {}
+
     if selected_symbol:
+        ctx = st.session_state.pop("instrument_identity_context", {}) or {}
+        if ctx and not selected_row:
+            selected_row = {
+                "name": ctx.get("name",""),
+                "isin": ctx.get("isin",""),
+                "Source": ctx.get("resolution_source",""),
+            }
         vf_full_instrument_page(selected_symbol, selected_row)
+
+    elif unresolved_ctx:
+        unresolved_name = _clean_text(unresolved_ctx.get("name"))
+        unresolved_isin = _clean_text(unresolved_ctx.get("isin"), upper=True)
+
+        vf_section("Instrument à résoudre", "La fiche existe, mais le ticker n'est pas encore suffisamment fiable.")
+        st.markdown(
+            vf_identity_html("", unresolved_name, unresolved_isin, resolve=False),
+            unsafe_allow_html=True
+        )
+
+        st.markdown(
+            '<div class="vf-future-strip">'
+            '<div class="vf-future-strip-title">Résolution assistée</div>'
+            '<div class="vf-future-strip-text">VISION FUTURE conserve la valeur et tente de relier son ISIN / nom à un ticker Yahoo sans inventer de correspondance.</div>'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        r1,r2 = st.columns([3,1])
+        retry_ticker = r1.text_input(
+            "Ticker à confirmer",
+            placeholder="ex. HRS.PA, ALHOP.PA…",
+            key=f"unresolved_ticker_{vf_identity_key('', unresolved_name, unresolved_isin)}"
+        )
+        if r2.button("Valider", use_container_width=True):
+            if _clean_text(retry_ticker, upper=True):
+                st.session_state["instrument_symbol"] = _clean_text(retry_ticker, upper=True)
+                st.session_state["instrument_identity_context"] = {
+                    "name": unresolved_name,
+                    "isin": unresolved_isin,
+                    "resolution_source": "Validation manuelle",
+                    "resolution_confidence": 100,
+                }
+                st.session_state.pop("instrument_unresolved", None)
+                st.rerun()
+
+        auto_sym, auto_conf, auto_source = resolve_ticker_from_identity(unresolved_name, unresolved_isin)
+        if auto_sym:
+            st.success(f"Correspondance proposée : {auto_sym} • {auto_source} • confiance {auto_conf}%")
+            if st.button("📊 Ouvrir la correspondance proposée", use_container_width=True):
+                st.session_state["instrument_symbol"] = auto_sym
+                st.session_state["instrument_identity_context"] = {
+                    "name": unresolved_name,
+                    "isin": unresolved_isin,
+                    "resolution_source": auto_source,
+                    "resolution_confidence": auto_conf,
+                }
+                st.session_state.pop("instrument_unresolved", None)
+                st.rerun()
+        else:
+            st.warning("Aucune correspondance suffisamment fiable pour l'instant. La valeur reste conservée comme instrument à résoudre.")
+
     else:
         st.info("Sélectionne une valeur ou saisis un ticker libre.")
 
