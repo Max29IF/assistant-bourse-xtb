@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.8.2 Live Setup"
+APP_VERSION = "V11.9 Navigation & Data Quality"
 
 
 # ==========================================================
@@ -1216,47 +1216,227 @@ def show_performance_page():
             for item in m["issues"][:50]:
                 st.write("•",item)
 
+
+def _norm_company_text(value):
+    s = _clean_text(value).lower()
+    s = re.sub(r"[^a-z0-9]+", " ", s)
+    stop = {"sa","sas","se","plc","nv","ag","spa","oyj","inc","corp","corporation","ltd","limited","group","holding"}
+    return " ".join(t for t in s.split() if t not in stop)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def resolve_ticker_from_identity(name="", isin=""):
+    """
+    Best-effort resolver:
+    1) exact ISIN/name in our central directory
+    2) Yahoo Search by ISIN
+    3) Yahoo Search by company/fund name
+    Returns (ticker, confidence, source). Never invents a ticker.
+    """
+    name = _clean_text(name)
+    isin = _clean_text(isin, upper=True)
+
+    try:
+        d = load_instrument_directory()
+        if not d.empty:
+            if isin:
+                hit = d[d["isin"].astype(str).str.upper() == isin]
+                if not hit.empty:
+                    return _clean_text(hit.iloc[0].get("symbol"), upper=True), 100, "Référentiel ISIN"
+            if name:
+                target = _norm_company_text(name)
+                if target:
+                    for _, rr in d.iterrows():
+                        cand = _norm_company_text(rr.get("name"))
+                        if cand and cand == target:
+                            return _clean_text(rr.get("symbol"), upper=True), 96, "Référentiel nom"
+    except Exception:
+        pass
+
+    queries = [q for q in [isin, name] if q]
+    best = None
+    target_tokens = set(_norm_company_text(name).split())
+    for query in queries:
+        try:
+            search = yf.Search(query, max_results=10)
+            quotes = getattr(search, "quotes", None) or []
+        except Exception:
+            quotes = []
+
+        for q in quotes:
+            symbol = _clean_text(q.get("symbol"), upper=True)
+            if not symbol:
+                continue
+            qtype = _clean_text(q.get("quoteType"), upper=True)
+            if qtype and qtype not in {"EQUITY","ETF","MUTUALFUND"}:
+                continue
+
+            qname = _clean_text(q.get("longname") or q.get("shortname") or q.get("name"))
+            cand_tokens = set(_norm_company_text(qname).split())
+            overlap = 0
+            if target_tokens and cand_tokens:
+                overlap = len(target_tokens & cand_tokens) / max(len(target_tokens), 1)
+
+            score = int(round(overlap * 80))
+            # FR ISIN generally makes a Paris-listed candidate more plausible.
+            if isin.startswith("FR") and symbol.endswith(".PA"):
+                score += 12
+            if query == isin:
+                score += 10
+            score = min(score, 99)
+
+            if best is None or score > best[1]:
+                best = (symbol, score, "Yahoo Search")
+
+    if best and best[1] >= 55:
+        return best
+    return "", 0, "Non résolu"
+
+
+def open_instrument(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return
+    st.session_state["instrument_symbol"] = symbol
+    st.session_state["nav_mode"] = "📊 Instrument"
+    st.rerun()
+
+
+
 def show_arbitrage_page():
-    st.header("⚖️ Arbitrage portefeuille")
-    account=st.selectbox("Compte",["pea","cto_xtb","cto_trade_republic","cto_autre"],key="arb_account",
-        format_func=lambda x:{"pea":"PEA","cto_xtb":"CTO XTB","cto_trade_republic":"CTO Trade Republic","cto_autre":"CTO autre"}[x])
+    vf_page_header(
+        "⚖️ Arbitrage portefeuille",
+        "Poids du portefeuille, qualité technique et résolution automatique des instruments."
+    )
+
+    account=st.selectbox(
+        "Compte",
+        ["pea","cto_xtb","cto_trade_republic","cto_autre"],
+        key="arb_account",
+        format_func=lambda x:{"pea":"PEA","cto_xtb":"CTO XTB","cto_trade_republic":"CTO Trade Republic","cto_autre":"CTO autre"}[x]
+    )
+
     _,pos=portfolio_valuation(account,use_live=True)
     if pos.empty:
-        st.info("Aucune position à analyser."); return
-    # V10.2: portfolio_valuation() exposes "Valeur référence" (not the legacy "Valeur").
+        st.info("Aucune position à analyser.")
+        return
+
     value_col = "Valeur référence" if "Valeur référence" in pos.columns else ("Valeur" if "Valeur" in pos.columns else None)
     if value_col is None:
         st.error("Impossible de calculer l'arbitrage : aucune colonne de valorisation n'est disponible.")
         return
+
     total = pd.to_numeric(pos[value_col], errors="coerce").sum(skipna=True)
-    rows=[]; bar=st.progress(0)
+    rows=[]
+    bar=st.progress(0)
+
     for i,(_,r) in enumerate(pos.iterrows(),1):
         ticker=_clean_text(r.get("Ticker"), upper=True)
         name=_clean_text(r.get("Entreprise")) or _clean_text(r.get("Nom")) or ticker
         isin=_clean_text(r.get("ISIN"), upper=True)
+        resolution_source="Import"
+        resolution_confidence=100 if ticker else 0
+
+        if not ticker:
+            ticker, resolution_confidence, resolution_source = resolve_ticker_from_identity(name, isin)
+
         value=pd.to_numeric(pd.Series([r.get(value_col)]), errors="coerce").iloc[0]
         weight=(float(value)/total*100) if pd.notna(value) and total else np.nan
+
         if not ticker:
-            rows.append({"Ticker":"","Nom complet":name,"ISIN":isin,"Poids %":weight,"Score":np.nan,"Potentiel %":np.nan,"R/R":np.nan,"Lecture":"Ticker à résoudre"})
-            bar.progress(i/max(len(pos),1)); continue
+            rows.append({
+                "Ticker":"",
+                "Nom complet":name,
+                "ISIN":isin,
+                "Poids %":weight,
+                "P/L %":r.get("P/L %"),
+                "Score":np.nan,
+                "Potentiel %":np.nan,
+                "R/R":np.nan,
+                "Résolution":"Non résolu",
+                "Lecture":"Ticker à résoudre"
+            })
+            bar.progress(i/max(len(pos),1))
+            continue
+
         setup=trade_setup(history(ticker,"6mo","1d"))
         if not setup:
             reading="Données insuffisantes"; score=up=rr=np.nan
         else:
             score,up,rr=setup["score"],setup["upside"],setup["rr"]
-            if score>=85 and up>=5 and rr>=2: reading="🟢 Renforcer / conserver — signal technique fort"
-            elif score<60 or up<2: reading="🟠 Examiner un allègement — signal faible"
-            else: reading="🟡 Conserver / surveiller"
-        rows.append({"Ticker":ticker,"Nom complet":name,"ISIN":isin,"Poids %":weight,"P/L %":r.get("P/L %"),"Score":score,"Potentiel %":up,"R/R":rr,"Lecture":reading})
+            if score>=85 and up>=5 and rr>=2:
+                reading="🟢 Renforcer / conserver — signal technique fort"
+            elif score<60 or up<2:
+                reading="🟠 Examiner un allègement — signal faible"
+            else:
+                reading="🟡 Conserver / surveiller"
+
+        resolution = resolution_source if resolution_confidence >= 90 else f"{resolution_source} ({resolution_confidence}%)"
+
+        rows.append({
+            "Ticker":ticker,
+            "Nom complet":name,
+            "ISIN":isin,
+            "Poids %":weight,
+            "P/L %":r.get("P/L %"),
+            "Score":score,
+            "Potentiel %":up,
+            "R/R":rr,
+            "Résolution":resolution,
+            "Lecture":reading
+        })
         bar.progress(i/max(len(pos),1))
-    bar.empty(); out=pd.DataFrame(rows)
-    st.dataframe(out.sort_values("Score",ascending=False,na_position="last"),use_container_width=True,hide_index=True)
+
+    bar.empty()
+    out=pd.DataFrame(rows)
+
+    resolved = int(out["Ticker"].astype(bool).sum())
+    unresolved = len(out) - resolved
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("Positions", len(out))
+    k2.metric("Résolues", resolved)
+    k3.metric("À résoudre", unresolved)
+    k4.metric("Valeur analysée", f"{total:,.0f} €")
+
+    st.dataframe(
+        out.sort_values("Score",ascending=False,na_position="last"),
+        use_container_width=True,
+        hide_index=True
+    )
+
     cva,cvb=st.columns(2)
     with cva:
-        vf_bar(out.dropna(subset=["Poids %"]).nlargest(min(15,len(out)), "Poids %"), "Valeur", "Poids %", "Poids des positions")
+        chart_df=out.dropna(subset=["Poids %"]).copy()
+        chart_df["Valeur"] = chart_df.apply(lambda x: f"{x['Ticker'] or '—'} • {x['Nom complet']}", axis=1)
+        vf_bar(chart_df.nlargest(min(15,len(chart_df)), "Poids %"), "Valeur", "Poids %", "Poids des positions")
     with cvb:
-        vf_bar(out.dropna(subset=["Score"]).nlargest(min(15,len(out)), "Score"), "Valeur", "Score", "Score technique")
-    st.caption("Lecture analytique croisant poids du portefeuille et setup technique. Ce module ne garantit ni performance ni opportunité de marché.")
+        chart_df=out.dropna(subset=["Score"]).copy()
+        if not chart_df.empty:
+            chart_df["Valeur"] = chart_df.apply(lambda x: f"{x['Ticker']} • {x['Nom complet']}", axis=1)
+            vf_bar(chart_df.nlargest(min(15,len(chart_df)), "Score"), "Valeur", "Score", "Score technique")
+
+    resolved_rows = out[out["Ticker"].astype(bool)]
+    if not resolved_rows.empty:
+        st.markdown("#### Ouvrir une position")
+        labels = {
+            f"{rr['Ticker']} • {rr['Nom complet']}": rr["Ticker"]
+            for _, rr in resolved_rows.iterrows()
+        }
+        a,b=st.columns([4,1])
+        selected=a.selectbox("Position", list(labels.keys()), key="arb_open_symbol")
+        if b.button("📊 Fiche instrument", use_container_width=True):
+            open_instrument(labels[selected])
+
+    if unresolved:
+        st.warning(
+            f"{unresolved} instrument(s) restent sans ticker fiable. "
+            "VISION FUTURE ne leur attribue volontairement aucun score tant que la résolution n'est pas suffisamment sûre."
+        )
+
+    st.caption(
+        "Lecture analytique croisant poids du portefeuille et setup technique. "
+        "Les tickers résolus automatiquement sont identifiés dans la colonne Résolution."
+    )
 
 
 # ==========================================================
@@ -2063,10 +2243,18 @@ def show_market_agent_page():
     # Agent health / regime strip
     h1,h2,h3,h4,h5 = st.columns(5)
     h1.metric("État agent", _clean_text(latest.get("status")) if latest is not None else "—")
-    h2.metric("Régime", details.get("REGIME","—"))
-    h3.metric("Univers", details.get("UNIVERSE","—"))
-    h4.metric("Candidats", details.get("CONFIRMED","—"))
-    h5.metric("Alertes créées", int(latest.get("created_alerts") or 0) if latest is not None else 0)
+
+    regime_raw = details.get("REGIME","—")
+    regime_state = regime_raw
+    regime_score = None
+    m = re.match(r"^([A-Z_]+)\(([^)]+)\)$", str(regime_raw))
+    if m:
+        regime_state, regime_score = m.group(1), m.group(2)
+    h2.metric("Régime", regime_state, regime_score)
+
+    h3.metric("Univers ce cycle", details.get("UNIVERSE","—"))
+    h4.metric("Candidats ce cycle", details.get("CONFIRMED","—"))
+    h5.metric("Créées ce cycle", int(latest.get("created_alerts") or 0) if latest is not None else 0)
     if latest is not None:
         st.caption(f"Dernier cycle : {latest.get('ran_at','—')}")
 
@@ -2183,10 +2371,15 @@ def show_market_agent_page():
             footer+=f" • {r.get('created_at','')} • {_clean_text(r.get('status')) or 'NEW'}"
             st.caption(footer)
 
-            if r.get("status")=="NEW" and r.get("id") is not None:
-                if st.button("🔖 Marquer comme lu",key=f"ack_{r.get('id')}"):
-                    acknowledge_alert(r.get("id"))
-                    st.rerun()
+            ba,bb = st.columns([1,1])
+            with ba:
+                if st.button("📊 Ouvrir la fiche", key=f"open_alert_{r.get('id','x')}_{symbol}", use_container_width=True):
+                    open_instrument(symbol)
+            with bb:
+                if r.get("status")=="NEW" and r.get("id") is not None:
+                    if st.button("🔖 Marquer comme lu",key=f"ack_{r.get('id')}", use_container_width=True):
+                        acknowledge_alert(r.get("id"))
+                        st.rerun()
 
 def indicators(df):
     x=df.copy(); c=x.Close; h=x.High; l=x.Low; v=x.Volume
@@ -2564,7 +2757,7 @@ def show_transactions_page():
 # ==========================================================
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"])
+    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"]=False; st.rerun()
     st.markdown("---")
@@ -3436,7 +3629,8 @@ elif mode=="🔎 Scanner":
 
                         with st.expander("🔎 Ouvrir la fiche premium"):
                             vf_instrument_sheet(r["Ticker"], r.to_dict())
-                            st.caption("Pour la version plein écran, ouvre le menu « 📊 Instrument » et sélectionne cette valeur.")
+                            if st.button("📊 Ouvrir en plein écran", key=f"scanner_open_{r['Ticker']}", use_container_width=True):
+                                open_instrument(r["Ticker"])
 
                 with st.expander("📋 Voir le tableau complet"):
                     visible = [
@@ -3564,8 +3758,10 @@ elif mode=="📊 Instrument":
         help="Tape un ticker ou le nom de l'entreprise pour filtrer la liste."
     )
 
+    preset_symbol = _clean_text(st.session_state.pop("instrument_symbol", ""), upper=True)
     manual_symbol = c2.text_input(
         "Ticker libre",
+        value=preset_symbol,
         placeholder="ex. TSLA, MC.PA",
         help="Permet d'analyser n'importe quel ticker Yahoo Finance même s'il n'est pas dans la liste."
     )
