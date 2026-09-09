@@ -24,7 +24,8 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V15.1 Navigation Rework"
+APP_VERSION = "V16 Future Glow Premium"
+APP_TAGLINE = "Build the Future of Your Capital"
 
 
 # ==========================================================
@@ -228,6 +229,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n:root{\n  --vf-blue:#3f7cff;\n  --vf-blue-soft:#eef4ff;\n  --vf-violet:#7c5cff;\n  --vf-violet-soft:#f3efff;\n  --vf-gold:#c6a15b;\n  --vf-gold-soft:#fcf6e9;\n}\n.stApp{\n  background:\n    radial-gradient(circle at 0% 0%, rgba(63,124,255,.12), transparent 28%),\n    radial-gradient(circle at 100% 0%, rgba(124,92,255,.11), transparent 32%),\n    radial-gradient(circle at 100% 100%, rgba(198,161,91,.08), transparent 24%),\n    linear-gradient(180deg,#f7f9fd 0%,#f4f7fb 42%,#f6f9ff 100%);\n}\nsection[data-testid="stSidebar"]{\n  background:\n    linear-gradient(180deg, rgba(255,255,255,.94) 0%, rgba(247,250,255,.98) 40%, rgba(246,246,255,.98) 100%);\n  border-right:1px solid rgba(111,137,190,.12);\n}\n.vf-topbar{\n  display:flex;align-items:center;justify-content:space-between;gap:18px;\n  background:\n    linear-gradient(135deg, rgba(255,255,255,.96) 0%, rgba(238,244,255,.96) 38%, rgba(243,239,255,.96) 72%, rgba(252,246,233,.92) 100%);\n  border:1px solid rgba(111,137,190,.18);\n  border-radius:22px;\n  padding:18px 20px;\n  margin:0 0 16px 0;\n  box-shadow:0 10px 30px rgba(35,47,84,.06);\n}\n.vf-brand{font-weight:950;letter-spacing:-.04em;font-size:1.22rem;color:#111827;}\n.vf-brand-sub{color:#4b5565;font-size:.83rem;font-weight:650;margin-top:4px;}\n.vf-topbar-tag{color:#546071;font-size:.86rem;margin-top:7px;}\n.vf-topbar-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;}\n.vf-hero{\n  background:\n    linear-gradient(135deg, rgba(255,255,255,.98) 0%, rgba(239,245,255,.98) 44%, rgba(244,240,255,.98) 78%, rgba(252,246,233,.96) 100%);\n  border:1px solid rgba(111,137,190,.18);\n  box-shadow:0 12px 30px rgba(35,47,84,.05);\n}\n.vf-hero-title{\n  background:linear-gradient(90deg, #1f2937 0%, #245dff 44%, #6d47ff 80%, #987545 100%);\n  -webkit-background-clip:text;-webkit-text-fill-color:transparent;\n}\n.vf-group-title{\n  margin:.55rem 0 .2rem 0;\n  font-size:.74rem;\n  font-weight:900;\n  letter-spacing:.08em;\n  color:#6b7280;\n  text-transform:uppercase;\n}\n.vf-side-note{\n  color:#667085;\n  font-size:.75rem;\n}\ndiv[data-testid="stMetric"]{\n  background:rgba(255,255,255,.92);\n  border:1px solid rgba(111,137,190,.16);\n  border-radius:16px;\n  padding:.55rem .65rem;\n}\ndiv[data-testid="stMetric"] label{\n  font-weight:700;\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n.vf-terminal-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:10px 0 16px;}\n.vf-terminal-box{\n  background:#fff;border:1px solid var(--vf-border);border-radius:18px;\n  padding:14px 15px;box-shadow:0 5px 18px rgba(15,23,42,.03);\n}\n.vf-terminal-label{font-size:.72rem;color:var(--vf-muted);font-weight:800;text-transform:uppercase;letter-spacing:.06em;}\n.vf-terminal-value{font-size:1.2rem;font-weight:900;color:var(--vf-text);margin-top:4px;}\n.vf-terminal-note{font-size:.75rem;color:var(--vf-muted);margin-top:3px;}\n.vf-panel-title{font-size:1rem;font-weight:850;color:var(--vf-text);margin-bottom:3px;}\n.vf-panel-sub{font-size:.78rem;color:var(--vf-muted);}\n.vf-watch-row{\n  background:#fff;border:1px solid var(--vf-border);border-radius:16px;\n  padding:12px 14px;margin-bottom:8px;\n}\n</style>\n', unsafe_allow_html=True)
 
@@ -3012,37 +3016,78 @@ def show_transactions_page():
 # ==========================================================
 # SIDEBAR / ROUTING
 # ==========================================================
-# Apply navigation requests before instantiating the radio widget.
+# Apply navigation requests before instantiating widgets.
 _pending_nav = st.session_state.pop("_pending_nav_mode", None)
 if _pending_nav:
     st.session_state["nav_mode"] = _pending_nav
 
+_NAV_GROUPS = {
+    "Vue d'ensemble": ["🏠 Dashboard", "⭐ Watchlist"],
+    "Portefeuille": ["🏦 PEA", "💼 CTO", "📈 Performance", "⚖️ Arbitrage", "💰 Transactions"],
+    "Marché": ["🔎 Scanner", "🛰️ Agent marché"],
+    "Analyse": ["📊 Instrument", "📊 Analyse", "🧪 Simulation"],
+    "Gestion": ["📥 Imports & documents"],
+}
+_mode_to_group = {item: group for group, items in _NAV_GROUPS.items() for item in items}
+_current_mode = st.session_state.get("nav_mode", "🏠 Dashboard")
+if _current_mode not in _mode_to_group:
+    _current_mode = "🏠 Dashboard"
+    st.session_state["nav_mode"] = _current_mode
+st.session_state.setdefault("nav_group", _mode_to_group.get(_current_mode, "Vue d'ensemble"))
+st.session_state["nav_group"] = _mode_to_group.get(st.session_state.get("nav_mode", _current_mode), st.session_state.get("nav_group", "Vue d'ensemble"))
+
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    st.caption("NAVIGATION PRINCIPALE")
-    mode=st.radio("Navigation", ["🏠 Dashboard","⭐ Watchlist","🏦 PEA","💼 CTO","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation","💰 Transactions","📥 Imports & documents"], key="nav_mode")
+    st.caption(APP_TAGLINE)
+    st.markdown('<div class="vf-group-title">Navigation</div>', unsafe_allow_html=True)
+
+    selected_group = st.selectbox(
+        "Espace",
+        list(_NAV_GROUPS.keys()),
+        key="nav_group",
+        label_visibility="collapsed",
+    )
+
+    mode = st.radio(
+        "Page",
+        _NAV_GROUPS[selected_group],
+        key="nav_mode",
+        label_visibility="collapsed",
+    )
+
     st.markdown("---")
-    st.caption("ACCÈS INSTRUMENT")
-    _quick_symbol = st.text_input("Ticker rapide", placeholder="TSLA, MC.PA…", key="sidebar_quick_symbol")
+    st.markdown('<div class="vf-group-title">Accès rapide</div>', unsafe_allow_html=True)
+    _quick_symbol = st.text_input(
+        "Ticker rapide",
+        placeholder="TSLA, MC.PA…",
+        key="sidebar_quick_symbol"
+    )
     if st.button("📊 Ouvrir l'instrument", key="sidebar_quick_open", use_container_width=True):
         if _clean_text(_quick_symbol, upper=True):
             open_instrument(_quick_symbol)
 
     if st.button("🔒 Déconnexion"):
-        st.session_state["authenticated"]=False; st.rerun()
+        st.session_state["authenticated"] = False
+        st.rerun()
+
     st.markdown("---")
-    capital=st.number_input("Capital de référence (€)",100.0,1_000_000.0,10_000.0,100.0)
-    risk_pct=st.number_input("Risque par trade (%)",0.1,3.0,0.5,0.05)
-    refresh_min=st.select_slider("Actualisation scanner (min)",[1,2,5,10,15,30,60],value=5)
-    auto_refresh=st.checkbox("Actualisation automatique",False)
-    if auto_refresh: st_autorefresh(interval=refresh_min*60*1000,key="auto_refresh")
+    st.markdown('<div class="vf-group-title">Paramètres trading</div>', unsafe_allow_html=True)
+    capital = st.number_input("Capital de référence (€)", 100.0, 1_000_000.0, 10_000.0, 100.0)
+    risk_pct = st.number_input("Risque par trade (%)", 0.1, 3.0, 0.5, 0.05)
+    refresh_min = st.select_slider("Actualisation scanner (min)", [1,2,5,10,15,30,60], value=5)
+    auto_refresh = st.checkbox("Actualisation automatique", False)
+    if auto_refresh:
+        st_autorefresh(interval=refresh_min * 60 * 1000, key="auto_refresh")
+
+    st.markdown("---")
+    st.markdown('<div class="vf-group-title">Infrastructure</div>', unsafe_allow_html=True)
     if SUPABASE is None:
         st.error("Supabase non connecté")
     else:
         st.success("Supabase connecté")
 
 st.title(f"🔭 {APP_NAME}")
-st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • UI analytique + graphiques + stockage persistant")
+st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • {APP_TAGLINE} • UI analytique + graphiques + stockage persistant")
 
 
 
@@ -3756,12 +3801,17 @@ def vf_alert_chip(alert_type):
 def vf_global_topbar():
     html = (
         '<div class="vf-topbar">'
-        '<div><div class="vf-brand">🔭 VISION FUTURE</div>'
-        f'<div class="vf-brand-sub">{APP_VERSION} • Trading & Portfolio Intelligence</div></div>'
         '<div>'
-        + vf_board_badge("LIVE","green")
-        + vf_board_badge("DA PREMIUM","blue")
-        + '</div></div>'
+        '<div class="vf-brand">🔭 VISION FUTURE</div>'
+        f'<div class="vf-brand-sub">{APP_VERSION} • {APP_SUBTITLE}</div>'
+        f'<div class="vf-topbar-tag">{APP_TAGLINE}</div>'
+        '</div>'
+        '<div class="vf-topbar-right">'
+        + vf_board_badge("VISION", "blue")
+        + vf_board_badge("STEP UP", "green")
+        + vf_board_badge("GLOW UP", "amber")
+        + '</div>'
+        '</div>'
     )
     st.markdown(html, unsafe_allow_html=True)
 
@@ -3973,7 +4023,7 @@ def vf_watchlist_board():
 def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
-        "VISION FUTURE — portefeuille, marché, opportunités, risques et watchlist."
+        "VISION FUTURE — portefeuille, marché, opportunités, risques et watchlist dans une lecture premium."
     )
 
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -4004,6 +4054,12 @@ def vf_dashboard_command_center():
 
     pulse=vf_market_pulse()
     watch_count=len(vf_watchlist_get())
+
+    st.markdown(
+        '<div class="vf-cardline"><div class="vf-cardtitle">Build the Future of Your Capital</div>'
+        '<div class="vf-cardnote">Une interface pensée pour la progression, la lisibilité et la prise de décision rapide : vision, opportunités, risque et croissance du capital.</div></div>',
+        unsafe_allow_html=True
+    )
 
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
