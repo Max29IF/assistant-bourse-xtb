@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V13 All-in-One DA"
+APP_VERSION = "V13.0.1 Hotfix"
 
 
 # ==========================================================
@@ -3020,8 +3020,6 @@ with st.sidebar:
     else:
         st.success("Supabase connecté")
 
-vf_global_topbar()
-
 st.title(f"🔭 {APP_NAME}")
 st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • UI analytique + graphiques + stockage persistant")
 
@@ -3851,6 +3849,8 @@ def vf_dashboard_command_center():
 
     with st.expander("📋 Détail des comptes"):
         st.dataframe(d,use_container_width=True,hide_index=True)
+
+vf_global_topbar()
 
 if mode=="🏠 Dashboard":
     vf_dashboard_command_center()
