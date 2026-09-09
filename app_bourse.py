@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V16 Future Glow Premium"
+APP_VERSION = "V17 Premium Navigation"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -229,6 +229,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\nsection[data-testid="stSidebar"] div[data-baseweb="select"] > div{\n  border-radius:14px;\n  border-color:rgba(63,124,255,.22);\n  background:linear-gradient(90deg,rgba(238,244,255,.95),rgba(245,241,255,.95));\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label{\n  padding:.45rem .5rem;\n  border-radius:12px;\n  transition:background .15s ease,border-color .15s ease;\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label:hover{\n  background:linear-gradient(90deg,rgba(63,124,255,.08),rgba(124,92,255,.08));\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n:root{\n  --vf-blue:#3f7cff;\n  --vf-blue-soft:#eef4ff;\n  --vf-violet:#7c5cff;\n  --vf-violet-soft:#f3efff;\n  --vf-gold:#c6a15b;\n  --vf-gold-soft:#fcf6e9;\n}\n.stApp{\n  background:\n    radial-gradient(circle at 0% 0%, rgba(63,124,255,.12), transparent 28%),\n    radial-gradient(circle at 100% 0%, rgba(124,92,255,.11), transparent 32%),\n    radial-gradient(circle at 100% 100%, rgba(198,161,91,.08), transparent 24%),\n    linear-gradient(180deg,#f7f9fd 0%,#f4f7fb 42%,#f6f9ff 100%);\n}\nsection[data-testid="stSidebar"]{\n  background:\n    linear-gradient(180deg, rgba(255,255,255,.94) 0%, rgba(247,250,255,.98) 40%, rgba(246,246,255,.98) 100%);\n  border-right:1px solid rgba(111,137,190,.12);\n}\n.vf-topbar{\n  display:flex;align-items:center;justify-content:space-between;gap:18px;\n  background:\n    linear-gradient(135deg, rgba(255,255,255,.96) 0%, rgba(238,244,255,.96) 38%, rgba(243,239,255,.96) 72%, rgba(252,246,233,.92) 100%);\n  border:1px solid rgba(111,137,190,.18);\n  border-radius:22px;\n  padding:18px 20px;\n  margin:0 0 16px 0;\n  box-shadow:0 10px 30px rgba(35,47,84,.06);\n}\n.vf-brand{font-weight:950;letter-spacing:-.04em;font-size:1.22rem;color:#111827;}\n.vf-brand-sub{color:#4b5565;font-size:.83rem;font-weight:650;margin-top:4px;}\n.vf-topbar-tag{color:#546071;font-size:.86rem;margin-top:7px;}\n.vf-topbar-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;}\n.vf-hero{\n  background:\n    linear-gradient(135deg, rgba(255,255,255,.98) 0%, rgba(239,245,255,.98) 44%, rgba(244,240,255,.98) 78%, rgba(252,246,233,.96) 100%);\n  border:1px solid rgba(111,137,190,.18);\n  box-shadow:0 12px 30px rgba(35,47,84,.05);\n}\n.vf-hero-title{\n  background:linear-gradient(90deg, #1f2937 0%, #245dff 44%, #6d47ff 80%, #987545 100%);\n  -webkit-background-clip:text;-webkit-text-fill-color:transparent;\n}\n.vf-group-title{\n  margin:.55rem 0 .2rem 0;\n  font-size:.74rem;\n  font-weight:900;\n  letter-spacing:.08em;\n  color:#6b7280;\n  text-transform:uppercase;\n}\n.vf-side-note{\n  color:#667085;\n  font-size:.75rem;\n}\ndiv[data-testid="stMetric"]{\n  background:rgba(255,255,255,.92);\n  border:1px solid rgba(111,137,190,.16);\n  border-radius:16px;\n  padding:.55rem .65rem;\n}\ndiv[data-testid="stMetric"] label{\n  font-weight:700;\n}\n</style>\n', unsafe_allow_html=True)
 
@@ -3029,12 +3032,25 @@ _NAV_GROUPS = {
     "Gestion": ["📥 Imports & documents"],
 }
 _mode_to_group = {item: group for group, items in _NAV_GROUPS.items() for item in items}
-_current_mode = st.session_state.get("nav_mode", "🏠 Dashboard")
-if _current_mode not in _mode_to_group:
-    _current_mode = "🏠 Dashboard"
-    st.session_state["nav_mode"] = _current_mode
-st.session_state.setdefault("nav_group", _mode_to_group.get(_current_mode, "Vue d'ensemble"))
-st.session_state["nav_group"] = _mode_to_group.get(st.session_state.get("nav_mode", _current_mode), st.session_state.get("nav_group", "Vue d'ensemble"))
+
+# Initialise once.
+if "nav_mode" not in st.session_state or st.session_state["nav_mode"] not in _mode_to_group:
+    st.session_state["nav_mode"] = "🏠 Dashboard"
+
+if "nav_group" not in st.session_state or st.session_state["nav_group"] not in _NAV_GROUPS:
+    st.session_state["nav_group"] = _mode_to_group.get(
+        st.session_state["nav_mode"],
+        "Vue d'ensemble"
+    )
+
+# IMPORTANT:
+# If the user changes the group selector, Streamlit updates nav_group before this
+# script reruns. Only then do we move nav_mode to the first page of that group.
+# If the user merely changes the page radio, nav_mode already belongs to the
+# selected group, so nothing gets overwritten.
+_selected_group = st.session_state["nav_group"]
+if st.session_state["nav_mode"] not in _NAV_GROUPS[_selected_group]:
+    st.session_state["nav_mode"] = _NAV_GROUPS[_selected_group][0]
 
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
@@ -3046,6 +3062,7 @@ with st.sidebar:
         list(_NAV_GROUPS.keys()),
         key="nav_group",
         label_visibility="collapsed",
+        help="Choisis d'abord un espace, puis la page juste en dessous."
     )
 
     mode = st.radio(
@@ -3054,6 +3071,8 @@ with st.sidebar:
         key="nav_mode",
         label_visibility="collapsed",
     )
+
+    st.caption(f"{selected_group}  ›  {mode.replace('🏠 ','').replace('⭐ ','').replace('🏦 ','').replace('💼 ','').replace('📈 ','').replace('⚖️ ','').replace('💰 ','').replace('🔎 ','').replace('🛰️ ','').replace('📊 ','').replace('🧪 ','').replace('📥 ','')}")
 
     st.markdown("---")
     st.markdown('<div class="vf-group-title">Accès rapide</div>', unsafe_allow_html=True)
