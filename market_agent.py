@@ -124,7 +124,7 @@ def history(symbol, period="6mo", interval="1d"):
 
 def universe():
     try:
-        rows = sb_data(sb.table("broker_universe").select("symbol,name,market,broker,enabled").eq("enabled", True).execute())
+        rows = sb_data(sb.table("broker_universe").select("symbol,name,isin,market,broker,enabled").eq("enabled", True).execute())
         return pd.DataFrame(rows)
     except Exception as exc:
         diagnostics.append(f"universe:{type(exc).__name__}:{str(exc)[:180]}")
@@ -218,7 +218,7 @@ HIGH = événement susceptible d'invalider fortement le signal.
         return {"headline": "", "analysis": "", "news_risk": "UNAVAILABLE"}
 
 
-def create_alert(symbol, alert_type, broker, market, setup, ai, event_key):
+def create_alert(symbol, alert_type, broker, market, setup, ai, event_key, name="", isin=""):
     if alert_type not in ALERT_TYPES or not symbol:
         return False
     # Stable event key: never contains price or score.
@@ -228,7 +228,8 @@ def create_alert(symbol, alert_type, broker, market, setup, ai, event_key):
         if rows:
             return False
         payload = {
-            "symbol": symbol, "alert_type": alert_type, "broker": broker or "", "market": market or "",
+            "symbol": symbol, "name": name or "", "isin": isin or "",
+            "alert_type": alert_type, "broker": broker or "", "market": market or "",
             "score": setup.get("score"), "entry": setup.get("entry"), "stop": setup.get("stop"),
             "tp1": setup.get("tp1"), "tp2": setup.get("tp2"), "upside": setup.get("upside"),
             "rr": setup.get("rr"), "headline": ai.get("headline", ""), "analysis": ai.get("analysis", ""),
@@ -289,7 +290,8 @@ def run():
                     ai = ai_context(symbol, daily, ctx)
                     # News is context for position risk; technical event can still be emitted if news is unavailable.
                     event_key = f"{previous_state}_TO_{current_state}"
-                    if create_alert(symbol, current_state, p.get("broker", ""), "", daily, ai, event_key):
+                    if create_alert(symbol, current_state, p.get("broker", ""), "", daily, ai, event_key,
+                                    name=p.get("name", ""), isin=p.get("isin", "")):
                         created += 1
                 save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
             else:
@@ -314,7 +316,8 @@ def run():
                     # A previously qualified setup is now invalidated.
                     if create_alert(symbol, "INVALIDATED", u.get("broker", ""), u.get("market", ""),
                                     s, {"headline": "", "analysis": "Le setup technique ne satisfait plus les critères V10.",
-                                        "news_risk": "UNAVAILABLE"}, "QUALIFIED_TO_INVALID"):
+                                        "news_risk": "UNAVAILABLE"}, "QUALIFIED_TO_INVALID",
+                                    name=u.get("name", ""), isin=u.get("isin", "")):
                         created += 1
                 save_state(symbol, "ENTRY", "INVALID", s["score"], s["price"])
 
@@ -343,7 +346,8 @@ def run():
                 continue
 
             if create_alert(symbol, "ENTRY", u.get("broker", ""), u.get("market", ""),
-                            daily, ai, "NEW_QUALIFIED_SETUP"):
+                            daily, ai, "NEW_QUALIFIED_SETUP",
+                            name=u.get("name", ""), isin=u.get("isin", "")):
                 created += 1
             save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
 
