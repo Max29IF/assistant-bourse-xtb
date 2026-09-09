@@ -1,4 +1,7 @@
 import json
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 import os
 from datetime import datetime, timezone, timedelta
 
@@ -12,16 +15,11 @@ try:
 except Exception:
     genai = None
 
-try:
-    from tavily import TavilyClient
-except Exception:
-    TavilyClient = None
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 MIN_UPSIDE = 3.0
 MIN_RR = 2.0
@@ -230,28 +228,57 @@ def _extract_yahoo_news(symbol, limit=6):
     return out
 
 
-def _extract_tavily_news(symbol, limit=5):
-    if not TAVILY_API_KEY or TavilyClient is None:
-        return []
+def _extract_google_news_rss(symbol, name="", limit=6):
+    """
+    Free fallback: Google News RSS search.
+    No API key and no payment method required.
+    We use feed metadata only (title/source/date/link), not full article scraping.
+    """
+    query = f'"{name}" stock' if name and str(name).strip() else f"{symbol} stock"
+    params = urllib.parse.urlencode({
+        "q": query,
+        "hl": "en-US",
+        "gl": "US",
+        "ceid": "US:en",
+    })
+    url = "https://news.google.com/rss/search?" + params
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "VISION-FUTURE/11.4 (+market-news-rss)"}
+    )
     try:
-        client = TavilyClient(api_key=TAVILY_API_KEY)
-        res = client.search(
-            query=f"{symbol} stock company latest news earnings regulation sector macro",
-            topic="news",
-            max_results=limit,
-            search_depth="basic",
-        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            raw = response.read()
+        root = ET.fromstring(raw)
         out = []
-        for x in (res.get("results") or []):
-            out.append({
-                "title": str(x.get("title") or ""),
-                "summary": str(x.get("content") or "")[:1200],
-                "source": str(x.get("url") or "Tavily"),
-            })
+        for item in root.findall(".//item")[:limit]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub_date = (item.findtext("pubDate") or "").strip()
+            source_el = item.find("source")
+            source = ((source_el.text or "").strip() if source_el is not None else "Google News")
+            if title:
+                out.append({
+                    "title": title,
+                    "summary": "",
+                    "source": source,
+                    "published": pub_date,
+                    "url": link,
+                })
         return out
     except Exception as exc:
-        diagnostics.append(f"news_tavily:{symbol}:{type(exc).__name__}:{str(exc)[:160]}")
+        diagnostics.append(f"news_google_rss:{symbol}:{type(exc).__name__}:{str(exc)[:160]}")
         return []
+
+
+
+def free_news_healthcheck():
+    """Manual-run diagnostic for the no-card news chain."""
+    if os.getenv("GITHUB_EVENT_NAME", "") != "workflow_dispatch":
+        return None
+    test = _extract_google_news_rss("AAPL", "Apple Inc.", 1)
+    return "NEWS_RSS_OK" if test else "NEWS_RSS_EMPTY"
+
 
 
 def _deterministic_news_risk(items):
@@ -268,14 +295,24 @@ def _deterministic_news_risk(items):
     return "LOW" if items else "UNAVAILABLE"
 
 
-def ai_context(symbol, technical, position_context=None):
-    # Free-first design:
-    # 1) Yahoo Finance news = no paid AI/search service
-    # 2) Tavily is optional and has a free monthly quota
-    # 3) Gemini free tier is optional for richer interpretation
+def ai_context(symbol, technical, position_context=None, instrument_name=''):
+    # Zero-card design:
+    # 1) Yahoo Finance news first
+    # 2) Google News RSS fallback (no API key)
+    # 3) Gemini interprets only the retrieved headlines/metadata
     items = _extract_yahoo_news(symbol, 6)
     if len(items) < 3:
-        items.extend(_extract_tavily_news(symbol, 5))
+        items.extend(_extract_google_news_rss(symbol, instrument_name, 6))
+
+    # Deduplicate headlines while preserving order.
+    deduped = []
+    seen_titles = set()
+    for item in items:
+        key = str(item.get("title", "")).strip().lower()
+        if key and key not in seen_titles:
+            seen_titles.add(key)
+            deduped.append(item)
+    items = deduped[:8]
 
     fallback_risk = _deterministic_news_risk(items)
     fallback_headline = items[0]["title"] if items else ""
@@ -355,6 +392,110 @@ def create_alert(symbol, alert_type, broker, market, setup, ai, event_key, name=
         return False
 
 
+
+def setup_confidence(daily, hourly=None, news_risk="UNAVAILABLE"):
+    """
+    Composite confidence score used only for ranking/decision support.
+    Does not replace the existing technical score stored in alerts.
+    """
+    if not daily:
+        return 0
+    score = float(daily.get("score", 0))
+    score += min(max(float(daily.get("rr", 0)) - 2.0, 0), 2.0) * 4
+    score += min(max(float(daily.get("upside", 0)) - 3.0, 0), 7.0) * 1.2
+    vol_ratio = float(daily.get("vol_ratio", 1.0) or 1.0)
+    if vol_ratio >= 1.25:
+        score += 3
+    if hourly:
+        score = score * 0.78 + float(hourly.get("score", 0)) * 0.22
+
+    risk = str(news_risk or "").upper()
+    if risk == "HIGH":
+        score -= 30
+    elif risk == "MEDIUM":
+        score -= 10
+    elif risk == "LOW":
+        score += 2
+
+    return int(np.clip(round(score), 0, 100))
+
+
+def market_regime():
+    """
+    Lightweight global regime filter.
+    Uses broad liquid ETFs and returns RISK_ON / NEUTRAL / RISK_OFF.
+    Failure never blocks the agent.
+    """
+    proxies = ["SPY", "QQQ", "VGK", "EWJ"]
+    votes = []
+    for symbol in proxies:
+        try:
+            s = trade_setup(history(symbol, "6mo", "1d"))
+            if not s:
+                continue
+            if s["score"] >= 65:
+                votes.append(1)
+            elif s["score"] <= 45:
+                votes.append(-1)
+            else:
+                votes.append(0)
+        except Exception:
+            continue
+
+    if not votes:
+        return {"state": "NEUTRAL", "score": 50, "votes": 0}
+
+    avg = sum(votes) / len(votes)
+    if avg >= 0.45:
+        state = "RISK_ON"
+    elif avg <= -0.45:
+        state = "RISK_OFF"
+    else:
+        state = "NEUTRAL"
+    return {"state": state, "score": int(round((avg + 1) * 50)), "votes": len(votes)}
+
+
+def is_existing_position(symbol, pos_df):
+    if pos_df is None or pos_df.empty:
+        return False
+    syms = {clean_symbol(x) for x in pos_df.get("ticker", pd.Series(dtype=str)).tolist()}
+    return symbol in syms
+
+
+def candidate_rank(daily, hourly, regime_state):
+    """
+    Ranking score for the global opportunity queue.
+    Higher is better; no new database column required.
+    """
+    hscore = float(hourly.get("score", 0)) if hourly else 0
+    rank = (
+        float(daily.get("score", 0)) * 0.48
+        + hscore * 0.22
+        + min(float(daily.get("rr", 0)), 4.0) * 5
+        + min(float(daily.get("upside", 0)), 10.0) * 1.4
+        + min(float(daily.get("vol_ratio", 1.0)), 2.0) * 3
+    )
+    if regime_state == "RISK_ON":
+        rank += 4
+    elif regime_state == "RISK_OFF":
+        rank -= 7
+    return round(rank, 2)
+
+
+def enriched_analysis(base_ai, daily, hourly, regime, confidence):
+    ai = dict(base_ai or {})
+    technical = (
+        f"Score journalier {daily.get('score','—')}/100, "
+        f"confirmation 1H {hourly.get('score','—') if hourly else '—'}/100, "
+        f"potentiel {daily.get('upside',0):.1f} %, R/R {daily.get('rr',0):.2f}. "
+        f"Régime global {regime.get('state','NEUTRAL')}. "
+        f"Confiance composite {confidence}/100."
+    )
+    base = str(ai.get("analysis") or "").strip()
+    ai["analysis"] = (technical + (" " + base if base else ""))[:3000]
+    return ai
+
+
 def classify_position(daily, hourly, pru):
     price = daily["price"]
     hscore = hourly["score"] if hourly else None
@@ -374,112 +515,218 @@ def classify_position(daily, hourly, pru):
 def run():
     uni, pos = universe(), positions()
     created = 0
+    regime = market_regime()
 
-    # 1) Existing positions: only STATE CHANGES become alerts.
+    # 1) Existing positions: alert only on meaningful STATE CHANGES.
     if not pos.empty:
         for _, p in pos.iterrows():
             symbol = clean_symbol(p.get("ticker"))
             if not symbol:
                 continue
+
             daily = trade_setup(history(symbol, "6mo", "1d"))
             if not daily:
                 continue
             hourly = trade_setup(history(symbol, "3mo", "1h"))
+
             pru, qty = fnum(p.get("pru")), fnum(p.get("quantity"))
             current_state = classify_position(daily, hourly, pru)
             previous = get_state(symbol, "POSITION")
             previous_state = previous.get("state") if previous else None
 
-            # First observation establishes baseline silently.
+            # First observation = silent baseline.
             if previous_state is None:
                 save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
                 continue
 
             if current_state != previous_state:
                 if current_state in {"EXIT", "RISK", "PROTECT", "TAKE_PROFIT"}:
-                    ctx = {"quantity": qty, "pru": pru, "price": daily["price"],
-                           "previous_state": previous_state, "new_state": current_state}
-                    ai = ai_context(symbol, daily, ctx)
-                    # News is context for position risk; technical event can still be emitted if news is unavailable.
+                    ctx = {
+                        "quantity": qty,
+                        "pru": pru,
+                        "price": daily["price"],
+                        "previous_state": previous_state,
+                        "new_state": current_state,
+                    }
+                    ai = ai_context(
+                        symbol,
+                        daily,
+                        position_context=ctx,
+                        instrument_name=str(p.get("name") or ""),
+                    )
+                    confidence = setup_confidence(daily, hourly, ai.get("news_risk"))
+                    ai = enriched_analysis(ai, daily, hourly, regime, confidence)
+
                     event_key = f"{previous_state}_TO_{current_state}"
-                    if create_alert(symbol, current_state, p.get("broker", ""), "", daily, ai, event_key,
-                                    name=p.get("name", ""), isin=p.get("isin", "")):
+                    if create_alert(
+                        symbol,
+                        current_state,
+                        p.get("broker", ""),
+                        "",
+                        daily,
+                        ai,
+                        event_key,
+                        name=p.get("name", ""),
+                        isin=p.get("isin", ""),
+                    ):
                         created += 1
+
                 save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
             else:
                 save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
 
-    # 2) New entries: technical gate -> hourly confirmation -> news gate -> state transition.
+    # 2) Global new entries.
+    # Daily gate first to keep requests light.
+    preliminary = []
     if not uni.empty:
-        candidates = []
         for _, u in uni.iterrows():
             symbol = clean_symbol(u.get("symbol"))
             if not symbol:
                 continue
-            s = trade_setup(history(symbol, "6mo", "1d"))
-            if not s:
+
+            # Never propose an ENTRY for something already held.
+            if is_existing_position(symbol, pos):
                 continue
-            qualifies = s["upside"] >= MIN_UPSIDE and s["rr"] >= MIN_RR and s["score"] >= MIN_ENTRY_SCORE
-            if qualifies:
-                candidates.append((symbol, u, s))
-            else:
+
+            daily = trade_setup(history(symbol, "6mo", "1d"))
+            if not daily:
+                continue
+
+            qualifies_daily = (
+                daily["upside"] >= MIN_UPSIDE
+                and daily["rr"] >= MIN_RR
+                and daily["score"] >= MIN_ENTRY_SCORE
+            )
+
+            if not qualifies_daily:
                 prev = get_state(symbol, "ENTRY")
                 if prev and prev.get("state") == "QUALIFIED":
-                    # A previously qualified setup is now invalidated.
-                    if create_alert(symbol, "INVALIDATED", u.get("broker", ""), u.get("market", ""),
-                                    s, {"headline": "", "analysis": "Le setup technique ne satisfait plus les critères V10.",
-                                        "news_risk": "UNAVAILABLE"}, "QUALIFIED_TO_INVALID",
-                                    name=u.get("name", ""), isin=u.get("isin", "")):
+                    if create_alert(
+                        symbol,
+                        "INVALIDATED",
+                        u.get("broker", ""),
+                        u.get("market", ""),
+                        daily,
+                        {
+                            "headline": "",
+                            "analysis": "Le setup technique ne satisfait plus les critères d'entrée VISION FUTURE.",
+                            "news_risk": "UNAVAILABLE",
+                        },
+                        "QUALIFIED_TO_INVALID",
+                        name=u.get("name", ""),
+                        isin=u.get("isin", ""),
+                    ):
                         created += 1
-                save_state(symbol, "ENTRY", "INVALID", s["score"], s["price"])
-
-        candidates.sort(key=lambda x: (x[2]["score"], x[2]["rr"], x[2]["upside"]), reverse=True)
-        for symbol, u, daily in candidates[:12]:
-            hourly = trade_setup(history(symbol, "3mo", "1h"))
-            if not hourly or hourly["score"] < MIN_HOURLY_SCORE:
                 save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"])
                 continue
 
-            prev = get_state(symbol, "ENTRY")
-            previous_state = prev.get("state") if prev else None
+            preliminary.append((symbol, u, daily))
 
-            # Already qualified: no repeated alert and no repeated AI call.
-            if previous_state == "QUALIFIED":
-                save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
-                continue
+    # Highest daily quality first. Hourly/news checks are only done for the best.
+    preliminary.sort(
+        key=lambda x: (x[2]["score"], x[2]["rr"], x[2]["upside"], x[2]["vol_ratio"]),
+        reverse=True,
+    )
 
-            ai = ai_context(symbol, daily)
-            # New ENTRY requires a successful news check. HIGH or unavailable => no entry alert.
-            if ai["news_risk"] == "HIGH":
-                save_state(symbol, "ENTRY", "BLOCKED_NEWS", daily["score"], daily["price"])
-                continue
-            
-            if create_alert(symbol, "ENTRY", u.get("broker", ""), u.get("market", ""),
-                            daily, ai, "NEW_QUALIFIED_SETUP",
-                            name=u.get("name", ""), isin=u.get("isin", "")):
-                created += 1
+    confirmed = []
+    for symbol, u, daily in preliminary[:18]:
+        hourly = trade_setup(history(symbol, "3mo", "1h"))
+        if not hourly or hourly["score"] < MIN_HOURLY_SCORE:
+            save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"])
+            continue
+
+        rank = candidate_rank(daily, hourly, regime["state"])
+        confirmed.append((rank, symbol, u, daily, hourly))
+
+    confirmed.sort(key=lambda x: x[0], reverse=True)
+
+    # Only the strongest candidates receive a news/Gemini call.
+    for rank, symbol, u, daily, hourly in confirmed[:8]:
+        prev = get_state(symbol, "ENTRY")
+        previous_state = prev.get("state") if prev else None
+
+        if previous_state == "QUALIFIED":
             save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
+            continue
 
-    # Manual runs perform one harmless Gemini connectivity test.
-    # Scheduled runs skip it automatically.
+        ai = ai_context(
+            symbol,
+            daily,
+            instrument_name=str(u.get("name") or ""),
+        )
+
+        confidence = setup_confidence(daily, hourly, ai.get("news_risk"))
+        ai = enriched_analysis(ai, daily, hourly, regime, confidence)
+
+        # News gate.
+        if ai.get("news_risk") == "HIGH":
+            save_state(symbol, "ENTRY", "BLOCKED_NEWS", daily["score"], daily["price"])
+            continue
+
+        # In a broad RISK_OFF regime, require a stronger setup.
+        if regime["state"] == "RISK_OFF" and confidence < 84:
+            save_state(symbol, "ENTRY", "WAIT_REGIME", daily["score"], daily["price"])
+            continue
+
+        # MEDIUM news is allowed only for very strong setups.
+        if ai.get("news_risk") == "MEDIUM" and confidence < 84:
+            save_state(symbol, "ENTRY", "WAIT_NEWS", daily["score"], daily["price"])
+            continue
+
+        if confidence < 78:
+            save_state(symbol, "ENTRY", "WATCH", daily["score"], daily["price"])
+            continue
+
+        ai["analysis"] = (
+            f"Classement opportunité {rank:.1f}. " + str(ai.get("analysis") or "")
+        )[:3000]
+
+        if create_alert(
+            symbol,
+            "ENTRY",
+            u.get("broker", ""),
+            u.get("market", ""),
+            daily,
+            ai,
+            "NEW_QUALIFIED_SETUP",
+            name=u.get("name", ""),
+            isin=u.get("isin", ""),
+        ):
+            created += 1
+
+        save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
+
+    # Manual launch diagnostics only.
     health = gemini_healthcheck()
+    news_health = free_news_healthcheck()
 
-    parts = []
+    parts = [
+        f"REGIME={regime['state']}({regime['score']}/100)",
+        f"UNIVERSE={len(uni)}",
+        f"POSITIONS={len(pos)}",
+        f"PRELIMINARY={len(preliminary)}",
+        f"CONFIRMED={len(confirmed)}",
+    ]
     if health:
         parts.append(health)
+    if news_health:
+        parts.append(news_health)
     if diagnostics:
         parts.append("DIAGNOSTICS: " + "; ".join(diagnostics[-20:]))
-    details = " | ".join(parts) if parts else None
+
+    details = " | ".join(parts)
 
     sb.table("agent_runs").insert({
         "ran_at": datetime.now(timezone.utc).isoformat(),
         "created_alerts": created,
         "status": "OK" if not diagnostics else "OK_WITH_DIAGNOSTICS",
-        "details": details
+        "details": details,
     }).execute()
-    print(f"VISION FUTURE V10: {created} actionable alert(s).")
-    if details:
-        print("Diagnostics:", details)
+
+    print(
+        f"VISION FUTURE V11.4: {created} actionable alert(s) | "
+        f"regime={regime['state']} | confirmed={len(confirmed)}"
+    )
 
 
 if __name__ == "__main__":
