@@ -8,14 +8,20 @@ import yfinance as yf
 from supabase import create_client
 
 try:
-    from openai import OpenAI
+    from google import genai
 except Exception:
-    OpenAI = None
+    genai = None
+
+try:
+    from tavily import TavilyClient
+except Exception:
+    TavilyClient = None
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
 MIN_UPSIDE = 3.0
 MIN_RR = 2.0
@@ -170,53 +176,122 @@ def recent_event(symbol, alert_type, hours=24):
         return False
 
 
-def ai_context(symbol, technical, position_context=None):
-    if not OPENAI_API_KEY:
-        diagnostics.append("openai:OPENAI_API_KEY missing")
-        return {"headline": "", "analysis": "", "news_risk": "UNAVAILABLE"}
-    if OpenAI is None:
-        diagnostics.append("openai:python package unavailable")
-        return {"headline": "", "analysis": "", "news_risk": "UNAVAILABLE"}
+def _extract_yahoo_news(symbol, limit=6):
+    try:
+        items = yf.Ticker(symbol).news or []
+    except Exception as exc:
+        diagnostics.append(f"news_yahoo:{symbol}:{type(exc).__name__}")
+        return []
+    out = []
+    for item in items[:limit]:
+        content = item.get("content") if isinstance(item, dict) else None
+        content = content if isinstance(content, dict) else item
+        title = str(content.get("title") or "").strip()
+        summary = str(content.get("summary") or content.get("description") or "").strip()
+        if title or summary:
+            out.append({"title": title, "summary": summary, "source": "Yahoo Finance"})
+    return out
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+
+def _extract_tavily_news(symbol, limit=5):
+    if not TAVILY_API_KEY or TavilyClient is None:
+        return []
+    try:
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        res = client.search(
+            query=f"{symbol} stock company latest news earnings regulation sector macro",
+            topic="news",
+            max_results=limit,
+            search_depth="basic",
+        )
+        out = []
+        for x in (res.get("results") or []):
+            out.append({
+                "title": str(x.get("title") or ""),
+                "summary": str(x.get("content") or "")[:1200],
+                "source": str(x.get("url") or "Tavily"),
+            })
+        return out
+    except Exception as exc:
+        diagnostics.append(f"news_tavily:{symbol}:{type(exc).__name__}:{str(exc)[:160]}")
+        return []
+
+
+def _deterministic_news_risk(items):
+    text = " ".join((x.get("title","") + " " + x.get("summary","")) for x in items).lower()
+    high = ["bankruptcy","insolvency","fraud","accounting probe","default","delisting",
+            "profit warning","guidance cut","investigation","sanction","war","explosion",
+            "recall","data breach","cyberattack","suspends dividend"]
+    medium = ["lawsuit","downgrade","strike","regulation","tariff","fine","earnings miss",
+              "margin pressure","layoff","restructuring","rate hike","geopolitical"]
+    if any(k in text for k in high):
+        return "HIGH"
+    if any(k in text for k in medium):
+        return "MEDIUM"
+    return "LOW" if items else "UNAVAILABLE"
+
+
+def ai_context(symbol, technical, position_context=None):
+    # Free-first design:
+    # 1) Yahoo Finance news = no paid AI/search service
+    # 2) Tavily is optional and has a free monthly quota
+    # 3) Gemini free tier is optional for richer interpretation
+    items = _extract_yahoo_news(symbol, 6)
+    if len(items) < 3:
+        items.extend(_extract_tavily_news(symbol, 5))
+
+    fallback_risk = _deterministic_news_risk(items)
+    fallback_headline = items[0]["title"] if items else ""
+    fallback_analysis = (
+        "Filtre d'actualité déterministe utilisé. "
+        + ("Sources récentes trouvées : " + " | ".join(x["title"] for x in items[:3]) if items
+           else "Aucune actualité exploitable n'a été récupérée lors de ce cycle.")
+    )
+
+    if not GEMINI_API_KEY or genai is None:
+        return {
+            "headline": fallback_headline[:500],
+            "analysis": fallback_analysis[:3000],
+            "news_risk": fallback_risk,
+        }
+
     prompt = f"""
 Tu es le filtre d'actualité de VISION FUTURE.
 Instrument: {symbol}
 Technique: {json.dumps(technical, ensure_ascii=False)}
 Position: {json.dumps(position_context or {}, ensure_ascii=False)}
+Actualités récupérées: {json.dumps(items[:8], ensure_ascii=False)}
 
-Recherche sur le web les actualités récentes réellement susceptibles d'affecter cet instrument
-(entreprise, résultats, secteur, macro, banque centrale, réglementation, géopolitique).
-Retourne UNIQUEMENT un objet JSON valide:
+Analyse uniquement ces informations. Ne fabrique aucun événement.
+Retourne UNIQUEMENT un JSON valide :
 {{"headline":"résumé factuel court","analysis":"2 à 4 phrases","news_risk":"LOW|MEDIUM|HIGH"}}
-LOW = pas de risque d'actualité significatif identifié.
-MEDIUM = incertitude notable.
 HIGH = événement susceptible d'invalider fortement le signal.
+MEDIUM = incertitude notable.
+LOW = aucun risque d'actualité significatif identifié dans les éléments fournis.
 """
     try:
-        resp = client.responses.create(
-            model=OPENAI_MODEL,
-            tools=[{"type": "web_search"}],
-            input=prompt,
-            store=False,
-        )
-        raw = (resp.output_text or "").strip()
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        raw = str(getattr(resp, "text", "") or "").strip()
         start, end = raw.find("{"), raw.rfind("}")
         if start < 0 or end <= start:
-            raise ValueError("JSON absent de la réponse")
+            raise ValueError("JSON absent")
         data = json.loads(raw[start:end+1])
         risk = str(data.get("news_risk", "")).upper()
-        if risk not in {"LOW", "MEDIUM", "HIGH"}:
-            raise ValueError(f"news_risk invalide: {risk}")
+        if risk not in {"LOW","MEDIUM","HIGH"}:
+            raise ValueError(f"news_risk invalide:{risk}")
         return {
-            "headline": str(data.get("headline", ""))[:500],
-            "analysis": str(data.get("analysis", ""))[:3000],
+            "headline": str(data.get("headline", fallback_headline))[:500],
+            "analysis": str(data.get("analysis", fallback_analysis))[:3000],
             "news_risk": risk,
         }
     except Exception as exc:
-        diagnostics.append(f"openai:{symbol}:{type(exc).__name__}:{str(exc)[:240]}")
-        return {"headline": "", "analysis": "", "news_risk": "UNAVAILABLE"}
-
+        diagnostics.append(f"gemini:{symbol}:{type(exc).__name__}:{str(exc)[:220]}")
+        return {
+            "headline": fallback_headline[:500],
+            "analysis": fallback_analysis[:3000],
+            "news_risk": fallback_risk,
+        }
 
 def create_alert(symbol, alert_type, broker, market, setup, ai, event_key, name="", isin=""):
     if alert_type not in ALERT_TYPES or not symbol:
@@ -341,10 +416,7 @@ def run():
             if ai["news_risk"] == "HIGH":
                 save_state(symbol, "ENTRY", "BLOCKED_NEWS", daily["score"], daily["price"])
                 continue
-            if ai["news_risk"] == "UNAVAILABLE":
-                save_state(symbol, "ENTRY", "WAITING_NEWS", daily["score"], daily["price"])
-                continue
-
+            
             if create_alert(symbol, "ENTRY", u.get("broker", ""), u.get("market", ""),
                             daily, ai, "NEW_QUALIFIED_SETUP",
                             name=u.get("name", ""), isin=u.get("isin", "")):
