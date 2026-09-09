@@ -11,6 +11,7 @@ from datetime import datetime, date, timedelta
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
 import yfinance as yf
 from streamlit_autorefresh import st_autorefresh
 
@@ -23,7 +24,179 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V10.2 Identity UI"
+APP_VERSION = "V11 Visual Analytics"
+
+
+# ==========================================================
+# V11 VISUAL SYSTEM
+# ==========================================================
+st.markdown("""
+<style>
+:root{
+  --vf-bg:#f6f8fc;
+  --vf-card:#ffffff;
+  --vf-text:#0f172a;
+  --vf-muted:#64748b;
+  --vf-border:#e2e8f0;
+  --vf-blue:#2563eb;
+  --vf-green:#059669;
+  --vf-red:#dc2626;
+  --vf-amber:#d97706;
+}
+.stApp { background: var(--vf-bg); }
+.block-container { padding-top: 1.35rem; padding-bottom: 3rem; max-width: 1500px; }
+h1,h2,h3 { color:var(--vf-text); letter-spacing:-0.02em; }
+div[data-testid="stMetric"]{
+  background:var(--vf-card);
+  border:1px solid var(--vf-border);
+  border-radius:16px;
+  padding:14px 16px;
+  box-shadow:0 4px 18px rgba(15,23,42,.035);
+}
+div[data-testid="stMetricLabel"] p { color:var(--vf-muted); font-weight:600; }
+div[data-testid="stMetricValue"] { color:var(--vf-text); font-weight:750; }
+div[data-testid="stDataFrame"]{
+  border:1px solid var(--vf-border);
+  border-radius:14px;
+  overflow:hidden;
+}
+div[data-testid="stExpander"]{
+  background:var(--vf-card);
+  border:1px solid var(--vf-border);
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow:0 3px 14px rgba(15,23,42,.025);
+}
+.vf-hero{
+  background:linear-gradient(135deg,#ffffff 0%,#f8fbff 60%,#eef5ff 100%);
+  border:1px solid var(--vf-border);
+  border-radius:22px;
+  padding:22px 24px;
+  margin:2px 0 18px 0;
+  box-shadow:0 10px 35px rgba(15,23,42,.05);
+}
+.vf-hero-title{font-size:1.65rem;font-weight:800;color:#0f172a;line-height:1.1;}
+.vf-hero-sub{color:#64748b;margin-top:6px;font-size:.98rem;}
+.vf-security{
+  display:inline-block;padding:5px 10px;border-radius:999px;
+  background:#eff6ff;color:#1d4ed8;font-size:.78rem;font-weight:700;margin-right:5px;
+}
+.vf-name{font-size:1.08rem;font-weight:800;color:#0f172a;}
+.vf-isin{font-size:.86rem;color:#64748b;margin-top:2px;}
+.vf-badge{
+  display:inline-block;padding:5px 10px;border-radius:999px;font-weight:750;font-size:.78rem;
+  margin-left:5px;
+}
+.vf-blue{background:#dbeafe;color:#1d4ed8;}
+.vf-green{background:#dcfce7;color:#047857;}
+.vf-red{background:#fee2e2;color:#b91c1c;}
+.vf-amber{background:#fef3c7;color:#a16207;}
+.vf-violet{background:#ede9fe;color:#6d28d9;}
+.vf-kpi-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;}
+.vf-cardline{
+  background:#fff;border:1px solid var(--vf-border);border-radius:16px;padding:14px 16px;margin-bottom:10px;
+}
+section[data-testid="stSidebar"] { border-right:1px solid #e5e7eb; }
+</style>
+""", unsafe_allow_html=True)
+
+
+def vf_page_header(title: str, subtitle: str = ""):
+    sub = f'<div class="vf-hero-sub">{subtitle}</div>' if subtitle else ""
+    st.markdown(f'<div class="vf-hero"><div class="vf-hero-title">{title}</div>{sub}</div>', unsafe_allow_html=True)
+
+
+def vf_currency(v):
+    try:
+        return f"{float(v):,.2f} €"
+    except Exception:
+        return "—"
+
+
+def vf_pie(df: pd.DataFrame, category: str, value: str, title: str):
+    if df is None or df.empty or category not in df or value not in df:
+        return
+    d = df[[category, value]].copy()
+    d[value] = pd.to_numeric(d[value], errors="coerce")
+    d = d.dropna().query(f"`{value}` > 0")
+    if d.empty:
+        return
+    chart = (
+        alt.Chart(d)
+        .mark_arc(innerRadius=55, outerRadius=105)
+        .encode(
+            theta=alt.Theta(f"{value}:Q"),
+            color=alt.Color(f"{category}:N", legend=alt.Legend(title=None, orient="bottom")),
+            tooltip=[alt.Tooltip(f"{category}:N"), alt.Tooltip(f"{value}:Q", format=",.2f")]
+        )
+        .properties(title=title, height=330)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def vf_bar(df: pd.DataFrame, category: str, value: str, title: str, horizontal=True):
+    if df is None or df.empty or category not in df or value not in df:
+        return
+    d = df[[category, value]].copy()
+    d[value] = pd.to_numeric(d[value], errors="coerce")
+    d = d.dropna()
+    if d.empty:
+        return
+    if horizontal:
+        enc = dict(
+            y=alt.Y(f"{category}:N", sort="-x", title=None),
+            x=alt.X(f"{value}:Q", title=None),
+        )
+    else:
+        enc = dict(
+            x=alt.X(f"{category}:N", sort="-y", title=None),
+            y=alt.Y(f"{value}:Q", title=None),
+        )
+    chart = alt.Chart(d).mark_bar(cornerRadiusEnd=5).encode(
+        **enc,
+        tooltip=[alt.Tooltip(f"{category}:N"), alt.Tooltip(f"{value}:Q", format=",.2f")]
+    ).properties(title=title, height=max(260, min(520, 34*len(d))))
+    st.altair_chart(chart, use_container_width=True)
+
+
+def vf_signed_bar(df: pd.DataFrame, category: str, value: str, title: str):
+    if df is None or df.empty or category not in df or value not in df:
+        return
+    d = df[[category, value]].copy()
+    d[value] = pd.to_numeric(d[value], errors="coerce")
+    d = d.dropna()
+    if d.empty:
+        return
+    chart = alt.Chart(d).mark_bar(cornerRadiusEnd=4).encode(
+        y=alt.Y(f"{category}:N", sort="-x", title=None),
+        x=alt.X(f"{value}:Q", title=None),
+        color=alt.condition(f"datum['{value}'] >= 0", alt.value("#059669"), alt.value("#dc2626")),
+        tooltip=[alt.Tooltip(f"{category}:N"), alt.Tooltip(f"{value}:Q", format="+,.2f")]
+    ).properties(title=title, height=max(260, min(520, 34*len(d))))
+    st.altair_chart(chart, use_container_width=True)
+
+
+def vf_line(df: pd.DataFrame, date_col: str, series_cols: list[str], title: str):
+    if df is None or df.empty or date_col not in df:
+        return
+    cols = [c for c in series_cols if c in df.columns]
+    if not cols:
+        return
+    d = df[[date_col] + cols].copy()
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    for c in cols:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=[date_col])
+    long = d.melt(id_vars=[date_col], value_vars=cols, var_name="Série", value_name="Valeur").dropna()
+    if long.empty:
+        return
+    chart = alt.Chart(long).mark_line(point=True).encode(
+        x=alt.X(f"{date_col}:T", title=None),
+        y=alt.Y("Valeur:Q", title=None),
+        color=alt.Color("Série:N", legend=alt.Legend(title=None, orient="bottom")),
+        tooltip=[alt.Tooltip(f"{date_col}:T"), "Série:N", alt.Tooltip("Valeur:Q", format=",.2f")]
+    ).properties(title=title, height=330)
+    st.altair_chart(chart, use_container_width=True)
 
 # ==========================================================
 # AUTHENTICATION
@@ -991,11 +1164,12 @@ def performance_metrics(account: str):
 
 
 def show_performance_page():
-    st.header("📈 Performance")
+    vf_page_header("📈 Performance", "Courbe d'évolution, flux, dividendes et lecture du P/L.")
     account=st.selectbox("Compte analysé",["pea","cto_xtb","cto_trade_republic","cto_autre"],
         format_func=lambda x:{"pea":"PEA","cto_xtb":"CTO XTB","cto_trade_republic":"CTO Trade Republic","cto_autre":"CTO autre"}[x])
     m,pos,tx,realized,openlots=performance_metrics(account)
     save_performance_snapshot(account,m)
+
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Actifs valorisés",f"{m['assets_value']:,.2f} €")
     c2.metric("P/L latent snapshot",f"{m['unrealized']:+,.2f} €")
@@ -1006,32 +1180,41 @@ def show_performance_page():
     c6.metric("Retraits externes",f"{m['withdrawals']:,.2f} €")
     c7.metric("P/L réalisé FIFO brut",f"{m['realized_gross']:+,.2f} €")
     c8.metric("Intérêts",f"{m['interest']:+,.2f} €")
+
     if m["equity_estimate"] is not None and m["net_contributions"]>0:
-        st.subheader("Performance globale estimée")
         a,b,c=st.columns(3)
         a.metric("Cash reconstruit",f"{m['cash_estimate']:+,.2f} €")
         b.metric("Valeur totale estimée",f"{m['equity_estimate']:,.2f} €")
         c.metric("Rendement simple estimé",f"{m['return_pct']:+.2f} %",delta=f"{m['pnl_estimate']:+,.2f} €")
-        st.caption("Cette estimation suppose que l'historique de transactions importé est complet depuis l'ouverture du compte. Ce n'est pas encore un rendement pondéré dans le temps (TWR).")
-    else:
-        st.info("Le rendement global ne peut pas encore être reconstruit pour ce compte : il faut un historique de transactions contenant les apports/retraits et un snapshot de positions valorisable.")
-    if m["corporate_actions"]:
-        st.warning(f"{m['corporate_actions']} opération(s) sur titres (split/bonus/etc.) détectée(s). Le P/L FIFO ne les transforme pas automatiquement afin d'éviter une reconstruction erronée ; le snapshot courtier reste la référence pour les positions courantes.")
-    if m["issues"]:
-        with st.expander("⚠️ Contrôles du ledger"):
-            for item in m["issues"][:50]: st.write("•",item)
-    st.subheader("Positions valorisées")
-    if not pos.empty: st.dataframe(pos,use_container_width=True,hide_index=True)
+        st.caption("Estimation basée sur l'historique de transactions disponible ; ce n'est pas encore un TWR.")
+
+    hist=load_performance_snapshots(account)
+    if not hist.empty:
+        vf_line(hist, "snapshot_date", ["equity_estimate","net_contributions","assets_value"], "Évolution du portefeuille")
+
+    if not pos.empty:
+        pos = add_identity_columns(pos, "Ticker")
+        left,right=st.columns(2)
+        with left:
+            if "Valeur référence" in pos:
+                vf_pie(pos, "Valeur", "Valeur référence", "Répartition du portefeuille")
+        with right:
+            if "P/L latent" in pos:
+                vf_signed_bar(pos.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "P/L latent par position")
+
+        st.subheader("Positions valorisées")
+        st.dataframe(pos,use_container_width=True,hide_index=True)
+
     if not realized.empty:
         st.subheader("P/L réalisé — méthode FIFO")
         st.dataframe(realized,use_container_width=True,hide_index=True)
-    hist=load_performance_snapshots(account)
-    if not hist.empty:
-        st.subheader("Historique VISION FUTURE")
-        plot=hist.set_index("snapshot_date")[[c for c in ["equity_estimate","net_contributions"] if c in hist.columns]].apply(pd.to_numeric,errors="coerce")
-        if not plot.dropna(how="all").empty: st.line_chart(plot)
-        st.caption("La courbe se construit à partir des snapshots enregistrés par VISION FUTURE à compter de V7.1.")
 
+    if m["corporate_actions"]:
+        st.warning(f"{m['corporate_actions']} opération(s) sur titres détectée(s). Le snapshot courtier reste la référence pour les positions courantes.")
+    if m["issues"]:
+        with st.expander("⚠️ Contrôles du ledger"):
+            for item in m["issues"][:50]:
+                st.write("•",item)
 
 def show_arbitrage_page():
     st.header("⚖️ Arbitrage portefeuille")
@@ -1068,6 +1251,11 @@ def show_arbitrage_page():
         bar.progress(i/max(len(pos),1))
     bar.empty(); out=pd.DataFrame(rows)
     st.dataframe(out.sort_values("Score",ascending=False,na_position="last"),use_container_width=True,hide_index=True)
+    cva,cvb=st.columns(2)
+    with cva:
+        vf_bar(out.dropna(subset=["Poids %"]).nlargest(min(15,len(out)), "Poids %"), "Valeur", "Poids %", "Poids des positions")
+    with cvb:
+        vf_bar(out.dropna(subset=["Score"]).nlargest(min(15,len(out)), "Score"), "Valeur", "Score", "Score technique")
     st.caption("Lecture analytique croisant poids du portefeuille et setup technique. Ce module ne garantit ni performance ni opportunité de marché.")
 
 
@@ -1719,7 +1907,7 @@ def acknowledge_alert(alert_id):
 
 
 def show_market_agent_page():
-    st.header("🛰️ Agent marché — alertes actionnables")
+    vf_page_header("🛰️ Agent marché", "Uniquement les événements de trading actionnables : entrée, risque, protection et sortie.")
     st.caption(
         "Chaque valeur est affichée avec son ticker, son nom complet et son ISIN. "
         "V10.1 masque les anciennes analyses POSITION répétitives et ne garde que les événements de trading."
@@ -1750,6 +1938,9 @@ def show_market_agent_page():
     c2.metric("Entrées", int((alerts["alert_type"] == "ENTRY").sum()) if "alert_type" in alerts else 0)
     risk_types = {"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
     c3.metric("Gestion / sorties", int(alerts["alert_type"].isin(risk_types).sum()) if "alert_type" in alerts else 0)
+    if "alert_type" in alerts.columns:
+        alert_summary = alerts["alert_type"].value_counts().rename_axis("Type").reset_index(name="Nombre")
+        vf_bar(alert_summary, "Type", "Nombre", "Répartition des alertes", horizontal=False)
 
     def _pill_class(t):
         return "vf-entry" if t in {"ENTRY","TAKE_PROFIT"} else "vf-exit" if t == "EXIT" else "vf-risk" if t in {"RISK","PROTECT","INVALIDATED"} else "vf-info"
@@ -2107,7 +2298,7 @@ def show_portfolio_page(account, title, broker: str | None = None):
     except Exception:
         pass
 
-    st.header(title)
+    vf_page_header(title, f"Positions, valorisation et allocation • {broker or 'Tous courtiers'}")
     df=load_positions(account, broker=broker)
     if df.empty:
         try:
@@ -2115,38 +2306,45 @@ def show_portfolio_page(account, title, broker: str | None = None):
             if rebuilt:
                 df = load_positions(account, broker=broker)
         except Exception as exc:
-            st.warning(f"Les transactions sont présentes mais la reconstruction automatique du portefeuille a échoué : {exc}")
+            st.warning(f"Les transactions sont présentes mais la reconstruction automatique a échoué : {exc}")
     if df.empty:
-        st.info("Aucune position enregistrée pour ce compte. Importe un export de positions ou de transactions depuis « Imports & documents » ; la reconstruction est ensuite automatique.")
+        st.info("Aucune position enregistrée. Importe un export depuis « Imports & documents ».")
         return
-    broker_label = broker or "Tous courtiers"
-    st.success(f"☁️ {len(df)} position(s) chargée(s) automatiquement depuis Supabase • {broker_label}.")
+
     totals,m=portfolio_valuation(account,use_live=True, broker=broker)
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Valeur suivie",f"{totals['value']:,.2f} €")
     c2.metric("Coût snapshot",f"{totals['cost']:,.2f} €")
     c3.metric("P/L latent",f"{totals['unrealized']:+,.2f} €")
-    c4.metric("Sans valorisation",totals['unpriced'])
+    c4.metric("Positions",len(df))
+
     if totals.get("live_value", 0) > 0:
-        st.caption(f"Estimation live disponible : {totals['live_value']:,.2f} € — séparée du snapshot courtier.")
+        st.caption(f"Estimation live : {totals['live_value']:,.2f} € — séparée du snapshot courtier.")
+
     m = add_identity_columns(m, "Ticker")
+    c_left,c_right=st.columns(2)
+    with c_left:
+        if "Valeur référence" in m.columns:
+            vf_pie(m, "Valeur", "Valeur référence", "Allocation par valeur")
+    with c_right:
+        if "P/L latent" in m.columns:
+            vf_signed_bar(m.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "Gains / pertes latents")
+
+    if "Valeur référence" in m.columns:
+        vf_bar(m.nlargest(min(15,len(m)), "Valeur référence"), "Valeur", "Valeur référence", "Poids des principales positions")
+
+    st.subheader("Détail des positions")
     st.dataframe(m,use_container_width=True,hide_index=True)
-    st.caption(
-        "Pour un export de positions, la valeur totale et le P/L latent utilisent le snapshot courtier "
-        "afin de rester cohérents avec le fichier importé. Les cours live sont affichés séparément comme estimation."
-    )
+    st.caption("Le snapshot courtier reste la référence de valorisation ; les cours live sont une estimation séparée.")
 
 def show_transactions_page():
-    st.header("💰 Transactions / Ledger")
+    vf_page_header("💰 Transactions / Ledger", "Flux, frais, taxes et répartition des opérations.")
     account=st.selectbox("Compte", ["Tous","pea","cto_xtb","cto_trade_republic","cto_autre"])
     df=load_transactions(None if account=="Tous" else account)
     if df.empty:
-        st.info("Aucune transaction enregistrée. Importe un export de transactions depuis « Imports & documents ».")
+        st.info("Aucune transaction enregistrée.")
         return
-    st.success(f"{len(df)} transaction(s) persistante(s) chargée(s) depuis Supabase.")
-    if "type" in df:
-        summary=df["type"].fillna("INCONNU").value_counts().rename_axis("Type").reset_index(name="Nombre")
-        st.dataframe(summary,use_container_width=True,hide_index=True)
+
     c1,c2,c3=st.columns(3)
     amount=pd.to_numeric(df.get("amount"),errors="coerce") if "amount" in df else pd.Series(dtype=float)
     fees=pd.to_numeric(df.get("fee"),errors="coerce") if "fee" in df else pd.Series(dtype=float)
@@ -2154,8 +2352,17 @@ def show_transactions_page():
     c1.metric("Flux net importé", f"{amount.sum(skipna=True):+,.2f}")
     c2.metric("Frais", f"{fees.sum(skipna=True):+,.2f}")
     c3.metric("Taxes", f"{taxes.sum(skipna=True):+,.2f}")
+
+    if "type" in df.columns:
+        summary=df["type"].fillna("INCONNU").value_counts().rename_axis("Type").reset_index(name="Nombre")
+        a,b=st.columns(2)
+        with a:
+            vf_bar(summary, "Type", "Nombre", "Nombre d'opérations par type")
+        with b:
+            vf_pie(summary, "Type", "Nombre", "Répartition des opérations")
+
+    st.subheader("Journal détaillé")
     st.dataframe(df,use_container_width=True,hide_index=True)
-    st.caption("Le ledger V7.1 stocke les opérations sans doublons via transaction_id et alimente désormais le moteur Performance.")
 
 # ==========================================================
 # SIDEBAR / ROUTING
@@ -2177,23 +2384,31 @@ with st.sidebar:
         st.success("Supabase connecté")
 
 st.title(f"🔭 {APP_NAME}")
-st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • Import adaptatif + stockage persistant + analyse de marché")
+st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • UI analytique + graphiques + stockage persistant")
 
 if mode=="🏠 Dashboard":
-    st.header("🏠 Vue d'ensemble")
+    vf_page_header("🏠 Vue d'ensemble", "Synthèse de tes comptes, exposition et performance latente.")
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
     cards=[]
     for acc,label in accounts:
         val,_=portfolio_valuation(acc,use_live=False)
         txc=len(load_transactions(acc))
-        cards.append((label,val["value"],val["unrealized"],txc,len(load_positions(acc))))
-    for row in [cards[:3]]:
-        cols=st.columns(len(row))
-        for col,(label,value,pnl,txc,npos) in zip(cols,row):
-            with col:
-                st.metric(label,f"{value:,.2f} €",delta=f"{pnl:+,.2f} € latent")
-                st.caption(f"{npos} position(s) • {txc} transaction(s)")
-    st.info("VISION FUTURE charge les portefeuilles depuis Supabase. Réimporte seulement lorsqu'un courtier fournit un nouvel export ; les transactions déjà connues sont dédupliquées.")
+        cards.append({"Compte":label,"Valeur":val["value"],"P/L latent":val["unrealized"],"Transactions":txc,"Positions":len(load_positions(acc))})
+
+    d=pd.DataFrame(cards)
+    cols=st.columns(len(cards))
+    for col,r in zip(cols,cards):
+        with col:
+            st.metric(r["Compte"],f"{r['Valeur']:,.2f} €",delta=f"{r['P/L latent']:+,.2f} € latent")
+            st.caption(f"{r['Positions']} position(s) • {r['Transactions']} transaction(s)")
+
+    a,b=st.columns(2)
+    with a:
+        vf_pie(d, "Compte", "Valeur", "Répartition entre comptes")
+    with b:
+        vf_signed_bar(d, "Compte", "P/L latent", "P/L latent par compte")
+
+    st.info("VISION FUTURE charge automatiquement les portefeuilles depuis Supabase et conserve le snapshot courtier comme référence.")
 
 elif mode=="📥 Imports & documents":
     show_import_page()
