@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.9 Navigation & Data Quality"
+APP_VERSION = "V12 Command Center DA"
 
 
 # ==========================================================
@@ -33,70 +33,199 @@ APP_VERSION = "V11.9 Navigation & Data Quality"
 st.markdown("""
 <style>
 :root{
-  --vf-bg:#f6f8fc;
+  --vf-bg:#f4f7fb;
   --vf-card:#ffffff;
-  --vf-text:#0f172a;
-  --vf-muted:#64748b;
-  --vf-border:#e2e8f0;
-  --vf-blue:#2563eb;
-  --vf-green:#059669;
-  --vf-red:#dc2626;
-  --vf-amber:#d97706;
+  --vf-card-soft:#f8fbff;
+  --vf-text:#101827;
+  --vf-muted:#667085;
+  --vf-border:#dfe7f1;
+  --vf-line:#e8eef6;
+  --vf-blue:#2f6fed;
+  --vf-blue-soft:#eaf2ff;
+  --vf-green:#0f9f6e;
+  --vf-green-soft:#e7f8f1;
+  --vf-red:#d64545;
+  --vf-red-soft:#fdeeee;
+  --vf-amber:#d68b16;
+  --vf-amber-soft:#fff4da;
+  --vf-violet:#7657e6;
+  --vf-violet-soft:#f0ecff;
+  --vf-shadow:0 10px 30px rgba(15,23,42,.055);
 }
-.stApp { background: var(--vf-bg); }
-.block-container { padding-top: 1.35rem; padding-bottom: 3rem; max-width: 1500px; }
-h1,h2,h3 { color:var(--vf-text); letter-spacing:-0.02em; }
+.stApp { background:var(--vf-bg); color:var(--vf-text); }
+.block-container { padding-top:1rem; padding-bottom:3rem; max-width:1540px; }
+h1,h2,h3,h4 { color:var(--vf-text); letter-spacing:-.025em; }
+hr { border-color:var(--vf-line); }
+
+section[data-testid="stSidebar"]{
+  background:#fbfcfe;
+  border-right:1px solid var(--vf-border);
+}
+section[data-testid="stSidebar"] .block-container{padding-top:1rem;}
+section[data-testid="stSidebar"] [data-testid="stRadio"] label{
+  border-radius:11px;
+  padding:.25rem .35rem;
+}
+
 div[data-testid="stMetric"]{
   background:var(--vf-card);
   border:1px solid var(--vf-border);
-  border-radius:16px;
+  border-radius:18px;
   padding:14px 16px;
-  box-shadow:0 4px 18px rgba(15,23,42,.035);
+  box-shadow:0 5px 18px rgba(15,23,42,.035);
 }
-div[data-testid="stMetricLabel"] p { color:var(--vf-muted); font-weight:600; }
-div[data-testid="stMetricValue"] { color:var(--vf-text); font-weight:750; }
+div[data-testid="stMetricLabel"] p{
+  color:var(--vf-muted);
+  font-weight:650;
+  font-size:.82rem;
+}
+div[data-testid="stMetricValue"]{
+  color:var(--vf-text);
+  font-weight:800;
+  letter-spacing:-.035em;
+}
+div[data-testid="stMetricDelta"]{font-weight:700;}
+
 div[data-testid="stDataFrame"]{
+  background:#fff;
   border:1px solid var(--vf-border);
-  border-radius:14px;
+  border-radius:16px;
   overflow:hidden;
+  box-shadow:0 4px 14px rgba(15,23,42,.025);
 }
 div[data-testid="stExpander"]{
   background:var(--vf-card);
   border:1px solid var(--vf-border);
-  border-radius:16px;
+  border-radius:18px;
   overflow:hidden;
-  box-shadow:0 3px 14px rgba(15,23,42,.025);
+  box-shadow:0 5px 18px rgba(15,23,42,.03);
 }
+button[kind="secondary"]{
+  border-radius:12px!important;
+  border-color:var(--vf-border)!important;
+}
+button[kind="primary"]{
+  border-radius:12px!important;
+}
+
 .vf-hero{
-  background:linear-gradient(135deg,#ffffff 0%,#f8fbff 60%,#eef5ff 100%);
+  background:
+    radial-gradient(circle at 92% 15%, rgba(47,111,237,.10), transparent 22%),
+    linear-gradient(135deg,#ffffff 0%,#f9fbff 55%,#eef5ff 100%);
   border:1px solid var(--vf-border);
-  border-radius:22px;
-  padding:22px 24px;
+  border-radius:24px;
+  padding:24px 26px;
   margin:2px 0 18px 0;
-  box-shadow:0 10px 35px rgba(15,23,42,.05);
+  box-shadow:var(--vf-shadow);
 }
-.vf-hero-title{font-size:1.65rem;font-weight:800;color:#0f172a;line-height:1.1;}
-.vf-hero-sub{color:#64748b;margin-top:6px;font-size:.98rem;}
-.vf-security{
-  display:inline-block;padding:5px 10px;border-radius:999px;
-  background:#eff6ff;color:#1d4ed8;font-size:.78rem;font-weight:700;margin-right:5px;
+.vf-hero-title{
+  font-size:1.62rem;
+  font-weight:850;
+  color:var(--vf-text);
+  line-height:1.1;
 }
-.vf-name{font-size:1.08rem;font-weight:800;color:#0f172a;}
-.vf-isin{font-size:.86rem;color:#64748b;margin-top:2px;}
+.vf-hero-sub{
+  color:var(--vf-muted);
+  margin-top:7px;
+  font-size:.96rem;
+}
+.vf-eyebrow{
+  color:var(--vf-blue);
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  font-size:.69rem;
+  font-weight:850;
+  margin-bottom:6px;
+}
+.vf-section-title{
+  font-size:1.13rem;
+  font-weight:820;
+  color:var(--vf-text);
+  margin:8px 0 2px 0;
+}
+.vf-section-sub{
+  color:var(--vf-muted);
+  font-size:.86rem;
+  margin-bottom:10px;
+}
+.vf-name{font-size:1.05rem;font-weight:820;color:var(--vf-text);}
+.vf-isin{font-size:.82rem;color:var(--vf-muted);margin-top:2px;}
 .vf-badge{
-  display:inline-block;padding:5px 10px;border-radius:999px;font-weight:750;font-size:.78rem;
-  margin-left:5px;
+  display:inline-block;
+  padding:5px 10px;
+  border-radius:999px;
+  font-weight:780;
+  font-size:.76rem;
+  margin:4px 5px 0 0;
 }
-.vf-blue{background:#dbeafe;color:#1d4ed8;}
-.vf-green{background:#dcfce7;color:#047857;}
-.vf-red{background:#fee2e2;color:#b91c1c;}
-.vf-amber{background:#fef3c7;color:#a16207;}
-.vf-violet{background:#ede9fe;color:#6d28d9;}
-.vf-kpi-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;}
+.vf-blue{background:var(--vf-blue-soft);color:#205dc7;}
+.vf-green{background:var(--vf-green-soft);color:#087a56;}
+.vf-red{background:var(--vf-red-soft);color:#b83333;}
+.vf-amber{background:var(--vf-amber-soft);color:#9a650f;}
+.vf-violet{background:var(--vf-violet-soft);color:#6243c7;}
+.vf-muted-badge{background:#eef2f6;color:#5d6b7a;}
+
+.vf-command-card{
+  background:var(--vf-card);
+  border:1px solid var(--vf-border);
+  border-radius:20px;
+  padding:16px 17px;
+  box-shadow:0 7px 24px rgba(15,23,42,.035);
+  min-height:100%;
+}
+.vf-command-title{
+  color:var(--vf-muted);
+  font-size:.76rem;
+  font-weight:760;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+}
+.vf-command-value{
+  color:var(--vf-text);
+  font-size:1.45rem;
+  font-weight:850;
+  letter-spacing:-.04em;
+  margin-top:5px;
+}
+.vf-command-note{
+  color:var(--vf-muted);
+  font-size:.78rem;
+  margin-top:5px;
+}
 .vf-cardline{
-  background:#fff;border:1px solid var(--vf-border);border-radius:16px;padding:14px 16px;margin-bottom:10px;
+  background:#fff;
+  border:1px solid var(--vf-border);
+  border-radius:18px;
+  padding:15px 16px;
+  margin-bottom:10px;
+  box-shadow:0 5px 18px rgba(15,23,42,.025);
 }
-section[data-testid="stSidebar"] { border-right:1px solid #e5e7eb; }
+.vf-alert-row{
+  background:#fff;
+  border:1px solid var(--vf-border);
+  border-radius:18px;
+  padding:14px 15px;
+  margin-bottom:9px;
+}
+.vf-alert-title{font-size:.97rem;font-weight:820;color:var(--vf-text);}
+.vf-alert-meta{font-size:.78rem;color:var(--vf-muted);margin-top:2px;}
+.vf-alert-analysis{font-size:.86rem;color:#475467;margin-top:7px;line-height:1.45;}
+.vf-chip{
+  display:inline-block;
+  padding:4px 9px;
+  border-radius:999px;
+  font-size:.72rem;
+  font-weight:800;
+  white-space:nowrap;
+}
+.vf-chip-entry{background:var(--vf-green-soft);color:#087a56;}
+.vf-chip-risk{background:var(--vf-amber-soft);color:#9a650f;}
+.vf-chip-exit{background:var(--vf-red-soft);color:#b83333;}
+.vf-chip-info{background:var(--vf-blue-soft);color:#205dc7;}
+
+div[data-testid="stTabs"] button{
+  font-weight:720;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2233,7 +2362,7 @@ def parse_agent_details(text):
 def show_market_agent_page():
     vf_page_header(
         "🛰️ Agent marché",
-        "Décisions actionnables, contexte de marché et suivi automatique des positions."
+        "Decision Board — alertes actionnables, régime de marché et suivi automatique des positions."
     )
 
     runs = load_agent_runs(10)
@@ -3407,29 +3536,184 @@ def vf_full_instrument_page(symbol, row=None):
 
 
 
-if mode=="🏠 Dashboard":
-    vf_page_header("🏠 Vue d'ensemble", "Synthèse de tes comptes, exposition et performance latente.")
+
+def vf_section(title, subtitle=""):
+    st.markdown(f'<div class="vf-section-title">{title}</div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<div class="vf-section-sub">{subtitle}</div>', unsafe_allow_html=True)
+
+
+def vf_nav_button(label, target, key):
+    if st.button(label, key=key, use_container_width=True):
+        st.session_state["nav_mode"] = target
+        st.rerun()
+
+
+def vf_alert_chip(alert_type):
+    t = _clean_text(alert_type, upper=True)
+    if t == "ENTRY":
+        cls = "vf-chip-entry"
+    elif t in {"EXIT", "TAKE_PROFIT"}:
+        cls = "vf-chip-exit"
+    elif t in {"RISK","PROTECT","INVALIDATED","NEWS_RISK"}:
+        cls = "vf-chip-risk"
+    else:
+        cls = "vf-chip-info"
+    return f'<span class="vf-chip {cls}">{t or "ALERTE"}</span>'
+
+
+def vf_dashboard_command_center():
+    vf_page_header(
+        "🔭 VISION FUTURE",
+        "Command Center — portefeuille, opportunités, risque et décisions de marché."
+    )
+
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
     cards=[]
+    total_value=0.0
+    total_unrealized=0.0
+    total_positions=0
     for acc,label in accounts:
-        val,_=portfolio_valuation(acc,use_live=False)
-        txc=len(load_transactions(acc))
-        cards.append({"Compte":label,"Valeur":val["value"],"P/L latent":val["unrealized"],"Transactions":txc,"Positions":len(load_positions(acc))})
+        try:
+            val,pos=portfolio_valuation(acc,use_live=False)
+            txc=len(load_transactions(acc))
+            value=float(val.get("value",0) or 0)
+            unrealized=float(val.get("unrealized",0) or 0)
+            pcount=len(pos) if pos is not None else 0
+        except Exception:
+            value=unrealized=0.0
+            txc=pcount=0
+        total_value += value
+        total_unrealized += unrealized
+        total_positions += pcount
+        cards.append({
+            "Compte":label,"Valeur":value,"P/L latent":unrealized,
+            "Transactions":txc,"Positions":pcount
+        })
 
-    d=pd.DataFrame(cards)
-    cols=st.columns(len(cards))
-    for col,r in zip(cols,cards):
-        with col:
-            st.metric(r["Compte"],f"{r['Valeur']:,.2f} €",delta=f"{r['P/L latent']:+,.2f} € latent")
-            st.caption(f"{r['Positions']} position(s) • {r['Transactions']} transaction(s)")
+    alerts = load_market_alerts(limit=100)
+    active_entries = 0
+    risk_alerts = 0
+    if alerts is not None and not alerts.empty and "alert_type" in alerts.columns:
+        active_entries = int((alerts["alert_type"]=="ENTRY").sum())
+        risk_alerts = int(alerts["alert_type"].isin(["EXIT","RISK","PROTECT","INVALIDATED","NEWS_RISK"]).sum())
 
-    a,b=st.columns(2)
-    with a:
-        vf_pie(d, "Compte", "Valeur", "Répartition entre comptes")
-    with b:
-        vf_signed_bar(d, "Compte", "P/L latent", "P/L latent par compte")
+    # Command strip matching the board DA
+    vf_section("Vue opérationnelle", "Les quatre informations à lire en premier.")
+    c1,c2,c3,c4 = st.columns(4)
+    with c1:
+        st.markdown(
+            f'<div class="vf-command-card"><div class="vf-command-title">Patrimoine suivi</div>'
+            f'<div class="vf-command-value">{total_value:,.0f} €</div>'
+            f'<div class="vf-command-note">{total_positions} position(s) suivie(s)</div></div>',
+            unsafe_allow_html=True
+        )
+    with c2:
+        pnl_cls = "vf-green" if total_unrealized >= 0 else "vf-red"
+        st.markdown(
+            f'<div class="vf-command-card"><div class="vf-command-title">P/L latent</div>'
+            f'<div class="vf-command-value">{total_unrealized:+,.0f} €</div>'
+            f'<div class="vf-command-note"><span class="vf-badge {pnl_cls}">Portefeuille</span></div></div>',
+            unsafe_allow_html=True
+        )
+    with c3:
+        st.markdown(
+            f'<div class="vf-command-card"><div class="vf-command-title">Opportunités actives</div>'
+            f'<div class="vf-command-value">{active_entries}</div>'
+            f'<div class="vf-command-note">Alertes ENTRY actuellement visibles</div></div>',
+            unsafe_allow_html=True
+        )
+    with c4:
+        st.markdown(
+            f'<div class="vf-command-card"><div class="vf-command-title">Alertes de gestion</div>'
+            f'<div class="vf-command-value">{risk_alerts}</div>'
+            f'<div class="vf-command-note">Risque, protection ou sortie</div></div>',
+            unsafe_allow_html=True
+        )
 
-    st.info("VISION FUTURE charge automatiquement les portefeuilles depuis Supabase et conserve le snapshot courtier comme référence.")
+    # Quick navigation
+    vf_section("Accès rapide", "Navigation directe vers les modules opérationnels.")
+    q1,q2,q3,q4,q5 = st.columns(5)
+    with q1: vf_nav_button("⚡ Scanner mondial","🔎 Scanner","dash_scan")
+    with q2: vf_nav_button("🛰️ Agent marché","🛰️ Agent marché","dash_agent")
+    with q3: vf_nav_button("📊 Instrument","📊 Instrument","dash_instrument")
+    with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","dash_arb")
+    with q5: vf_nav_button("📈 Performance","📈 Performance","dash_perf")
+
+    # Two-column command board
+    left,right = st.columns([1.35,1])
+
+    with left:
+        vf_section("Portefeuille", "Répartition par compte et P/L latent.")
+        d=pd.DataFrame(cards)
+        a,b=st.columns(2)
+        with a:
+            vf_pie(d, "Compte", "Valeur", "Allocation")
+        with b:
+            vf_signed_bar(d, "Compte", "P/L latent", "P/L latent")
+
+        vf_section("Comptes", "Synthèse opérationnelle.")
+        for r in cards:
+            with st.container(border=True):
+                x1,x2,x3 = st.columns([2.2,1,1])
+                x1.markdown(f"**{r['Compte']}**")
+                x1.caption(f"{r['Positions']} position(s) • {r['Transactions']} transaction(s)")
+                x2.metric("Valeur", f"{r['Valeur']:,.0f} €")
+                x3.metric("P/L", f"{r['P/L latent']:+,.0f} €")
+
+    with right:
+        vf_section("Décisions récentes", "Les alertes les plus importantes de l'agent.")
+        if alerts is None or alerts.empty:
+            st.info("Aucune alerte actionnable actuellement.")
+        else:
+            recent = alerts.head(8)
+            for _,r in recent.iterrows():
+                symbol = _clean_text(r.get("symbol"), upper=True)
+                name = _clean_text(r.get("name")) or symbol
+                isin = _clean_text(r.get("isin"), upper=True)
+                typ = _clean_text(r.get("alert_type"), upper=True)
+                score = pd.to_numeric(pd.Series([r.get("score")]), errors="coerce").iloc[0]
+                upside = pd.to_numeric(pd.Series([r.get("upside")]), errors="coerce").iloc[0]
+                analysis = _clean_text(r.get("analysis"))
+
+                with st.container(border=True):
+                    aa,bb = st.columns([4,1.35])
+                    with aa:
+                        st.markdown(f"**{symbol} • {name}**")
+                        meta=[]
+                        if isin:
+                            meta.append(isin)
+                        if _clean_text(r.get("market")):
+                            meta.append(_clean_text(r.get("market")))
+                        if _clean_text(r.get("broker")):
+                            meta.append(_clean_text(r.get("broker")))
+                        if meta:
+                            st.caption(" • ".join(meta))
+                    with bb:
+                        st.markdown(vf_alert_chip(typ), unsafe_allow_html=True)
+                        if pd.notna(score):
+                            st.caption(f"Score {score:.0f}/100")
+
+                    m1,m2,m3 = st.columns(3)
+                    m1.metric("Potentiel", f"{upside:.1f}%" if pd.notna(upside) else "—")
+                    rr = pd.to_numeric(pd.Series([r.get("rr")]), errors="coerce").iloc[0]
+                    m2.metric("R/R", f"{rr:.2f}" if pd.notna(rr) else "—")
+                    entry = pd.to_numeric(pd.Series([r.get("entry")]), errors="coerce").iloc[0]
+                    m3.metric("Entrée", f"{entry:.2f}" if pd.notna(entry) else "—")
+                    if analysis:
+                        st.caption(analysis[:260])
+                    if symbol and st.button("📊 Ouvrir la fiche", key=f"dash_open_{r.get('id','x')}_{symbol}", use_container_width=True):
+                        open_instrument(symbol)
+
+    st.caption(
+        "VISION FUTURE centralise les données de portefeuille, les scans techniques et les alertes agent. "
+        "Les niveaux de trade sont des aides analytiques et non des garanties de performance."
+    )
+
+
+
+if mode=="🏠 Dashboard":
+    vf_dashboard_command_center()
 
 elif mode=="📥 Imports & documents":
     show_import_page()
@@ -3462,7 +3746,7 @@ elif mode=="⚖️ Arbitrage":
 elif mode=="🔎 Scanner":
     vf_page_header(
         "⚡ Scanner mondial",
-        "Référentiel courtier + découverte dynamique des marchés mondiaux, puis confirmation technique 1H."
+        "Discovery Board — sélection mondiale, scoring, confirmation 1H et plans de trade."
     )
 
     # Top visual controls
@@ -3648,7 +3932,7 @@ elif mode=="🔎 Scanner":
 elif mode=="📊 Instrument":
     vf_page_header(
         "📊 Instrument",
-        "Recherche universelle : portefeuille, référentiel courtier et découverte mondiale."
+        "Instrument Board — graphique, momentum, fondamentaux, actualités et plan de trade."
     )
 
     choices = []
