@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V19 Premium Identity System"
+APP_VERSION = "V20 Premium Experience"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -229,6 +229,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n/* V20 — premium finance application, not just a themed Streamlit page */\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 0% 0%,rgba(38,100,255,.20),transparent 26%),\n    radial-gradient(circle at 100% 0%,rgba(119,79,255,.18),transparent 31%),\n    radial-gradient(circle at 88% 100%,rgba(188,145,72,.10),transparent 25%),\n    linear-gradient(180deg,#f8faff 0%,#eef3fb 50%,#f7f5ff 100%)!important;\n}\n[data-testid="stMainBlockContainer"]{\n  max-width:1500px!important;\n  padding:1rem 1.35rem 4rem!important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    linear-gradient(180deg,rgba(249,251,255,.99),rgba(242,247,255,.99) 52%,rgba(247,243,255,.99))!important;\n}\nsection[data-testid="stSidebar"] button[kind="primary"]{\n  background:linear-gradient(90deg,#2a68ff,#7550f5)!important;\n  color:#fff!important;\n  box-shadow:0 7px 18px rgba(69,79,206,.18)!important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]{\n  background:rgba(255,255,255,.70)!important;\n  border-color:transparent!important;\n  box-shadow:none!important;\n  text-align:left!important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]:hover{\n  background:linear-gradient(90deg,rgba(42,104,255,.09),rgba(117,80,245,.08))!important;\n  border-color:rgba(42,104,255,.10)!important;\n}\n.vf-hero{\n  min-height:108px;\n  display:flex;\n  flex-direction:column;\n  justify-content:center;\n}\n.vf-hero-title{font-size:1.8rem!important;}\n.vf-hero-sub{font-size:.92rem!important;max-width:850px;}\n.vf-page-shell{\n  background:linear-gradient(135deg,rgba(255,255,255,.76),rgba(242,247,255,.68),rgba(248,245,255,.66))!important;\n  box-shadow:0 13px 38px rgba(28,43,78,.045)!important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  backdrop-filter:blur(12px);\n}\n.vf-command-card{\n  background:\n    radial-gradient(circle at 95% 0%,rgba(42,104,255,.08),transparent 35%),\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,250,255,.93))!important;\n}\n.vf-name{font-size:1.02rem!important;}\n.vf-logo-shell{background:#fff!important;}\n.vf-logo-shell img{width:38px!important;height:38px!important;}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n/* V19 — full-page premium identity */\n:root{\n  --vf-electric:#2868ff;\n  --vf-electric-2:#5b7cff;\n  --vf-violet:#7652ff;\n  --vf-gold:#b8904d;\n  --vf-ink:#111827;\n  --vf-ink-soft:#344054;\n  --vf-surface:rgba(255,255,255,.93);\n  --vf-surface-blue:rgba(244,248,255,.94);\n  --vf-surface-violet:rgba(248,245,255,.94);\n  --vf-hairline:rgba(83,105,160,.15);\n}\n[data-testid="stAppViewContainer"]{\n  background:\n    radial-gradient(circle at 7% 4%, rgba(40,104,255,.16), transparent 24%),\n    radial-gradient(circle at 93% 7%, rgba(118,82,255,.14), transparent 27%),\n    radial-gradient(circle at 88% 92%, rgba(184,144,77,.09), transparent 22%),\n    linear-gradient(180deg,#f9fbff 0%,#f3f6fb 47%,#f6f7ff 100%) !important;\n  background-attachment:fixed !important;\n}\n[data-testid="stMainBlockContainer"]{\n  padding-top:.7rem !important;\n}\nsection[data-testid="stSidebar"]{\n  background:\n    radial-gradient(circle at 15% 3%,rgba(40,104,255,.12),transparent 30%),\n    linear-gradient(180deg,#ffffff 0%,#f5f8ff 54%,#faf7ff 100%) !important;\n  border-right:1px solid rgba(84,105,160,.13)!important;\n}\nsection[data-testid="stSidebar"]::after{\n  content:"";\n  display:block;\n  height:2px;\n  margin:10px 20px;\n  border-radius:99px;\n  background:linear-gradient(90deg,var(--vf-electric),var(--vf-violet),var(--vf-gold));\n  opacity:.65;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(247,250,255,.95) 58%,rgba(250,247,255,.92))!important;\n  border:1px solid var(--vf-hairline)!important;\n  border-radius:20px!important;\n  box-shadow:0 9px 28px rgba(28,43,76,.045)!important;\n}\ndiv[data-testid="stMetric"]{\n  background:\n    linear-gradient(145deg,rgba(255,255,255,.97),rgba(246,249,255,.94))!important;\n  border:1px solid rgba(78,104,171,.14)!important;\n  border-radius:17px!important;\n  box-shadow:0 7px 20px rgba(31,47,85,.04)!important;\n}\ndiv[data-testid="stMetric"]:hover{\n  transform:translateY(-1px);\n  border-color:rgba(40,104,255,.25)!important;\n  box-shadow:0 11px 26px rgba(44,76,154,.07)!important;\n}\ndiv[data-testid="stExpander"]{\n  background:rgba(255,255,255,.90)!important;\n  border:1px solid rgba(78,104,171,.14)!important;\n  border-radius:17px!important;\n}\ndiv[data-testid="stDataFrame"]{\n  border:1px solid rgba(78,104,171,.13)!important;\n  border-radius:17px!important;\n  box-shadow:0 7px 22px rgba(31,47,85,.035)!important;\n}\n[data-testid="stAlert"]{\n  background:linear-gradient(110deg,rgba(244,248,255,.95),rgba(249,247,255,.93))!important;\n  border:1px solid rgba(77,102,166,.14)!important;\n  border-radius:15px!important;\n}\n.vf-page-shell{\n  background:\n    linear-gradient(135deg,rgba(255,255,255,.72),rgba(245,249,255,.68) 55%,rgba(250,247,255,.65));\n  border:1px solid rgba(91,113,169,.10);\n  border-radius:24px;\n  padding:12px 14px 4px;\n  margin-bottom:10px;\n  box-shadow:0 10px 34px rgba(34,51,91,.025);\n}\n.vf-premium-divider{\n  height:2px;width:100%;\n  background:linear-gradient(90deg,transparent,var(--vf-electric),var(--vf-violet),var(--vf-gold),transparent);\n  opacity:.24;border-radius:999px;margin:10px 0 14px;\n}\n.vf-instrument-identity{\n  display:flex;align-items:center;gap:12px;\n}\n.vf-logo-shell{\n  width:48px;height:48px;min-width:48px;\n  display:flex;align-items:center;justify-content:center;\n  border-radius:15px;\n  background:linear-gradient(145deg,#fff,#f2f5fb);\n  border:1px solid rgba(76,101,164,.14);\n  box-shadow:0 7px 18px rgba(30,48,88,.05);\n  overflow:hidden;\n}\n.vf-logo-shell img{\n  width:36px;height:36px;object-fit:contain;\n}\n.vf-logo-fallback{\n  width:34px;height:34px;border-radius:10px;\n  display:flex;align-items:center;justify-content:center;\n  font-size:.72rem;font-weight:900;letter-spacing:.02em;\n  color:#3659b8;\n  background:linear-gradient(135deg,#eaf1ff,#f3edff 70%,#faf2df);\n}\n.vf-resolution-note{\n  color:#7b8493;font-size:.74rem;margin-top:2px;\n}\n.vf-card-action{\n  border-top:1px solid rgba(84,105,160,.10);\n  padding-top:8px;margin-top:9px;\n}\n.vf-future-strip{\n  background:\n    radial-gradient(circle at 88% 20%,rgba(118,82,255,.10),transparent 28%),\n    linear-gradient(120deg,rgba(239,245,255,.94),rgba(247,243,255,.92) 58%,rgba(253,248,238,.90))!important;\n}\n.vf-section-title::before{\n  background:linear-gradient(180deg,var(--vf-electric),var(--vf-violet) 65%,var(--vf-gold))!important;\n}\n</style>\n', unsafe_allow_html=True)
 
@@ -2829,44 +2832,88 @@ def show_import_page():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 @st.cache_data(ttl=86400, show_spinner=False)
-def vf_company_logo_data(symbol):
+def vf_company_brand_data(symbol, name="", isin=""):
     """
-    Returns only a logo URL explicitly supplied by the financial source.
-    We no longer disguise a website favicon as an official company logo.
+    Premium brand identity resolution.
+    Priority:
+      1) explicit logo URL from finance provider
+      2) Logo.dev by ticker / ISIN when LOGO_DEV_TOKEN is configured
+      3) monogram fallback
     """
     symbol = _clean_text(symbol, upper=True)
-    if not symbol:
-        return {"url":"", "source":"", "name":""}
+    name = _clean_text(name)
+    isin = _clean_text(isin, upper=True)
+
     try:
-        info = yf.Ticker(symbol).info or {}
+        info = yf.Ticker(symbol).info or {} if symbol else {}
     except Exception:
         info = {}
 
-    url = _clean_text(
+    finance_logo = _clean_text(
         info.get("logo_url")
         or info.get("logoUrl")
         or info.get("companyLogoUrl")
     )
-    name = _clean_text(info.get("longName") or info.get("shortName"))
+    finance_name = _clean_text(info.get("longName") or info.get("shortName"))
+    website = _clean_text(info.get("website"))
+
+    if finance_logo.startswith("http"):
+        return {
+            "url": finance_logo,
+            "source": "Source financière",
+            "name": finance_name or name,
+            "website": website,
+        }
+
+    token = ""
+    try:
+        token = _clean_text(st.secrets.get("LOGO_DEV_TOKEN", ""))
+    except Exception:
+        token = ""
+    if not token:
+        token = _clean_text(os.getenv("LOGO_DEV_TOKEN", ""))
+
+    if token:
+        from urllib.parse import quote
+        if symbol:
+            # Logo.dev supports ticker lookup. Exchange suffixes are kept when useful.
+            return {
+                "url": f"https://img.logo.dev/ticker/{quote(symbol)}?token={quote(token)}&size=128&format=png",
+                "source": "Logo.dev",
+                "name": finance_name or name,
+                "website": website,
+            }
+        if isin:
+            return {
+                "url": f"https://img.logo.dev/isin/{quote(isin)}?token={quote(token)}&size=128&format=png",
+                "source": "Logo.dev",
+                "name": finance_name or name,
+                "website": website,
+            }
+
     return {
-        "url": url if url.startswith("http") else "",
-        "source": "Source financière" if url.startswith("http") else "",
-        "name": name,
+        "url": "",
+        "source": "",
+        "name": finance_name or name,
+        "website": website,
     }
 
 
-def vf_logo_html(symbol, name="", size=48):
+def vf_logo_html(symbol, name="", isin="", size=48):
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name)
-    logo = vf_company_logo_data(symbol) if symbol else {"url":"","source":"","name":""}
-    url = logo.get("url","")
+    isin = _clean_text(isin, upper=True)
+    brand = vf_company_brand_data(symbol, name, isin)
+    url = brand.get("url","")
     initials = "".join([p[:1] for p in (name or symbol or "?").split()[:2]]).upper() or "?"
+
     if url:
         return (
             f'<div class="vf-logo-shell" style="width:{size}px;height:{size}px;min-width:{size}px">'
-            f'<img src="{url}" alt="{symbol} logo" />'
+            f'<img src="{url}" alt="{symbol or name} logo" />'
             '</div>'
         )
+
     return (
         f'<div class="vf-logo-shell" style="width:{size}px;height:{size}px;min-width:{size}px">'
         f'<div class="vf-logo-fallback">{initials[:3]}</div>'
@@ -2905,11 +2952,16 @@ def vf_identity_html(symbol, name, isin="", resolve=False):
     isin = _clean_text(isin, upper=True)
 
     identity = vf_resolve_identity(symbol, name, isin) if resolve else {
-        "symbol":symbol,"confidence":100 if symbol else 0,"source":"Ticker" if symbol else "",
-        "name":name,"isin":isin
+        "symbol":symbol,
+        "confidence":100 if symbol else 0,
+        "source":"Ticker" if symbol else "",
+        "name":name,
+        "isin":isin
     }
+
     shown_symbol = identity.get("symbol") or "À RÉSOUDRE"
-    shown_name = name or vf_company_logo_data(identity.get("symbol")).get("name") or shown_symbol
+    brand = vf_company_brand_data(identity.get("symbol"), name, isin)
+    shown_name = name or brand.get("name") or shown_symbol
     subtitle = f"ISIN : {isin}" if isin else "ISIN non renseigné"
 
     resolution = ""
@@ -2921,23 +2973,23 @@ def vf_identity_html(symbol, name, isin="", resolve=False):
     elif not identity.get("symbol"):
         resolution = '<div class="vf-resolution-note">Instrument à résoudre — fiche disponible avec résolution assistée.</div>'
 
+    logo_source = brand.get("source","")
+    logo_note = f'<div class="vf-resolution-note">Logo : {logo_source}</div>' if logo_source else ""
+
     return (
         '<div class="vf-instrument-identity">'
-        + vf_logo_html(identity.get("symbol"), shown_name)
+        + vf_logo_html(identity.get("symbol"), shown_name, isin)
         + '<div>'
         + f'<div class="vf-name">{shown_symbol} • {shown_name}</div>'
         + f'<div class="vf-isin">{subtitle}</div>'
         + resolution
+        + logo_note
         + '<div class="vf-goldline"></div>'
         + '</div></div>'
     )
 
 
 def open_instrument_identity(symbol="", name="", isin=""):
-    """
-    Universal instrument entry point.
-    Every card can open an Instrument page, even when its ticker is missing.
-    """
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name)
     isin = _clean_text(isin, upper=True)
@@ -2956,13 +3008,9 @@ def open_instrument_identity(symbol="", name="", isin=""):
         st.session_state.pop("instrument_unresolved", None)
     else:
         st.session_state["instrument_symbol"] = ""
-        st.session_state["instrument_unresolved"] = {
-            "name": name,
-            "isin": isin,
-        }
+        st.session_state["instrument_unresolved"] = {"name": name, "isin": isin}
 
     st.session_state["_pending_nav_mode"] = "📊 Instrument"
-    st.session_state["_pending_nav_group"] = "Analyse"
     st.rerun()
 
 
@@ -3167,65 +3215,57 @@ def show_transactions_page():
     st.dataframe(df,use_container_width=True,hide_index=True)
 
 # ==========================================================
-# SIDEBAR / ROUTING
+# SIDEBAR / ROUTING — V20
 # ==========================================================
-# Apply navigation requests before instantiating widgets.
 _pending_nav = st.session_state.pop("_pending_nav_mode", None)
-_pending_group = st.session_state.pop("_pending_nav_group", None)
-if _pending_group:
-    st.session_state["nav_group"] = _pending_group
 if _pending_nav:
     st.session_state["nav_mode"] = _pending_nav
 
-_NAV_GROUPS = {
-    "Vue d'ensemble": ["🏠 Dashboard", "⭐ Watchlist"],
-    "Portefeuille": ["🏦 PEA", "💼 CTO", "📈 Performance", "⚖️ Arbitrage", "💰 Transactions"],
-    "Marché": ["🔎 Scanner", "🛰️ Agent marché"],
-    "Analyse": ["📊 Instrument", "📊 Analyse", "🧪 Simulation"],
-    "Gestion": ["📥 Imports & documents"],
-}
-_mode_to_group = {item: group for group, items in _NAV_GROUPS.items() for item in items}
-
-# Initialise once.
-if "nav_mode" not in st.session_state or st.session_state["nav_mode"] not in _mode_to_group:
+if "nav_mode" not in st.session_state:
     st.session_state["nav_mode"] = "🏠 Dashboard"
 
-if "nav_group" not in st.session_state or st.session_state["nav_group"] not in _NAV_GROUPS:
-    st.session_state["nav_group"] = _mode_to_group.get(
-        st.session_state["nav_mode"],
-        "Vue d'ensemble"
-    )
-
-# IMPORTANT:
-# If the user changes the group selector, Streamlit updates nav_group before this
-# script reruns. Only then do we move nav_mode to the first page of that group.
-# If the user merely changes the page radio, nav_mode already belongs to the
-# selected group, so nothing gets overwritten.
-_selected_group = st.session_state["nav_group"]
-if st.session_state["nav_mode"] not in _NAV_GROUPS[_selected_group]:
-    st.session_state["nav_mode"] = _NAV_GROUPS[_selected_group][0]
-
 with st.sidebar:
-    st.header(f"🔭 {APP_NAME}")
-    st.caption(APP_TAGLINE)
-    st.markdown('<div class="vf-group-title">Navigation</div>', unsafe_allow_html=True)
-
-    selected_group = st.selectbox(
-        "Espace",
-        list(_NAV_GROUPS.keys()),
-        key="nav_group",
-        label_visibility="collapsed",
-        help="Choisis d'abord un espace, puis la page juste en dessous."
+    st.markdown(
+        '<div style="padding:.15rem 0 .65rem">'
+        '<div style="font-size:1.28rem;font-weight:950;letter-spacing:-.04em">🔭 VISION FUTURE</div>'
+        f'<div style="font-size:.78rem;color:#667085;margin-top:.2rem">{APP_TAGLINE}</div>'
+        '</div>',
+        unsafe_allow_html=True
     )
 
-    mode = st.radio(
-        "Page",
-        _NAV_GROUPS[selected_group],
-        key="nav_mode",
-        label_visibility="collapsed",
-    )
+    def _nav_button(label, key):
+        active = st.session_state.get("nav_mode") == label
+        if st.button(
+            ("● " if active else "") + label,
+            key=key,
+            use_container_width=True,
+            type="primary" if active else "secondary"
+        ):
+            st.session_state["_pending_nav_mode"] = label
+            st.rerun()
 
-    st.caption(f"{selected_group}  ›  {mode.replace('🏠 ','').replace('⭐ ','').replace('🏦 ','').replace('💼 ','').replace('📈 ','').replace('⚖️ ','').replace('💰 ','').replace('🔎 ','').replace('🛰️ ','').replace('📊 ','').replace('🧪 ','').replace('📥 ','')}")
+    st.markdown('<div class="vf-group-title">Vue d’ensemble</div>', unsafe_allow_html=True)
+    _nav_button("🏠 Dashboard", "nav_dashboard")
+    _nav_button("⭐ Watchlist", "nav_watchlist")
+
+    st.markdown('<div class="vf-group-title">Portefeuille</div>', unsafe_allow_html=True)
+    _nav_button("🏦 PEA", "nav_pea")
+    _nav_button("💼 CTO", "nav_cto")
+    _nav_button("📈 Performance", "nav_perf")
+    _nav_button("⚖️ Arbitrage", "nav_arb")
+    _nav_button("💰 Transactions", "nav_tx")
+
+    st.markdown('<div class="vf-group-title">Marché</div>', unsafe_allow_html=True)
+    _nav_button("🔎 Scanner", "nav_scanner")
+    _nav_button("🛰️ Agent marché", "nav_agent")
+
+    st.markdown('<div class="vf-group-title">Analyse</div>', unsafe_allow_html=True)
+    _nav_button("📊 Instrument", "nav_instrument")
+    _nav_button("📊 Analyse", "nav_analysis")
+    _nav_button("🧪 Simulation", "nav_sim")
+
+    st.markdown('<div class="vf-group-title">Gestion</div>', unsafe_allow_html=True)
+    _nav_button("📥 Imports & documents", "nav_import")
 
     st.markdown("---")
     st.markdown('<div class="vf-group-title">Accès rapide</div>', unsafe_allow_html=True)
@@ -3236,14 +3276,10 @@ with st.sidebar:
     )
     if st.button("📊 Ouvrir l'instrument", key="sidebar_quick_open", use_container_width=True):
         if _clean_text(_quick_symbol, upper=True):
-            open_instrument(_quick_symbol)
-
-    if st.button("🔒 Déconnexion"):
-        st.session_state["authenticated"] = False
-        st.rerun()
+            open_instrument_identity(_quick_symbol)
 
     st.markdown("---")
-    st.markdown('<div class="vf-group-title">Paramètres trading</div>', unsafe_allow_html=True)
+    st.markdown('<div class="vf-group-title">Trading</div>', unsafe_allow_html=True)
     capital = st.number_input("Capital de référence (€)", 100.0, 1_000_000.0, 10_000.0, 100.0)
     risk_pct = st.number_input("Risque par trade (%)", 0.1, 3.0, 0.5, 0.05)
     refresh_min = st.select_slider("Actualisation scanner (min)", [1,2,5,10,15,30,60], value=5)
@@ -3252,11 +3288,16 @@ with st.sidebar:
         st_autorefresh(interval=refresh_min * 60 * 1000, key="auto_refresh")
 
     st.markdown("---")
-    st.markdown('<div class="vf-group-title">Infrastructure</div>', unsafe_allow_html=True)
     if SUPABASE is None:
         st.error("Supabase non connecté")
     else:
         st.success("Supabase connecté")
+
+    if st.button("🔒 Déconnexion", use_container_width=True):
+        st.session_state["authenticated"] = False
+        st.rerun()
+
+mode = st.session_state.get("nav_mode", "🏠 Dashboard")
 
 st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • {APP_TAGLINE}")
 
@@ -3731,7 +3772,7 @@ def vf_full_instrument_page(symbol, row=None):
         st.markdown('<div class="vf-eyebrow">INSTRUMENT BOARD</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="vf-instrument-identity">'
-            + vf_logo_html(symbol, name, size=56)
+            + vf_logo_html(symbol, name, isin, size=56)
             + '<div>'
             + f'<div style="font-size:1.9rem;font-weight:900;letter-spacing:-.04em;color:#111827">{symbol} • {name}</div>'
             + '<div class="vf-goldline"></div>'
@@ -3755,7 +3796,7 @@ def vf_full_instrument_page(symbol, row=None):
             '</div>',
             unsafe_allow_html=True
         )
-        logo_meta = vf_company_logo_data(symbol)
+        logo_meta = vf_company_brand_data(symbol, name, isin)
         if logo_meta.get("url"):
             st.caption("Logo fourni par la source financière")
         badge_parts=[]
@@ -4264,6 +4305,13 @@ def vf_dashboard_command_center():
     c4.metric("Alertes risque",risks)
     c5.metric("Watchlist",watch_count)
 
+    vf_section("Agent Intelligence","L'agent reste un module central et accessible directement depuis cette vue.")
+    ai1,ai2 = st.columns([4,1])
+    with ai1:
+        st.caption("Scanner autonome • régime de marché • validation multi-timeframe • alertes ENTRY / PROTECT / EXIT.")
+    with ai2:
+        vf_nav_button("🛰️ Ouvrir l'Agent","🛰️ Agent marché","v20_open_agent")
+
     vf_section("Market Pulse","Dernier cycle de l'agent.")
     p1,p2,p3,p4,p5=st.columns(5)
     p1.metric("Agent",pulse["status"])
@@ -4755,4 +4803,4 @@ else:
     else: st.warning("Setup indisponible.")
 
 st.markdown("---")
-st.caption("VISION FUTURE V10.1 Event Driven + Identity UI. Les cours yfinance peuvent être différés. Les scénarios Entrée/SL/TP sont des aides analytiques, pas des garanties de performance.")
+st.caption(f"VISION FUTURE • {APP_VERSION} • {APP_TAGLINE} • Les scénarios analytiques ne constituent pas des garanties de performance.")
