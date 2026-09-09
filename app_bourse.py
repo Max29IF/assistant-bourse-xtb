@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V13.0.1 Hotfix"
+APP_VERSION = "V13.0.2 Navigation Hotfix"
 
 
 # ==========================================================
@@ -1428,11 +1428,17 @@ def resolve_ticker_from_identity(name="", isin=""):
 
 
 def open_instrument(symbol):
+    """
+    Safe Streamlit navigation.
+    Do NOT mutate nav_mode after the radio widget has been instantiated.
+    Store a pending navigation request, then apply it before the radio is created
+    on the next rerun.
+    """
     symbol = _clean_text(symbol, upper=True)
     if not symbol:
         return
     st.session_state["instrument_symbol"] = symbol
-    st.session_state["nav_mode"] = "📊 Instrument"
+    st.session_state["_pending_nav_mode"] = "📊 Instrument"
     st.rerun()
 
 
@@ -3003,6 +3009,11 @@ def show_transactions_page():
 # ==========================================================
 # SIDEBAR / ROUTING
 # ==========================================================
+# Apply navigation requests before instantiating the radio widget.
+_pending_nav = st.session_state.pop("_pending_nav_mode", None)
+if _pending_nav:
+    st.session_state["nav_mode"] = _pending_nav
+
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
     mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
@@ -3673,7 +3684,7 @@ def vf_section(title, subtitle=""):
 
 def vf_nav_button(label, target, key):
     if st.button(label, key=key, use_container_width=True):
-        st.session_state["nav_mode"] = target
+        st.session_state["_pending_nav_mode"] = target
         st.rerun()
 
 
