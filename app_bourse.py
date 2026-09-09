@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.8 Instrument Command Center"
+APP_VERSION = "V11.8.1 Universal Instrument"
 
 
 # ==========================================================
@@ -3404,56 +3404,129 @@ elif mode=="🔎 Scanner":
 elif mode=="📊 Instrument":
     vf_page_header(
         "📊 Instrument",
-        "Fiche plein écran : graphique, momentum, fondamentaux, actualités et plan de trade."
+        "Recherche universelle : portefeuille, référentiel courtier et découverte mondiale."
     )
 
-    # Build a compact searchable universe from portfolio + broker universe.
     choices = []
 
-    try:
-        bu = load_broker_universe()
-        if bu is not None and not bu.empty:
-            for _, r in bu.iterrows():
-                s = _clean_text(r.get("symbol"), upper=True)
-                if s:
-                    label = f"{s} • {_clean_text(r.get('name')) or s}"
-                    choices.append((label, s, r.to_dict()))
-    except Exception:
-        pass
-
+    # 1) Positions réellement détenues
     try:
         pp = load_positions()
         if pp is not None and not pp.empty:
             for _, r in pp.iterrows():
                 s = _clean_text(r.get("ticker"), upper=True)
-                if s:
-                    label = f"{s} • {_clean_text(r.get('name')) or s}"
-                    choices.append((label, s, r.to_dict()))
+                if not s:
+                    continue
+                name = _clean_text(r.get("name")) or s
+                label = f"{s} • {name}  —  Portefeuille"
+                row = r.to_dict()
+                row["Source"] = "Portefeuille"
+                choices.append((label, s, row, 0))
     except Exception:
         pass
 
-    # De-duplicate by symbol.
-    dedup = {}
-    for label,s,row in choices:
-        dedup.setdefault(s, (label,s,row))
-    choices = list(dedup.values())
+    # 2) Référentiel courtier Supabase
+    try:
+        bu = load_broker_universe()
+        if bu is not None and not bu.empty:
+            for _, r in bu.iterrows():
+                s = _clean_text(r.get("symbol"), upper=True)
+                if not s:
+                    continue
+                name = _clean_text(r.get("name")) or s
+                market = _clean_text(r.get("market"))
+                broker = _clean_text(r.get("broker"))
+                meta = " • ".join(x for x in [market, broker] if x)
+                label = f"{s} • {name}" + (f"  —  {meta}" if meta else "")
+                row = r.to_dict()
+                row["Source"] = "Référentiel courtier"
+                row["Entreprise"] = name
+                row["Ticker"] = s
+                row["Marché"] = market
+                row["Courtier"] = broker
+                choices.append((label, s, row, 1))
+    except Exception:
+        pass
 
-    c1,c2 = st.columns([4,1])
+    # 3) Découverte mondiale Yahoo / yfinance
+    # Cached by discover_yahoo_equities(), so subsequent visits are much faster.
+    try:
+        discovery_regions = list(YF_DISCOVERY_REGIONS.keys())
+        discovered = discover_yahoo_equities(
+            discovery_regions,
+            max_per_region=30
+        )
+        if discovered is not None and not discovered.empty:
+            for _, r in discovered.iterrows():
+                s = _clean_text(r.get("symbol"), upper=True)
+                if not s:
+                    continue
+                name = _clean_text(r.get("name")) or s
+                market = _clean_text(r.get("market"))
+                label = f"{s} • {name}" + (f"  —  {market} • Découverte" if market else "  —  Découverte")
+                row = r.to_dict()
+                row["Source"] = "Découverte Yahoo"
+                row["Entreprise"] = name
+                row["Ticker"] = s
+                row["Marché"] = market
+                row["Courtier"] = "À vérifier"
+                choices.append((label, s, row, 2))
+    except Exception:
+        pass
+
+    # Déduplication : portefeuille > référentiel courtier > découverte.
+    dedup = {}
+    for label, s, row, priority in sorted(choices, key=lambda x: x[3]):
+        if s not in dedup:
+            dedup[s] = (label, s, row, priority)
+
+    choices = sorted(
+        dedup.values(),
+        key=lambda x: (
+            x[3],
+            _clean_text(x[2].get("Entreprise") or x[2].get("name") or x[1]).lower()
+        )
+    )
+
+    # KPIs universe
+    n_portfolio = sum(1 for x in choices if x[3] == 0)
+    n_broker = sum(1 for x in choices if x[3] == 1)
+    n_discovery = sum(1 for x in choices if x[3] == 2)
+
+    u1,u2,u3,u4 = st.columns(4)
+    u1.metric("Valeurs disponibles", len(choices))
+    u2.metric("Portefeuille", n_portfolio)
+    u3.metric("Référentiel courtier", n_broker)
+    u4.metric("Découverte mondiale", n_discovery)
+
+    st.caption(
+        "Tu peux taper directement dans le menu déroulant pour rechercher un ticker ou un nom d'entreprise. "
+        "Les valeurs « Découverte » ne sont pas garanties disponibles chez XTB / Trade Republic."
+    )
+
+    c1,c2 = st.columns([5,1.5])
+
     labels = [x[0] for x in choices]
-    default_label = labels[0] if labels else ""
     selection = c1.selectbox(
         "Valeur",
         labels if labels else ["Aucune valeur disponible"],
-        index=0
+        index=0,
+        help="Tape un ticker ou le nom de l'entreprise pour filtrer la liste."
     )
-    manual_symbol = c2.text_input("Ticker manuel", placeholder="TSLA")
+
+    manual_symbol = c2.text_input(
+        "Ticker libre",
+        placeholder="ex. TSLA, MC.PA",
+        help="Permet d'analyser n'importe quel ticker Yahoo Finance même s'il n'est pas dans la liste."
+    )
 
     selected_symbol = ""
     selected_row = {}
+
     if manual_symbol.strip():
         selected_symbol = _clean_text(manual_symbol, upper=True)
     elif choices:
-        for label,s,row in choices:
+        for label, s, row, _priority in choices:
             if label == selection:
                 selected_symbol = s
                 selected_row = row
@@ -3462,7 +3535,7 @@ elif mode=="📊 Instrument":
     if selected_symbol:
         vf_full_instrument_page(selected_symbol, selected_row)
     else:
-        st.info("Sélectionne une valeur ou saisis un ticker.")
+        st.info("Sélectionne une valeur ou saisis un ticker libre.")
 
 
 elif mode=="🛰️ Agent marché":
