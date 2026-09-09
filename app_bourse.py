@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.5 Global Discovery"
+APP_VERSION = "V11.6 Premium Instrument"
 
 
 # ==========================================================
@@ -2570,6 +2570,111 @@ with st.sidebar:
 st.title(f"🔭 {APP_NAME}")
 st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • UI analytique + graphiques + stockage persistant")
 
+
+def vf_trade_chart(symbol, setup=None, period="6mo", interval="1d"):
+    df = history(symbol, period, interval)
+    if df is None or df.empty:
+        st.info("Historique indisponible.")
+        return
+    d = df.reset_index().copy()
+    date_col = d.columns[0]
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    d = d.dropna(subset=[date_col, "Close"])
+    if d.empty:
+        return
+    base = alt.Chart(d).encode(x=alt.X(f"{date_col}:T", title=None))
+    price = base.mark_line().encode(
+        y=alt.Y("Close:Q", title="Cours", scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"),
+                 alt.Tooltip("Close:Q", title="Cours", format=".2f")]
+    )
+    layers = [price]
+    if setup:
+        levels = []
+        for label, key in [("Entrée","entry"),("Stop","stop"),("TP1","tp1"),("TP2","tp2")]:
+            v = pd.to_numeric(pd.Series([setup.get(key)]), errors="coerce").iloc[0]
+            if pd.notna(v):
+                levels.append({"Niveau": label, "Prix": float(v)})
+        if levels:
+            ld = pd.DataFrame(levels)
+            layers.append(alt.Chart(ld).mark_rule(strokeDash=[6,4]).encode(
+                y="Prix:Q", tooltip=["Niveau:N", alt.Tooltip("Prix:Q", format=".2f")]
+            ))
+            layers.append(alt.Chart(ld).mark_text(align="left", dx=6, dy=-5).encode(
+                y="Prix:Q", text="Niveau:N"
+            ))
+    st.altair_chart(alt.layer(*layers).properties(height=360).interactive(), use_container_width=True)
+
+
+def vf_instrument_sheet(symbol, row=None):
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return
+    row = row or {}
+    q = live_quote(symbol)
+    name = _clean_text(row.get("Entreprise")) or q.get("name", symbol)
+    isin = _clean_text(row.get("ISIN"), upper=True)
+    if not isin:
+        _, _, isin = instrument_identity(symbol, row)
+
+    try:
+        setup = technical_setup(history(symbol, "6mo", "1d")) or {}
+    except Exception:
+        setup = {}
+
+    st.markdown(f"### {symbol} • {name}")
+    st.caption(f"ISIN : {isin or 'non renseigné'}")
+
+    c1,c2,c3,c4,c5 = st.columns(5)
+    price = setup.get("price", q.get("price"))
+    c1.metric("Cours", f"{float(price):.2f}" if price is not None and pd.notna(price) else "—")
+    c2.metric("Score", f"{float(setup.get('score')):.0f}/100" if setup.get("score") is not None else "—")
+    c3.metric("Potentiel", f"{float(setup.get('upside')):.1f}%" if setup.get("upside") is not None else "—")
+    c4.metric("R/R", f"{float(setup.get('rr')):.2f}" if setup.get("rr") is not None else "—")
+    c5.metric("Volume relatif", f"{float(setup.get('vol_ratio')):.2f}x" if setup.get("vol_ratio") is not None else "—")
+
+    vf_trade_chart(symbol, setup)
+
+    st.markdown("#### Plan de trade")
+    cols = st.columns(4)
+    for col, label, key in zip(cols, ["Entrée","Stop","TP1","TP2"], ["entry","stop","tp1","tp2"]):
+        v = setup.get(key)
+        col.metric(label, f"{float(v):.2f}" if v is not None and pd.notna(v) else "—")
+
+    try:
+        news = yf.Ticker(symbol).news or []
+    except Exception:
+        news = []
+
+    st.markdown("#### Actualités récentes")
+    shown = 0
+    for item in news[:5]:
+        content = item.get("content", item) if isinstance(item, dict) else {}
+        title = _clean_text(content.get("title"))
+        if not title:
+            continue
+        provider = content.get("provider") or {}
+        source = _clean_text(provider.get("displayName") if isinstance(provider, dict) else "")
+        pub = _clean_text(content.get("pubDate"))
+        st.markdown(f"**{title}**")
+        st.caption(" • ".join(x for x in [source, pub] if x))
+        shown += 1
+    if shown == 0:
+        st.caption("Aucune actualité Yahoo disponible actuellement.")
+
+    score = float(setup.get("score", 0) or 0)
+    upside = float(setup.get("upside", 0) or 0)
+    rr = float(setup.get("rr", 0) or 0)
+    st.markdown("#### Verdict VISION FUTURE")
+    if score >= 76 and upside >= 3 and rr >= 2:
+        st.success("🟢 Setup techniquement éligible — confirmer le 1H et le contexte actualités avant décision.")
+    elif score >= 65:
+        st.warning("🟠 À surveiller — configuration intéressante mais critères d'entrée incomplets.")
+    else:
+        st.info("⚪ Pas de setup d'entrée prioritaire selon les règles actuelles.")
+
+
+
 if mode=="🏠 Dashboard":
     vf_page_header("🏠 Vue d'ensemble", "Synthèse de tes comptes, exposition et performance latente.")
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -2789,6 +2894,9 @@ elif mode=="🔎 Scanner":
                         m[5].metric("R/R", f"{r['R/R']:.2f}")
                         if r.get("Raisons"):
                             st.caption(r.get("Raisons"))
+
+                        with st.expander("🔎 Ouvrir la fiche premium"):
+                            vf_instrument_sheet(r["Ticker"], r.to_dict())
 
                 with st.expander("📋 Voir le tableau complet"):
                     visible = [
