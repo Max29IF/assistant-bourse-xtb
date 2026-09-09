@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V15 Premium Terminal"
+APP_VERSION = "V15.1 Navigation Rework"
 
 
 # ==========================================================
@@ -3019,7 +3019,8 @@ if _pending_nav:
 
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","⭐ Watchlist","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
+    st.caption("NAVIGATION PRINCIPALE")
+    mode=st.radio("Navigation", ["🏠 Dashboard","⭐ Watchlist","🏦 PEA","💼 CTO","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation","💰 Transactions","📥 Imports & documents"], key="nav_mode")
     st.markdown("---")
     st.caption("ACCÈS INSTRUMENT")
     _quick_symbol = st.text_input("Ticker rapide", placeholder="TSLA, MC.PA…", key="sidebar_quick_symbol")
