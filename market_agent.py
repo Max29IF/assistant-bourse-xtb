@@ -126,14 +126,91 @@ def history(symbol, period="6mo", interval="1d"):
         return None
 
 
-def universe():
+
+DISCOVERY_REGION_GROUPS = [
+    [("USA","us"), ("Canada","ca"), ("Royaume-Uni","gb")],
+    [("France","fr"), ("Allemagne","de"), ("Pays-Bas","nl")],
+    [("Espagne","es"), ("Italie","it"), ("Suisse","ch")],
+    [("Japon","jp"), ("Australie","au"), ("Suède","se")],
+]
+
+
+def discover_region_equities(region_label, region_code, size=12):
+    rows = []
     try:
-        rows = sb_data(sb.table("broker_universe").select("symbol,name,isin,market,broker,enabled").eq("enabled", True).execute())
-        return pd.DataFrame(rows)
+        q = yf.EquityQuery("and", [
+            yf.EquityQuery("eq", ["region", region_code]),
+            yf.EquityQuery("gte", ["intradaymarketcap", 500_000_000]),
+            yf.EquityQuery("gte", ["intradayprice", 2]),
+            yf.EquityQuery("gte", ["avgdailyvol3m", 100_000]),
+        ])
+        resp = yf.screen(q, size=size, sortField="dayvolume", sortAsc=False)
+        quotes = (resp or {}).get("quotes", []) if isinstance(resp, dict) else []
+        for x in quotes:
+            symbol = clean_symbol(x.get("symbol"))
+            if not symbol:
+                continue
+            qtype = str(x.get("quoteType") or "").upper()
+            if qtype and qtype not in {"EQUITY","ETF"}:
+                continue
+            rows.append({
+                "symbol": symbol,
+                "name": str(x.get("longName") or x.get("shortName") or ""),
+                "isin": "",
+                "market": region_label,
+                "broker": "À vérifier",
+                "enabled": True,
+                "source": "DISCOVERY",
+            })
+    except Exception as exc:
+        diagnostics.append(f"discovery:{region_code}:{type(exc).__name__}:{str(exc)[:150]}")
+    return rows
+
+
+def rotating_discovery():
+    """
+    Scans 3 regions per scheduled run. At a 15-minute cadence, all 12 regions
+    are revisited roughly once per hour without exploding network traffic.
+    """
+    now = datetime.now(timezone.utc)
+    slot = (now.minute // 15) % len(DISCOVERY_REGION_GROUPS)
+    group = DISCOVERY_REGION_GROUPS[slot]
+    rows = []
+    for label, code in group:
+        rows.extend(discover_region_equities(label, code, size=12))
+    return pd.DataFrame(rows), [x[0] for x in group]
+
+
+
+def universe():
+    frames = []
+    try:
+        rows = sb_data(
+            sb.table("broker_universe")
+            .select("symbol,name,isin,market,broker,enabled")
+            .eq("enabled", True)
+            .execute()
+        )
+        base = pd.DataFrame(rows)
+        if not base.empty:
+            base["source"] = "BROKER_UNIVERSE"
+            frames.append(base)
     except Exception as exc:
         diagnostics.append(f"universe:{type(exc).__name__}:{str(exc)[:180]}")
-        return pd.DataFrame()
 
+    discovered, regions = rotating_discovery()
+    if not discovered.empty:
+        frames.append(discovered)
+
+    if not frames:
+        return pd.DataFrame(), regions
+
+    out = pd.concat(frames, ignore_index=True, sort=False)
+    out["symbol"] = out["symbol"].map(clean_symbol)
+    out = out[out["symbol"].astype(bool)]
+    out["_priority"] = out["source"].map({"BROKER_UNIVERSE": 0, "DISCOVERY": 1}).fillna(2)
+    out = out.sort_values("_priority").drop_duplicates("symbol").drop(columns="_priority")
+    return out.reset_index(drop=True), regions
 
 def positions():
     try:
@@ -244,7 +321,7 @@ def _extract_google_news_rss(symbol, name="", limit=6):
     url = "https://news.google.com/rss/search?" + params
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "VISION-FUTURE/11.4 (+market-news-rss)"}
+        headers={"User-Agent": "VISION-FUTURE/11.5 (+market-news-rss)"}
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -513,7 +590,8 @@ def classify_position(daily, hourly, pru):
 
 
 def run():
-    uni, pos = universe(), positions()
+    uni, discovery_regions = universe()
+    pos = positions()
     created = 0
     regime = market_regime()
 
@@ -703,6 +781,7 @@ def run():
     parts = [
         f"REGIME={regime['state']}({regime['score']}/100)",
         f"UNIVERSE={len(uni)}",
+        f"DISCOVERY_REGIONS={','.join(discovery_regions)}",
         f"POSITIONS={len(pos)}",
         f"PRELIMINARY={len(preliminary)}",
         f"CONFIRMED={len(confirmed)}",
@@ -724,8 +803,8 @@ def run():
     }).execute()
 
     print(
-        f"VISION FUTURE V11.4: {created} actionable alert(s) | "
-        f"regime={regime['state']} | confirmed={len(confirmed)}"
+        f"VISION FUTURE V11.5: {created} actionable alert(s) | "
+        f"regime={regime['state']} | confirmed={len(confirmed)} | regions={','.join(discovery_regions)}"
     )
 
 
