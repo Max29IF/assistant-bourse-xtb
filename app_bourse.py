@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V12 Command Center DA"
+APP_VERSION = "V12.1 Board DA"
 
 
 # ==========================================================
@@ -1293,50 +1293,53 @@ def performance_metrics(account: str):
 
 
 def show_performance_page():
-    vf_page_header("📈 Performance", "Courbe d'évolution, flux, dividendes et lecture du P/L.")
+    vf_page_header("📈 Performance", "Performance Board — évolution, flux, dividendes, P/L réalisé et latent.")
     account=st.selectbox("Compte analysé",["pea","cto_xtb","cto_trade_republic","cto_autre"],
         format_func=lambda x:{"pea":"PEA","cto_xtb":"CTO XTB","cto_trade_republic":"CTO Trade Republic","cto_autre":"CTO autre"}[x])
     m,pos,tx,realized,openlots=performance_metrics(account)
     save_performance_snapshot(account,m)
 
     c1,c2,c3,c4=st.columns(4)
-    c1.metric("Actifs valorisés",f"{m['assets_value']:,.2f} €")
-    c2.metric("P/L latent snapshot",f"{m['unrealized']:+,.2f} €")
-    c3.metric("Dividendes ledger",f"{m['dividends']:+,.2f} €")
-    c4.metric("Frais + taxes",f"{m['fees']+m['taxes']:,.2f} €")
+    c1.metric("Actifs valorisés",f"{m['assets_value']:,.0f} €")
+    c2.metric("P/L latent",f"{m['unrealized']:+,.0f} €")
+    c3.metric("Dividendes",f"{m['dividends']:+,.0f} €")
+    c4.metric("P/L réalisé FIFO",f"{m['realized_gross']:+,.0f} €")
+
     c5,c6,c7,c8=st.columns(4)
-    c5.metric("Apports externes",f"{m['contributions']:,.2f} €")
-    c6.metric("Retraits externes",f"{m['withdrawals']:,.2f} €")
-    c7.metric("P/L réalisé FIFO brut",f"{m['realized_gross']:+,.2f} €")
-    c8.metric("Intérêts",f"{m['interest']:+,.2f} €")
+    c5.metric("Apports",f"{m['contributions']:,.0f} €")
+    c6.metric("Retraits",f"{m['withdrawals']:,.0f} €")
+    c7.metric("Frais + taxes",f"{m['fees']+m['taxes']:,.0f} €")
+    c8.metric("Intérêts",f"{m['interest']:+,.0f} €")
 
     if m["equity_estimate"] is not None and m["net_contributions"]>0:
+        vf_section("Rendement estimé", "Lecture consolidée basée sur l'historique actuellement disponible.")
         a,b,c=st.columns(3)
-        a.metric("Cash reconstruit",f"{m['cash_estimate']:+,.2f} €")
-        b.metric("Valeur totale estimée",f"{m['equity_estimate']:,.2f} €")
-        c.metric("Rendement simple estimé",f"{m['return_pct']:+.2f} %",delta=f"{m['pnl_estimate']:+,.2f} €")
-        st.caption("Estimation basée sur l'historique de transactions disponible ; ce n'est pas encore un TWR.")
+        a.metric("Cash reconstruit",f"{m['cash_estimate']:+,.0f} €")
+        b.metric("Valeur totale estimée",f"{m['equity_estimate']:,.0f} €")
+        c.metric("Rendement simple",f"{m['return_pct']:+.2f} %",delta=f"{m['pnl_estimate']:+,.0f} €")
 
     hist=load_performance_snapshots(account)
     if not hist.empty:
+        vf_section("Évolution", "Valeur estimée, apports nets et actifs valorisés.")
         vf_line(hist, "snapshot_date", ["equity_estimate","net_contributions","assets_value"], "Évolution du portefeuille")
 
     if not pos.empty:
         pos = add_identity_columns(pos, "Ticker")
+        vf_section("Répartition actuelle", "Allocation et P/L latent par position.")
         left,right=st.columns(2)
         with left:
             if "Valeur référence" in pos:
-                vf_pie(pos, "Valeur", "Valeur référence", "Répartition du portefeuille")
+                vf_pie(pos, "Valeur", "Valeur référence", "Répartition")
         with right:
             if "P/L latent" in pos:
-                vf_signed_bar(pos.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "P/L latent par position")
+                vf_signed_bar(pos.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "P/L latent")
 
-        st.subheader("Positions valorisées")
-        st.dataframe(pos,use_container_width=True,hide_index=True)
+        with st.expander("📋 Positions valorisées"):
+            st.dataframe(pos,use_container_width=True,hide_index=True)
 
     if not realized.empty:
-        st.subheader("P/L réalisé — méthode FIFO")
-        st.dataframe(realized,use_container_width=True,hide_index=True)
+        with st.expander("💰 P/L réalisé — FIFO"):
+            st.dataframe(realized,use_container_width=True,hide_index=True)
 
     if m["corporate_actions"]:
         st.warning(f"{m['corporate_actions']} opération(s) sur titres détectée(s). Le snapshot courtier reste la référence pour les positions courantes.")
@@ -1344,7 +1347,6 @@ def show_performance_page():
         with st.expander("⚠️ Contrôles du ledger"):
             for item in m["issues"][:50]:
                 st.write("•",item)
-
 
 def _norm_company_text(value):
     s = _clean_text(value).lower()
@@ -2369,18 +2371,16 @@ def show_market_agent_page():
     latest = runs.iloc[0] if not runs.empty else None
     details = parse_agent_details(latest.get("details")) if latest is not None else {}
 
-    # Agent health / regime strip
-    h1,h2,h3,h4,h5 = st.columns(5)
-    h1.metric("État agent", _clean_text(latest.get("status")) if latest is not None else "—")
-
     regime_raw = details.get("REGIME","—")
     regime_state = regime_raw
     regime_score = None
-    m = re.match(r"^([A-Z_]+)\(([^)]+)\)$", str(regime_raw))
-    if m:
-        regime_state, regime_score = m.group(1), m.group(2)
-    h2.metric("Régime", regime_state, regime_score)
+    mm = re.match(r"^([A-Z_]+)\(([^)]+)\)$", str(regime_raw))
+    if mm:
+        regime_state, regime_score = mm.group(1), mm.group(2)
 
+    h1,h2,h3,h4,h5 = st.columns(5)
+    h1.metric("État agent", _clean_text(latest.get("status")) if latest is not None else "—")
+    h2.metric("Régime", regime_state, regime_score)
     h3.metric("Univers ce cycle", details.get("UNIVERSE","—"))
     h4.metric("Candidats ce cycle", details.get("CONFIRMED","—"))
     h5.metric("Créées ce cycle", int(latest.get("created_alerts") or 0) if latest is not None else 0)
@@ -2392,94 +2392,71 @@ def show_market_agent_page():
         st.info("Aucune alerte actionnable actuellement. L'agent continue de surveiller le marché.")
         return
 
-    # Normalize numeric fields
     for c in ["score","upside","rr","entry","stop","tp1","tp2"]:
         if c in alerts.columns:
             alerts[c] = pd.to_numeric(alerts[c], errors="coerce")
 
-    # Top summary
+    risk_types={"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Alertes actionnables", len(alerts))
     c2.metric("Entrées", int((alerts["alert_type"]=="ENTRY").sum()) if "alert_type" in alerts else 0)
-    risk_types={"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
     c3.metric("Gestion / sorties", int(alerts["alert_type"].isin(risk_types).sum()) if "alert_type" in alerts else 0)
     c4.metric("Nouvelles", int((alerts["status"]=="NEW").sum()) if "status" in alerts else 0)
 
-    left,right = st.columns(2)
-    with left:
-        if "alert_type" in alerts.columns:
-            x=alerts["alert_type"].value_counts().rename_axis("Type").reset_index(name="Nombre")
-            vf_bar(x,"Type","Nombre","Alertes par type",horizontal=False)
-    with right:
-        if "score" in alerts.columns:
-            x=alerts.dropna(subset=["score"]).copy()
-            if not x.empty:
-                x["Valeur"] = x.apply(lambda r: f"{_clean_text(r.get('symbol'), upper=True)} • {_clean_text(r.get('name'))}",axis=1)
-                vf_bar(x.nlargest(min(12,len(x)),"score"),"Valeur","score","Meilleurs scores")
-
-    # Dedicated ENTRY opportunity table
     entries = alerts[alerts["alert_type"]=="ENTRY"].copy() if "alert_type" in alerts else pd.DataFrame()
     if not entries.empty:
-        st.subheader("🎯 Opportunités d'entrée")
-        entries["Valeur"] = entries.apply(
-            lambda r: f"{_clean_text(r.get('symbol'), upper=True)} • {_clean_text(r.get('name')) or 'Nom non renseigné'}",
-            axis=1
-        )
-        cols = [c for c in ["Valeur","isin","market","broker","score","upside","rr","entry","stop","tp1","tp2","news_risk","created_at"] if c in entries.columns]
-        st.dataframe(
-            entries.sort_values(["score","rr","upside"],ascending=False,na_position="last")[cols],
-            use_container_width=True,
-            hide_index=True
-        )
+        vf_section("Opportunités d'entrée", "Les setups ENTRY classés par score et potentiel.")
+        entries = entries.sort_values(["score","rr","upside"], ascending=False, na_position="last")
+        for i in range(0, min(len(entries),6), 2):
+            cols=st.columns(2)
+            for j,col in enumerate(cols):
+                idx=i+j
+                if idx >= min(len(entries),6):
+                    break
+                with col:
+                    row=entries.iloc[idx].to_dict()
+                    row["Ticker"] = row.get("symbol")
+                    row["Entreprise"] = row.get("name")
+                    row["ISIN"] = row.get("isin")
+                    row["Score combiné"] = row.get("score")
+                    row["Potentiel %"] = row.get("upside")
+                    row["R/R"] = row.get("rr")
+                    row["Entrée"] = row.get("entry")
+                    row["Stop"] = row.get("stop")
+                    row["TP2"] = row.get("tp2")
+                    vf_setup_card(row, key_prefix=f"agent_entry_{idx}")
 
-        l,r=st.columns(2)
-        with l:
-            vf_bar(entries.nlargest(min(12,len(entries)),"score"),"Valeur","score","Score des opportunités")
-        with r:
-            vf_bar(entries.nlargest(min(12,len(entries)),"upside"),"Valeur","upside","Potentiel estimé (%)")
+        with st.expander("📋 Tableau des opportunités"):
+            entries["Valeur"] = entries.apply(
+                lambda r: f"{_clean_text(r.get('symbol'), upper=True)} • {_clean_text(r.get('name')) or 'Nom non renseigné'}",
+                axis=1
+            )
+            cols = [c for c in ["Valeur","isin","market","broker","score","upside","rr","entry","stop","tp1","tp2","news_risk","created_at"] if c in entries.columns]
+            st.dataframe(entries[cols], use_container_width=True, hide_index=True)
 
-    st.subheader("📡 Flux de décisions")
-
-    def _pill_class(t):
-        return "vf-entry" if t in {"ENTRY","TAKE_PROFIT"} else "vf-exit" if t=="EXIT" else "vf-risk" if t in {"RISK","PROTECT","INVALIDATED"} else "vf-info"
-
-    st.markdown("""
-    <style>
-    .vf-pill {display:inline-block;padding:0.28rem 0.62rem;border-radius:999px;font-size:.84rem;font-weight:700;margin-left:.25rem;}
-    .vf-score {background:#e7f0ff;color:#124eaa;}
-    .vf-entry {background:#dcfce7;color:#047857;}
-    .vf-risk {background:#fff3cd;color:#9a6700;}
-    .vf-exit {background:#fee2e2;color:#b42318;}
-    .vf-info {background:#ede9fe;color:#6d28d9;}
-    .vf-id {color:#64748b;font-size:.93rem;margin-top:-.2rem;margin-bottom:.4rem;}
-    .vf-title {font-size:1.08rem;font-weight:750;color:#0f172a;line-height:1.2;}
-    </style>
-    """, unsafe_allow_html=True)
-
-    for _, r in alerts.head(60).iterrows():
+    vf_section("Flux de décisions", "Les derniers événements actionnables de l'agent.")
+    for _, r in alerts.head(20).iterrows():
         typ=_clean_text(r.get("alert_type"),upper=True) or "ALERT"
         symbol,full_name,isin=instrument_identity(r.get("symbol"),r)
         score=r.get("score")
 
         with st.container(border=True):
-            a,b=st.columns([5,2])
+            a,b=st.columns([5,1.2])
             with a:
-                st.markdown(f'<div class="vf-title">{symbol} • {full_name}</div>',unsafe_allow_html=True)
-                st.markdown(f'<div class="vf-id">ISIN : {isin}</div>',unsafe_allow_html=True)
-            with b:
-                score_txt=f"score {float(score):.0f}" if pd.notna(score) else "score —"
+                st.markdown(f'<div class="vf-name">{symbol} • {full_name}</div>',unsafe_allow_html=True)
                 st.markdown(
-                    f'<div style="text-align:right"><span class="vf-pill vf-score">{score_txt}</span>'
-                    f'<span class="vf-pill {_pill_class(typ)}">{typ}</span></div>',
+                    f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
                     unsafe_allow_html=True
                 )
+            with b:
+                st.markdown(vf_alert_chip(typ), unsafe_allow_html=True)
+                if pd.notna(score):
+                    st.caption(f"Score {float(score):.0f}/100")
 
-            vals=st.columns(6)
+            vals=st.columns(4)
             specs=[
                 ("Entrée",r.get("entry"),""),
                 ("Stop",r.get("stop"),""),
-                ("TP1",r.get("tp1"),""),
-                ("TP2",r.get("tp2"),""),
                 ("Potentiel",r.get("upside"),"%"),
                 ("R/R",r.get("rr"),""),
             ]
@@ -2487,18 +2464,19 @@ def show_market_agent_page():
                 num=pd.to_numeric(pd.Series([value]),errors="coerce").iloc[0]
                 col.metric(label,f"{float(num):.2f}{suffix}" if pd.notna(num) else "—")
 
-            if _clean_text(r.get("headline")):
-                st.markdown(f"**📰 {_clean_text(r.get('headline'))}**")
-            if _clean_text(r.get("analysis")):
-                st.write(_clean_text(r.get("analysis")))
+            headline=_clean_text(r.get("headline"))
+            analysis=_clean_text(r.get("analysis"))
+            if headline:
+                st.markdown(f"**📰 {headline}**")
+            if analysis:
+                st.caption(analysis[:420])
 
-            footer=f"{_clean_text(r.get('broker')) or 'Courtier non renseigné'}"
-            if _clean_text(r.get("market")):
-                footer+=f" • {_clean_text(r.get('market'))}"
-            if _clean_text(r.get("news_risk"),upper=True):
-                footer+=f" • news {_clean_text(r.get('news_risk'),upper=True)}"
-            footer+=f" • {r.get('created_at','')} • {_clean_text(r.get('status')) or 'NEW'}"
-            st.caption(footer)
+            footer=[]
+            for item in [_clean_text(r.get("broker")),_clean_text(r.get("market")),f"news {_clean_text(r.get('news_risk'),upper=True)}" if _clean_text(r.get("news_risk")) else "",_clean_text(r.get("status"))]:
+                if item:
+                    footer.append(item)
+            if footer:
+                st.caption(" • ".join(footer))
 
             ba,bb = st.columns([1,1])
             with ba:
@@ -2509,6 +2487,19 @@ def show_market_agent_page():
                     if st.button("🔖 Marquer comme lu",key=f"ack_{r.get('id')}", use_container_width=True):
                         acknowledge_alert(r.get("id"))
                         st.rerun()
+
+    with st.expander("📊 Analyse agrégée des alertes"):
+        left,right = st.columns(2)
+        with left:
+            if "alert_type" in alerts.columns:
+                x=alerts["alert_type"].value_counts().rename_axis("Type").reset_index(name="Nombre")
+                vf_bar(x,"Type","Nombre","Alertes par type",horizontal=False)
+        with right:
+            if "score" in alerts.columns:
+                x=alerts.dropna(subset=["score"]).copy()
+                if not x.empty:
+                    x["Valeur"] = x.apply(lambda r: f"{_clean_text(r.get('symbol'), upper=True)} • {_clean_text(r.get('name'))}",axis=1)
+                    vf_bar(x.nlargest(min(12,len(x)),"score"),"Valeur","score","Meilleurs scores")
 
 def indicators(df):
     x=df.copy(); c=x.Close; h=x.High; l=x.Low; v=x.Volume
@@ -2809,13 +2800,120 @@ def show_import_page():
                     st.error(f"Suppression impossible : {exc}")
 
 
+
+def vf_board_badge(text, kind="blue"):
+    cls = {
+        "blue":"vf-blue","green":"vf-green","red":"vf-red",
+        "amber":"vf-amber","violet":"vf-violet","muted":"vf-muted-badge"
+    }.get(kind,"vf-blue")
+    return f'<span class="vf-badge {cls}">{_clean_text(text)}</span>'
+
+
+def vf_position_card(row, key_prefix="pos"):
+    symbol = _clean_text(row.get("Ticker"), upper=True)
+    name = _clean_text(row.get("Entreprise") or row.get("Nom complet") or row.get("Nom")) or symbol
+    isin = _clean_text(row.get("ISIN"), upper=True)
+    value = _vf_num(row.get("Valeur référence"))
+    pnl = _vf_num(row.get("P/L latent"))
+    pnl_pct = _vf_num(row.get("P/L %"))
+    weight = _vf_num(row.get("Poids %"))
+    price = _vf_num(row.get("Cours live"))
+    if pd.isna(price):
+        price = _vf_num(row.get("Prix"))
+
+    with st.container(border=True):
+        a,b = st.columns([4.7,1.3])
+        with a:
+            st.markdown(f'<div class="vf-name">{symbol} • {name}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
+                unsafe_allow_html=True
+            )
+        with b:
+            if pd.notna(weight):
+                st.metric("Poids", f"{weight:.1f}%")
+
+        k1,k2,k3 = st.columns(3)
+        k1.metric("Valeur", f"{value:,.0f} €" if pd.notna(value) else "—")
+        if pd.notna(pnl):
+            delta = f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else None
+            k2.metric("P/L latent", f"{pnl:+,.0f} €", delta=delta)
+        else:
+            k2.metric("P/L latent", "—")
+        k3.metric("Cours", f"{price:.2f}" if pd.notna(price) else "—")
+
+        if symbol and st.button("📊 Ouvrir la fiche", key=f"{key_prefix}_{symbol}", use_container_width=True):
+            open_instrument(symbol)
+
+
+def vf_setup_card(row, key_prefix="setup", show_expand=False):
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    symbol = _clean_text(row.get("Ticker") or row.get("symbol"), upper=True)
+    name = _clean_text(row.get("Entreprise") or row.get("name")) or symbol
+    isin = _clean_text(row.get("ISIN") or row.get("isin"), upper=True)
+    score = _vf_num(row.get("Score combiné") if row.get("Score combiné") is not None else row.get("score"))
+    upside = _vf_num(row.get("Potentiel %") if row.get("Potentiel %") is not None else row.get("upside"))
+    rr = _vf_num(row.get("R/R") if row.get("R/R") is not None else row.get("rr"))
+    entry = _vf_num(row.get("Entrée") if row.get("Entrée") is not None else row.get("entry"))
+    stop = _vf_num(row.get("Stop") if row.get("Stop") is not None else row.get("stop"))
+    tp2 = _vf_num(row.get("TP2") if row.get("TP2") is not None else row.get("tp2"))
+    confirmed = _clean_text(row.get("Confirmé 1h") or row.get("confirmed_1h"))
+    source = _clean_text(row.get("Source"))
+    broker = _clean_text(row.get("Courtier") or row.get("broker"))
+    market = _clean_text(row.get("Marché") or row.get("market"))
+
+    with st.container(border=True):
+        a,b = st.columns([4.7,1.3])
+        with a:
+            st.markdown(f'<div class="vf-name">{symbol} • {name}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="vf-isin">{"ISIN : " + isin if isin else "ISIN non renseigné"}</div>',
+                unsafe_allow_html=True
+            )
+            badges=[]
+            if source == "Découverte Yahoo":
+                badges.append(vf_board_badge("Découverte","amber"))
+                badges.append(vf_board_badge("Courtier à vérifier","violet"))
+            elif source:
+                badges.append(vf_board_badge(source,"green"))
+            if broker and broker != "À vérifier":
+                badges.append(vf_board_badge(broker,"blue"))
+            if market:
+                badges.append(vf_board_badge(market,"muted"))
+            if badges:
+                st.markdown("".join(badges), unsafe_allow_html=True)
+        with b:
+            if pd.notna(score):
+                st.metric("Score", f"{score:.1f}/100")
+            if confirmed:
+                st.caption(f"Confirmation 1H {confirmed}")
+
+        m1,m2,m3 = st.columns(3)
+        m1.metric("Potentiel", f"{upside:.1f}%" if pd.notna(upside) else "—")
+        m2.metric("R/R", f"{rr:.2f}" if pd.notna(rr) else "—")
+        m3.metric("Entrée", f"{entry:.2f}" if pd.notna(entry) else "—")
+
+        m4,m5 = st.columns(2)
+        m4.metric("Stop", f"{stop:.2f}" if pd.notna(stop) else "—")
+        m5.metric("TP2", f"{tp2:.2f}" if pd.notna(tp2) else "—")
+
+        if symbol and st.button("📊 Fiche instrument", key=f"{key_prefix}_{symbol}", use_container_width=True):
+            open_instrument(symbol)
+
+        if show_expand and symbol:
+            with st.expander("Voir l'analyse détaillée"):
+                vf_instrument_sheet(symbol, row)
+
+
+
 def show_portfolio_page(account, title, broker: str | None = None):
     try:
         reconcile_orphan_portfolio_data()
     except Exception:
         pass
 
-    vf_page_header(title, f"Positions, valorisation et allocation • {broker or 'Tous courtiers'}")
+    vf_page_header(title, f"Portfolio Board — valorisation, allocation, P/L et accès direct aux positions • {broker or 'Tous courtiers'}")
     df=load_positions(account, broker=broker)
     if df.empty:
         try:
@@ -2829,29 +2927,47 @@ def show_portfolio_page(account, title, broker: str | None = None):
         return
 
     totals,m=portfolio_valuation(account,use_live=True, broker=broker)
+    m = add_identity_columns(m, "Ticker")
+
+    # KPIs
     c1,c2,c3,c4=st.columns(4)
-    c1.metric("Valeur suivie",f"{totals['value']:,.2f} €")
-    c2.metric("Coût snapshot",f"{totals['cost']:,.2f} €")
-    c3.metric("P/L latent",f"{totals['unrealized']:+,.2f} €")
+    c1.metric("Valeur suivie",f"{totals['value']:,.0f} €")
+    c2.metric("Coût snapshot",f"{totals['cost']:,.0f} €")
+    c3.metric("P/L latent",f"{totals['unrealized']:+,.0f} €")
     c4.metric("Positions",len(df))
 
     if totals.get("live_value", 0) > 0:
-        st.caption(f"Estimation live : {totals['live_value']:,.2f} € — séparée du snapshot courtier.")
+        st.caption(f"Estimation live : {totals['live_value']:,.0f} € — le snapshot courtier reste la référence.")
 
-    m = add_identity_columns(m, "Ticker")
+    vf_section("Vue portefeuille", "Allocation et gains/pertes en un coup d'œil.")
     c_left,c_right=st.columns(2)
     with c_left:
         if "Valeur référence" in m.columns:
-            vf_pie(m, "Valeur", "Valeur référence", "Allocation par valeur")
+            vf_pie(m, "Valeur", "Valeur référence", "Allocation")
     with c_right:
         if "P/L latent" in m.columns:
-            vf_signed_bar(m.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "Gains / pertes latents")
+            vf_signed_bar(m.sort_values("P/L latent").tail(15), "Valeur", "P/L latent", "P/L latent")
 
-    if "Valeur référence" in m.columns:
-        vf_bar(m.nlargest(min(15,len(m)), "Valeur référence"), "Valeur", "Valeur référence", "Poids des principales positions")
+    # Top positions as cards
+    vf_section("Positions principales", "Lecture visuelle des lignes les plus importantes.")
+    view=m.copy()
+    if "Valeur référence" in view.columns:
+        view["_weight"] = pd.to_numeric(view["Valeur référence"], errors="coerce") / max(float(pd.to_numeric(view["Valeur référence"], errors="coerce").sum()),1) * 100
+        view["Poids %"] = view["_weight"]
+        view = view.sort_values("Valeur référence", ascending=False, na_position="last")
 
-    st.subheader("Détail des positions")
-    st.dataframe(m,use_container_width=True,hide_index=True)
+    for i in range(0, min(len(view), 8), 2):
+        cols=st.columns(2)
+        for j,col in enumerate(cols):
+            idx=i+j
+            if idx >= min(len(view),8):
+                break
+            with col:
+                vf_position_card(view.iloc[idx], key_prefix=f"portfolio_{account}_{idx}")
+
+    with st.expander("📋 Toutes les positions"):
+        st.dataframe(m,use_container_width=True,hide_index=True)
+
     st.caption("Le snapshot courtier reste la référence de valorisation ; les cours live sont une estimation séparée.")
 
 def show_transactions_page():
@@ -3869,52 +3985,16 @@ elif mode=="🔎 Scanner":
                         "Valeur","Potentiel %","Potentiel des finalistes"
                     )
 
-                # Highlight cards
-                st.subheader("🎯 Sélection prioritaire")
-                for _, r in out.head(6).iterrows():
-                    with st.container(border=True):
-                        a,b = st.columns([5,2])
-                        with a:
-                            st.markdown(
-                                f"<div class='vf-name'>{r['Ticker']} • {r.get('Entreprise','')}</div>"
-                                f"<div class='vf-isin'>ISIN : {r.get('ISIN','ISIN non renseigné')}</div>",
-                                unsafe_allow_html=True
-                            )
-                            source = r.get("Source","")
-                            broker_txt = r.get("Courtier","")
-                            market_txt = r.get("Marché","")
-                            if source == "Découverte Yahoo":
-                                st.markdown(
-                                    "<span class='vf-badge vf-amber'>Découverte</span>"
-                                    "<span class='vf-badge vf-violet'>Courtier à vérifier</span>",
-                                    unsafe_allow_html=True
-                                )
-                            else:
-                                st.markdown(
-                                    f"<span class='vf-badge vf-green'>Référentiel courtier</span>"
-                                    f"<span class='vf-badge vf-blue'>{broker_txt or 'Compatible'}</span>",
-                                    unsafe_allow_html=True
-                                )
-                            if market_txt:
-                                st.caption(market_txt)
-                        with b:
-                            st.metric("Score combiné", f"{float(r['Score combiné']):.1f}/100")
-                            st.metric("Confirmation 1H", r.get("Confirmé 1h","—"))
-
-                        m = st.columns(6)
-                        m[0].metric("Prix", f"{r['Prix']:.2f}")
-                        m[1].metric("Entrée", f"{r['Entrée']:.2f}")
-                        m[2].metric("Stop", f"{r['Stop']:.2f}")
-                        m[3].metric("TP2", f"{r['TP2']:.2f}")
-                        m[4].metric("Potentiel", f"{r['Potentiel %']:.1f}%")
-                        m[5].metric("R/R", f"{r['R/R']:.2f}")
-                        if r.get("Raisons"):
-                            st.caption(r.get("Raisons"))
-
-                        with st.expander("🔎 Ouvrir la fiche premium"):
-                            vf_instrument_sheet(r["Ticker"], r.to_dict())
-                            if st.button("📊 Ouvrir en plein écran", key=f"scanner_open_{r['Ticker']}", use_container_width=True):
-                                open_instrument(r["Ticker"])
+                vf_section("Sélection prioritaire", "Les meilleurs setups du scanner présentés comme un board opérationnel.")
+                top_cards = out.head(8).reset_index(drop=True)
+                for i in range(0, len(top_cards), 2):
+                    cols = st.columns(2)
+                    for j,col in enumerate(cols):
+                        idx=i+j
+                        if idx >= len(top_cards):
+                            break
+                        with col:
+                            vf_setup_card(top_cards.iloc[idx], key_prefix=f"scanner_card_{idx}", show_expand=True)
 
                 with st.expander("📋 Voir le tableau complet"):
                     visible = [
