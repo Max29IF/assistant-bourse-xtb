@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V10.1 Identity UI"
+APP_VERSION = "V10.2 Identity UI"
 
 # ==========================================================
 # AUTHENTICATION
@@ -1040,12 +1040,21 @@ def show_arbitrage_page():
     _,pos=portfolio_valuation(account,use_live=True)
     if pos.empty:
         st.info("Aucune position à analyser."); return
-    total=pos["Valeur"].sum(skipna=True)
+    # V10.2: portfolio_valuation() exposes "Valeur référence" (not the legacy "Valeur").
+    value_col = "Valeur référence" if "Valeur référence" in pos.columns else ("Valeur" if "Valeur" in pos.columns else None)
+    if value_col is None:
+        st.error("Impossible de calculer l'arbitrage : aucune colonne de valorisation n'est disponible.")
+        return
+    total = pd.to_numeric(pos[value_col], errors="coerce").sum(skipna=True)
     rows=[]; bar=st.progress(0)
     for i,(_,r) in enumerate(pos.iterrows(),1):
-        ticker=str(r.get("Ticker") or "").strip()
+        ticker=_clean_text(r.get("Ticker"), upper=True)
+        name=_clean_text(r.get("Entreprise")) or _clean_text(r.get("Nom")) or ticker
+        isin=_clean_text(r.get("ISIN"), upper=True)
+        value=pd.to_numeric(pd.Series([r.get(value_col)]), errors="coerce").iloc[0]
+        weight=(float(value)/total*100) if pd.notna(value) and total else np.nan
         if not ticker:
-            rows.append({"Ticker":"","Entreprise":r.get("Entreprise"),"Poids %":(r.get("Valeur",0)/total*100 if total else np.nan),"Score":np.nan,"Potentiel %":np.nan,"R/R":np.nan,"Lecture":"Ticker à résoudre"})
+            rows.append({"Ticker":"","Nom complet":name,"ISIN":isin,"Poids %":weight,"Score":np.nan,"Potentiel %":np.nan,"R/R":np.nan,"Lecture":"Ticker à résoudre"})
             bar.progress(i/max(len(pos),1)); continue
         setup=trade_setup(history(ticker,"6mo","1d"))
         if not setup:
@@ -1055,7 +1064,7 @@ def show_arbitrage_page():
             if score>=85 and up>=5 and rr>=2: reading="🟢 Renforcer / conserver — signal technique fort"
             elif score<60 or up<2: reading="🟠 Examiner un allègement — signal faible"
             else: reading="🟡 Conserver / surveiller"
-        rows.append({"Ticker":ticker,"Entreprise":r.get("Entreprise"),"Poids %":(r.get("Valeur",0)/total*100 if total else np.nan),"P/L %":r.get("P/L %"),"Score":score,"Potentiel %":up,"R/R":rr,"Lecture":reading})
+        rows.append({"Ticker":ticker,"Nom complet":name,"ISIN":isin,"Poids %":weight,"P/L %":r.get("P/L %"),"Score":score,"Potentiel %":up,"R/R":rr,"Lecture":reading})
         bar.progress(i/max(len(pos),1))
     bar.empty(); out=pd.DataFrame(rows)
     st.dataframe(out.sort_values("Score",ascending=False,na_position="last"),use_container_width=True,hide_index=True)
