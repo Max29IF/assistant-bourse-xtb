@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.6 Premium Instrument"
+APP_VERSION = "V11.7 Premium Unified"
 
 
 # ==========================================================
@@ -2571,82 +2571,244 @@ st.title(f"🔭 {APP_NAME}")
 st.caption(f"{APP_SUBTITLE} — {APP_VERSION} • UI analytique + graphiques + stockage persistant")
 
 
+
+def _vf_num(value):
+    return pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+
+
+def _vf_setup_from_row(row):
+    """
+    Single source of truth for scanner cards / premium sheet.
+    Uses the already-computed scanner values first.
+    """
+    if row is None:
+        return {}
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row)
+
+    mapping = {
+        "price": ["Prix", "price"],
+        "entry": ["Entrée", "entry"],
+        "stop": ["Stop", "stop"],
+        "tp1": ["TP1", "tp1"],
+        "tp2": ["TP2", "tp2"],
+        "upside": ["Potentiel %", "upside"],
+        "rr": ["R/R", "rr"],
+        "score": ["Score combiné", "Score", "score"],
+        "vol_ratio": ["Volume relatif", "vol_ratio"],
+        "hourly_score": ["Score 1h", "score_1h"],
+        "confirmed_1h": ["Confirmé 1h"],
+        "reasons": ["Raisons"],
+    }
+
+    out = {}
+    for dest, keys in mapping.items():
+        for key in keys:
+            if key in row and row.get(key) is not None:
+                out[dest] = row.get(key)
+                break
+    return out
+
+
 def vf_trade_chart(symbol, setup=None, period="6mo", interval="1d"):
     df = history(symbol, period, interval)
     if df is None or df.empty:
         st.info("Historique indisponible.")
         return
+
     d = df.reset_index().copy()
     date_col = d.columns[0]
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
     d = d.dropna(subset=[date_col, "Close"])
     if d.empty:
         return
+
     base = alt.Chart(d).encode(x=alt.X(f"{date_col}:T", title=None))
-    price = base.mark_line().encode(
+    price = base.mark_line(strokeWidth=2).encode(
         y=alt.Y("Close:Q", title="Cours", scale=alt.Scale(zero=False)),
-        tooltip=[alt.Tooltip(f"{date_col}:T", title="Date"),
-                 alt.Tooltip("Close:Q", title="Cours", format=".2f")]
+        tooltip=[
+            alt.Tooltip(f"{date_col}:T", title="Date"),
+            alt.Tooltip("Close:Q", title="Cours", format=".2f"),
+        ]
     )
+
     layers = [price]
     if setup:
         levels = []
         for label, key in [("Entrée","entry"),("Stop","stop"),("TP1","tp1"),("TP2","tp2")]:
-            v = pd.to_numeric(pd.Series([setup.get(key)]), errors="coerce").iloc[0]
+            v = _vf_num(setup.get(key))
             if pd.notna(v):
                 levels.append({"Niveau": label, "Prix": float(v)})
+
         if levels:
             ld = pd.DataFrame(levels)
-            layers.append(alt.Chart(ld).mark_rule(strokeDash=[6,4]).encode(
-                y="Prix:Q", tooltip=["Niveau:N", alt.Tooltip("Prix:Q", format=".2f")]
-            ))
-            layers.append(alt.Chart(ld).mark_text(align="left", dx=6, dy=-5).encode(
-                y="Prix:Q", text="Niveau:N"
-            ))
-    st.altair_chart(alt.layer(*layers).properties(height=360).interactive(), use_container_width=True)
+            rules = alt.Chart(ld).mark_rule(strokeDash=[7,4], strokeWidth=1.5).encode(
+                y=alt.Y("Prix:Q"),
+                tooltip=[
+                    alt.Tooltip("Niveau:N"),
+                    alt.Tooltip("Prix:Q", format=".2f")
+                ]
+            )
+            labels = alt.Chart(ld).mark_text(
+                align="left", baseline="bottom", dx=8, dy=-2, fontSize=11
+            ).encode(
+                y="Prix:Q",
+                text="Niveau:N"
+            )
+            layers.extend([rules, labels])
+
+    st.altair_chart(
+        alt.layer(*layers).properties(height=300).interactive(),
+        use_container_width=True
+    )
 
 
 def vf_instrument_sheet(symbol, row=None):
+    """
+    Premium instrument sheet.
+    IMPORTANT: when opened from the scanner, scanner calculations are authoritative.
+    We do not recompute entry/stop/TP/score with a different engine.
+    """
     symbol = _clean_text(symbol, upper=True)
     if not symbol:
         return
+
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
     row = row or {}
+
     q = live_quote(symbol)
-    name = _clean_text(row.get("Entreprise")) or q.get("name", symbol)
-    isin = _clean_text(row.get("ISIN"), upper=True)
+    scan_setup = _vf_setup_from_row(row)
+
+    name = _clean_text(row.get("Entreprise") or row.get("name")) or q.get("name", symbol)
+    isin = _clean_text(row.get("ISIN") or row.get("isin"), upper=True)
     if not isin:
-        _, _, isin = instrument_identity(symbol, row)
+        _, _, resolved_isin = instrument_identity(symbol, row)
+        isin = "" if "NON RENSEIGN" in _clean_text(resolved_isin, upper=True) else resolved_isin
 
+    # Only enrich missing non-strategic metrics from live history.
+    enrich = {}
     try:
-        setup = technical_setup(history(symbol, "6mo", "1d")) or {}
+        hist = history(symbol, "6mo", "1d")
+        if hist is not None and not hist.empty:
+            tmp = indicators(hist.copy())
+            if tmp is not None and not tmp.empty:
+                last = tmp.iloc[-1]
+                enrich["rsi"] = last.get("RSI")
+                enrich["macd"] = last.get("MACD")
+                enrich["signal"] = last.get("MACD_SIGNAL")
+                enrich["sma20"] = last.get("SMA20")
+                enrich["sma50"] = last.get("SMA50")
+                enrich["volume"] = last.get("Volume")
     except Exception:
-        setup = {}
+        enrich = {}
 
-    st.markdown(f"### {symbol} • {name}")
-    st.caption(f"ISIN : {isin or 'non renseigné'}")
+    price = _vf_num(scan_setup.get("price"))
+    if pd.isna(price):
+        price = _vf_num(q.get("price"))
 
+    score = _vf_num(scan_setup.get("score"))
+    upside = _vf_num(scan_setup.get("upside"))
+    rr = _vf_num(scan_setup.get("rr"))
+    vol_ratio = _vf_num(scan_setup.get("vol_ratio"))
+
+    # Premium identity header
+    h1,h2 = st.columns([5,2])
+    with h1:
+        st.markdown(f"### {symbol} • {name}")
+        if isin:
+            st.caption(f"ISIN : {isin}")
+        else:
+            st.caption("ISIN non renseigné")
+        badges = []
+        source = _clean_text(row.get("Source"))
+        broker = _clean_text(row.get("Courtier"))
+        market = _clean_text(row.get("Marché"))
+        if source == "Découverte Yahoo":
+            badges.append("Découverte")
+            badges.append("Courtier à vérifier")
+        elif source:
+            badges.append(source)
+        if broker and broker != "À vérifier":
+            badges.append(broker)
+        if market:
+            badges.append(market)
+        if badges:
+            st.caption(" • ".join(badges))
+    with h2:
+        if pd.notna(score):
+            st.metric("Score combiné", f"{float(score):.1f}/100")
+        confirmed = _clean_text(scan_setup.get("confirmed_1h"))
+        if confirmed:
+            st.metric("Confirmation 1H", confirmed)
+
+    # Decision strip
     c1,c2,c3,c4,c5 = st.columns(5)
-    price = setup.get("price", q.get("price"))
-    c1.metric("Cours", f"{float(price):.2f}" if price is not None and pd.notna(price) else "—")
-    c2.metric("Score", f"{float(setup.get('score')):.0f}/100" if setup.get("score") is not None else "—")
-    c3.metric("Potentiel", f"{float(setup.get('upside')):.1f}%" if setup.get("upside") is not None else "—")
-    c4.metric("R/R", f"{float(setup.get('rr')):.2f}" if setup.get("rr") is not None else "—")
-    c5.metric("Volume relatif", f"{float(setup.get('vol_ratio')):.2f}x" if setup.get("vol_ratio") is not None else "—")
+    c1.metric("Cours", f"{float(price):.2f}" if pd.notna(price) else "—")
+    c2.metric("Potentiel", f"{float(upside):.1f}%" if pd.notna(upside) else "—")
+    c3.metric("R/R", f"{float(rr):.2f}" if pd.notna(rr) else "—")
+    c4.metric("RSI", f"{float(enrich.get('rsi')):.0f}" if pd.notna(_vf_num(enrich.get("rsi"))) else "—")
+    c5.metric("Volume relatif", f"{float(vol_ratio):.2f}x" if pd.notna(vol_ratio) else "—")
 
-    vf_trade_chart(symbol, setup)
+    # Verdict based on exact scanner setup
+    st.markdown("#### Verdict VISION FUTURE")
+    if pd.notna(score) and pd.notna(upside) and pd.notna(rr):
+        if score >= 76 and upside >= 3 and rr >= 2:
+            st.success("🟢 Setup techniquement éligible. Le scanner valide les critères principaux ; la confirmation 1H et le contexte actualités restent déterminants.")
+        elif score >= 65:
+            st.warning("🟠 Setup à surveiller : qualité correcte mais critères d'entrée incomplets.")
+        else:
+            st.info("⚪ Pas de setup prioritaire selon les règles actuelles.")
+    else:
+        st.info("Setup scanner incomplet pour cette valeur.")
 
+    # Compact chart
+    vf_trade_chart(symbol, scan_setup)
+
+    # Trade plan – authoritative values from scanner
     st.markdown("#### Plan de trade")
-    cols = st.columns(4)
-    for col, label, key in zip(cols, ["Entrée","Stop","TP1","TP2"], ["entry","stop","tp1","tp2"]):
-        v = setup.get(key)
-        col.metric(label, f"{float(v):.2f}" if v is not None and pd.notna(v) else "—")
+    m = st.columns(4)
+    for col, label, key in zip(m, ["Entrée","Stop","TP1","TP2"], ["entry","stop","tp1","tp2"]):
+        v = _vf_num(scan_setup.get(key))
+        col.metric(label, f"{float(v):.2f}" if pd.notna(v) else "—")
 
+    reasons = _clean_text(scan_setup.get("reasons"))
+    if reasons:
+        st.caption(reasons)
+
+    # Momentum / trend
+    st.markdown("#### Momentum & tendance")
+    t1,t2,t3 = st.columns(3)
+    rsi = _vf_num(enrich.get("rsi"))
+    macd = _vf_num(enrich.get("macd"))
+    sig = _vf_num(enrich.get("signal"))
+    sma20 = _vf_num(enrich.get("sma20"))
+    sma50 = _vf_num(enrich.get("sma50"))
+
+    if pd.notna(rsi):
+        rsi_txt = "Suracheté" if rsi >= 70 else "Survendu" if rsi <= 30 else "Neutre"
+        t1.metric("RSI", f"{rsi:.0f}", rsi_txt)
+    else:
+        t1.metric("RSI", "—")
+
+    if pd.notna(macd) and pd.notna(sig):
+        t2.metric("MACD", f"{macd:.3f}", "Haussier" if macd > sig else "Baissier")
+    else:
+        t2.metric("MACD", "—")
+
+    if pd.notna(sma20) and pd.notna(sma50):
+        t3.metric("Tendance", "Haussière" if sma20 > sma50 else "Baissière", f"SMA20 {sma20:.2f} / SMA50 {sma50:.2f}")
+    else:
+        t3.metric("Tendance", "—")
+
+    # Free news
+    st.markdown("#### Actualités récentes")
     try:
         news = yf.Ticker(symbol).news or []
     except Exception:
         news = []
 
-    st.markdown("#### Actualités récentes")
     shown = 0
     for item in news[:5]:
         content = item.get("content", item) if isinstance(item, dict) else {}
@@ -2661,17 +2823,6 @@ def vf_instrument_sheet(symbol, row=None):
         shown += 1
     if shown == 0:
         st.caption("Aucune actualité Yahoo disponible actuellement.")
-
-    score = float(setup.get("score", 0) or 0)
-    upside = float(setup.get("upside", 0) or 0)
-    rr = float(setup.get("rr", 0) or 0)
-    st.markdown("#### Verdict VISION FUTURE")
-    if score >= 76 and upside >= 3 and rr >= 2:
-        st.success("🟢 Setup techniquement éligible — confirmer le 1H et le contexte actualités avant décision.")
-    elif score >= 65:
-        st.warning("🟠 À surveiller — configuration intéressante mais critères d'entrée incomplets.")
-    else:
-        st.info("⚪ Pas de setup d'entrée prioritaire selon les règles actuelles.")
 
 
 
