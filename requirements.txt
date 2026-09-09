@@ -6,4 +6,6 @@ streamlit-autorefresh
 supabase
 openpyxl
 xlrd
-openai
+altair
+google-genai
+tavily-python
