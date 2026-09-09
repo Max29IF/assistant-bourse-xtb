@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.8.1 Universal Instrument"
+APP_VERSION = "V11.8.2 Live Setup"
 
 
 # ==========================================================
@@ -2990,6 +2990,56 @@ def vf_full_instrument_page(symbol, row=None):
     quote = live_quote(symbol)
     fundamentals = vf_fundamentals(symbol)
 
+    # If the instrument page was opened from the universal selector,
+    # the row usually contains identity metadata only and no scanner setup.
+    # In that case, compute the SAME daily/hourly setup engine live.
+    required_setup_keys = ["entry", "stop", "tp1", "tp2", "upside", "rr", "score"]
+    missing_setup = any(pd.isna(_vf_num(scan_setup.get(k))) for k in required_setup_keys)
+
+    if missing_setup:
+        try:
+            daily_setup = trade_setup(history(symbol, "6mo", "1d"))
+        except Exception:
+            daily_setup = None
+
+        if daily_setup:
+            live_setup = dict(daily_setup)
+
+            # Same 1H confirmation logic as fast_scan()
+            try:
+                hourly_setup = trade_setup(history(symbol, "3mo", "1h"))
+            except Exception:
+                hourly_setup = None
+
+            if hourly_setup:
+                conf_score = hourly_setup.get("score")
+                trend_ok = bool(
+                    hourly_setup.get("score", 0) >= 65
+                    and hourly_setup.get("rr", 0) >= 1.5
+                )
+                live_setup["hourly_score"] = conf_score
+                live_setup["confirmed_1h"] = "✅" if trend_ok else "⚠️"
+                live_setup["score"] = round(
+                    0.65 * float(daily_setup.get("score", 0))
+                    + 0.35 * float(conf_score),
+                    1
+                )
+            else:
+                live_setup["confirmed_1h"] = "⚠️"
+
+            if isinstance(live_setup.get("reasons"), list):
+                live_setup["reasons"] = " • ".join(live_setup["reasons"])
+
+            # Existing scanner values remain authoritative if present.
+            for k, v in live_setup.items():
+                current = scan_setup.get(k)
+                if k in {"confirmed_1h", "reasons"}:
+                    if not current:
+                        scan_setup[k] = v
+                else:
+                    if current is None or pd.isna(_vf_num(current)):
+                        scan_setup[k] = v
+
     name = _clean_text(row.get("Entreprise") or row.get("name")) or quote.get("name", symbol)
     isin = _clean_text(row.get("ISIN") or row.get("isin"), upper=True)
     if not isin:
@@ -3046,7 +3096,7 @@ def vf_full_instrument_page(symbol, row=None):
         else:
             st.info("⚪ PAS PRIORITAIRE — critères d'entrée insuffisants.")
     else:
-        st.info("Analyse scanner incomplète pour cette valeur.")
+        st.info("Analyse technique indisponible ou historique insuffisant pour cette valeur.")
 
     # Tabs in the same visual language
     tab_chart, tab_momentum, tab_funda, tab_news, tab_plan = st.tabs(
