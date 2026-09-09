@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V24 Sober Premium"
+APP_VERSION = "V25 Editorial Capital"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -230,6 +230,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n/* =========================================================\n   V25 — EDITORIAL CAPITAL\n   Sober, premium, investment-house aesthetic\n   ========================================================= */\n\n:root{\n  --vf-bg:#f5f6f8;\n  --vf-paper:#ffffff;\n  --vf-ink:#171a21;\n  --vf-ink-2:#303642;\n  --vf-muted:#737b89;\n  --vf-line:#e3e6eb;\n  --vf-blue:#2f5bea;\n  --vf-violet:#6655c7;\n  --vf-gold:#a98548;\n  --vf-green:#177c5e;\n  --vf-red:#b84747;\n}\n\n/* Overall composition */\n[data-testid="stAppViewContainer"]{\n  background:#f5f6f8 !important;\n}\n[data-testid="stMainBlockContainer"]{\n  max-width:1440px !important;\n  padding:1.2rem 1.7rem 4rem !important;\n}\n\n/* Sidebar — quiet investment-house navigation */\nsection[data-testid="stSidebar"]{\n  background:#fafafa !important;\n  border-right:1px solid #e7e9ed !important;\n  box-shadow:none !important;\n}\nsection[data-testid="stSidebar"] .block-container{\n  padding-top:1.15rem !important;\n}\nsection[data-testid="stSidebar"] button{\n  min-height:38px !important;\n  font-weight:650 !important;\n}\nsection[data-testid="stSidebar"] button[kind="primary"]{\n  background:#eef2ff !important;\n  color:#2448b5 !important;\n  border:1px solid #dde5ff !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]{\n  background:transparent !important;\n  color:#3f4652 !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]:hover{\n  background:#f2f3f5 !important;\n}\n\n/* Global page title hierarchy */\n.vf-page-shell{\n  margin-bottom:1rem !important;\n}\n.vf-hero{\n  background:#fff !important;\n  border:1px solid #e4e7ec !important;\n  border-radius:16px !important;\n  min-height:88px !important;\n  padding:20px 22px !important;\n}\n.vf-hero-title{\n  color:#171a21 !important;\n  font-size:1.48rem !important;\n  font-weight:820 !important;\n}\n.vf-hero-sub{\n  color:#747c89 !important;\n  font-size:.89rem !important;\n  max-width:900px !important;\n}\n.vf-premium-divider{\n  background:#e8eaee !important;\n  height:1px !important;\n}\n\n/* Editorial labels */\n.vf-eyebrow{\n  color:#7f8793 !important;\n  letter-spacing:.14em !important;\n  font-size:.65rem !important;\n  font-weight:850 !important;\n}\n.vf-section-title{\n  color:#20242c !important;\n  font-size:1.08rem !important;\n  font-weight:780 !important;\n  margin-top:14px !important;\n}\n.vf-section-title::before{\n  width:2px !important;\n  height:13px !important;\n  background:#2f5bea !important;\n  border-radius:0 !important;\n}\n.vf-section-sub{\n  color:#7b838f !important;\n  font-size:.82rem !important;\n}\n\n/* Cards — flatter and more editorial */\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:14px !important;\n  box-shadow:none !important;\n}\ndiv[data-testid="stMetric"]{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:13px !important;\n  box-shadow:none !important;\n  padding:.7rem .8rem !important;\n}\ndiv[data-testid="stMetric"] label{\n  color:#777f8c !important;\n  font-size:.75rem !important;\n  font-weight:700 !important;\n}\ndiv[data-testid="stMetricValue"]{\n  color:#171a21 !important;\n  font-size:1.65rem !important;\n  font-weight:820 !important;\n  letter-spacing:-.035em !important;\n}\ndiv[data-testid="stMetricDelta"]{\n  font-size:.78rem !important;\n}\n\n/* Editorial blocks */\n.vf-editorial-level{\n  background:#fff;\n  border:1px solid #e2e5ea;\n  border-radius:16px;\n  padding:16px 18px;\n  margin:.55rem 0 1rem;\n}\n.vf-editorial-level-head{\n  display:flex;\n  align-items:center;\n  gap:11px;\n  margin-bottom:5px;\n}\n.vf-editorial-index{\n  width:28px;\n  height:28px;\n  border-radius:50%;\n  display:flex;\n  align-items:center;\n  justify-content:center;\n  font-weight:820;\n  font-size:.78rem;\n  color:#2448b5;\n  background:#eef2ff;\n  border:1px solid #dce5ff;\n}\n.vf-editorial-title{\n  font-size:1.06rem;\n  font-weight:820;\n  color:#1d2129;\n  letter-spacing:-.02em;\n}\n.vf-editorial-copy{\n  color:#777f8b;\n  font-size:.84rem;\n  margin-left:39px;\n}\n\n/* Brand line — discrete */\n.vf-brand-line{\n  height:2px;\n  width:72px;\n  background:linear-gradient(90deg,#2f5bea 0 75%,#6655c7 75% 92%,#a98548 92% 100%);\n  border-radius:99px;\n  margin-top:8px;\n}\n\n/* Future strip toned down into a manifesto */\n.vf-future-strip{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:14px !important;\n  box-shadow:none !important;\n  padding:14px 16px !important;\n}\n.vf-future-strip-title{\n  color:#8a919d !important;\n  font-size:.68rem !important;\n  letter-spacing:.12em !important;\n}\n.vf-future-strip-text{\n  color:#2d333d !important;\n  font-size:.91rem !important;\n  font-weight:620 !important;\n}\n\n/* Identity cards */\n.vf-logo-shell{\n  border-radius:12px !important;\n  border:1px solid #e1e4e8 !important;\n  box-shadow:none !important;\n}\n.vf-name{\n  color:#171a21 !important;\n  font-weight:820 !important;\n}\n.vf-isin{\n  color:#7d8591 !important;\n}\n.vf-goldline{\n  width:42px !important;\n  height:2px !important;\n  background:linear-gradient(90deg,#2f5bea 0 70%,#6655c7 70% 88%,#a98548 88% 100%) !important;\n}\n\n/* Buttons */\nbutton[kind="primary"]{\n  background:#2f5bea !important;\n  border:none !important;\n  box-shadow:none !important;\n  border-radius:10px !important;\n}\nbutton[kind="secondary"]{\n  background:#fff !important;\n  border:1px solid #e1e4e8 !important;\n  color:#3c4350 !important;\n  box-shadow:none !important;\n  border-radius:10px !important;\n}\nbutton[kind="secondary"]:hover{\n  background:#f8f9fa !important;\n}\n\n/* Tabs */\ndiv[data-testid="stTabs"] [data-baseweb="tab-list"]{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:12px !important;\n  padding:4px !important;\n}\ndiv[data-testid="stTabs"] button[aria-selected="true"]{\n  background:#f1f4ff !important;\n  color:#2c4eb4 !important;\n}\n\n/* Tables and expanders */\ndiv[data-testid="stDataFrame"],\ndiv[data-testid="stExpander"]{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:13px !important;\n  box-shadow:none !important;\n}\n\n/* Alerts */\n[data-testid="stAlert"]{\n  border-radius:11px !important;\n  box-shadow:none !important;\n}\n\n/* Command cards */\n.vf-command-card{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-radius:14px !important;\n  box-shadow:none !important;\n}\n.vf-command-title{\n  color:#7a828e !important;\n  font-size:.70rem !important;\n  letter-spacing:.08em !important;\n}\n.vf-command-value{\n  color:#181c24 !important;\n}\n\n/* Agent panel */\n.vf-agent-callout{\n  background:#fff !important;\n  border:1px solid #e2e5ea !important;\n  border-left:3px solid #2f5bea !important;\n  border-radius:12px !important;\n  box-shadow:none !important;\n}\n.vf-agent-title{\n  color:#2f5bea !important;\n}\n.vf-agent-copy{\n  color:#4a515d !important;\n}\n\n/* Inputs */\ndiv[data-baseweb="select"] > div,\ninput,\ntextarea{\n  background:#fff !important;\n  border-color:#e1e4e8 !important;\n  box-shadow:none !important;\n  border-radius:10px !important;\n}\n\n/* Remove decorative noise */\n[data-testid="stAppViewContainer"]::before,\n.vf-hero::after{\n  display:none !important;\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\n/* =========================================================\n   V24 — SOBER PREMIUM\n   80% neutral / 15% blue-violet / 5% discreet gold\n   ========================================================= */\n\n:root{\n  --vf-bg:#f6f7f9;\n  --vf-panel:#ffffff;\n  --vf-panel-soft:#fafbfc;\n  --vf-text:#151922;\n  --vf-muted:#6b7280;\n  --vf-border:#e3e7ee;\n  --vf-blue:#315ff4;\n  --vf-violet:#6f56d9;\n  --vf-gold:#b38b47;\n  --vf-green:#138a63;\n  --vf-red:#c84646;\n}\n\n/* Whole app */\nhtml, body, .stApp, [data-testid="stAppViewContainer"]{\n  background:#f6f7f9 !important;\n  color:var(--vf-text) !important;\n}\n\n[data-testid="stAppViewContainer"]::before{\n  display:none !important;\n}\n\n[data-testid="stMainBlockContainer"]{\n  max-width:1480px !important;\n  padding:1.1rem 1.4rem 4rem !important;\n}\n\n/* Sidebar */\nsection[data-testid="stSidebar"]{\n  background:#fbfbfc !important;\n  border-right:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\nsection[data-testid="stSidebar"]::after{\n  display:none !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]{\n  background:transparent !important;\n  border:1px solid transparent !important;\n  box-shadow:none !important;\n  color:#2f3746 !important;\n}\nsection[data-testid="stSidebar"] button[kind="secondary"]:hover{\n  background:#f2f4f7 !important;\n  border-color:#edf0f4 !important;\n}\nsection[data-testid="stSidebar"] button[kind="primary"]{\n  background:#eef3ff !important;\n  color:#2447b8 !important;\n  border:1px solid #d9e3ff !important;\n  box-shadow:none !important;\n}\n.vf-group-title{\n  color:#8a909b !important;\n  font-size:.70rem !important;\n  letter-spacing:.07em !important;\n}\n\n/* Main surfaces */\ndiv[data-testid="stVerticalBlockBorderWrapper"],\ndiv[data-testid="stMetric"],\ndiv[data-testid="stExpander"],\ndiv[data-testid="stDataFrame"],\ndiv[data-testid="stForm"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:0 2px 10px rgba(25,33,48,.028) !important;\n}\ndiv[data-testid="stVerticalBlockBorderWrapper"]{\n  border-radius:16px !important;\n}\ndiv[data-testid="stMetric"]{\n  border-radius:14px !important;\n}\ndiv[data-testid="stMetric"]:hover,\ndiv[data-testid="stVerticalBlockBorderWrapper"]:hover{\n  transform:none !important;\n  border-color:#d8dee8 !important;\n  box-shadow:0 3px 12px rgba(25,33,48,.035) !important;\n}\n\n/* Typography */\nh1,h2,h3,h4{\n  color:var(--vf-text) !important;\n  letter-spacing:-.02em !important;\n}\n.vf-name{\n  color:#151922 !important;\n  font-weight:800 !important;\n}\n.vf-isin,\n.vf-resolution-note,\n.vf-section-sub,\n.vf-command-note,\n.vf-hero-sub{\n  color:var(--vf-muted) !important;\n}\n\n/* Hero/header */\n.vf-page-shell{\n  background:transparent !important;\n  border:none !important;\n  box-shadow:none !important;\n  padding:0 !important;\n  margin-bottom:8px !important;\n}\n.vf-hero{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:18px !important;\n  min-height:92px !important;\n  padding:20px 22px !important;\n}\n.vf-hero::after{\n  display:none !important;\n}\n.vf-hero-title{\n  background:none !important;\n  -webkit-text-fill-color:initial !important;\n  color:#151922 !important;\n  font-size:1.55rem !important;\n}\n.vf-premium-divider{\n  height:1px !important;\n  background:#eceff3 !important;\n  opacity:1 !important;\n  margin:10px 0 16px !important;\n}\n\n/* Future strip becomes editorial, not decorative */\n.vf-future-strip{\n  background:#fbfbfc !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:14px !important;\n  padding:13px 15px !important;\n}\n.vf-future-strip-title{\n  color:#7b8190 !important;\n  font-size:.70rem !important;\n  letter-spacing:.08em !important;\n}\n.vf-future-strip-text{\n  color:#2d3442 !important;\n  font-size:.92rem !important;\n  font-weight:650 !important;\n}\n\n/* Section title */\n.vf-section-title{\n  color:#202633 !important;\n  font-size:1.05rem !important;\n  margin-top:12px !important;\n}\n.vf-section-title::before{\n  width:3px !important;\n  height:14px !important;\n  background:#315ff4 !important;\n}\n\n/* Accent line = mostly blue, tiny gold */\n.vf-goldline{\n  width:48px !important;\n  height:2px !important;\n  background:linear-gradient(90deg,#315ff4 0 68%,#6f56d9 68% 88%,#b38b47 88% 100%) !important;\n  opacity:.9 !important;\n}\n\n/* Badges */\n.vf-badge,\n.vf-chip{\n  box-shadow:none !important;\n  border:1px solid transparent !important;\n}\n.vf-blue,.vf-chip-info{\n  background:#eef3ff !important;\n  color:#3155c6 !important;\n}\n.vf-violet{\n  background:#f3f0ff !important;\n  color:#654bc3 !important;\n}\n.vf-amber,.vf-chip-risk{\n  background:#fbf5e8 !important;\n  color:#8d6d34 !important;\n}\n.vf-green,.vf-chip-entry{\n  background:#edf8f3 !important;\n  color:#137654 !important;\n}\n.vf-red,.vf-chip-exit{\n  background:#fceeee !important;\n  color:#b64040 !important;\n}\n.vf-muted-badge{\n  background:#f1f3f6 !important;\n  color:#667085 !important;\n}\n\n/* Buttons */\nbutton[kind="secondary"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n  border-radius:11px !important;\n}\nbutton[kind="secondary"]:hover{\n  background:#f8f9fb !important;\n  border-color:#d8dee8 !important;\n}\nbutton[kind="primary"]{\n  background:#315ff4 !important;\n  color:#fff !important;\n  border:none !important;\n  box-shadow:none !important;\n  border-radius:11px !important;\n}\n\n/* Inputs */\ndiv[data-baseweb="select"] > div,\ninput,\ntextarea{\n  background:#ffffff !important;\n  border-color:var(--vf-border) !important;\n  box-shadow:none !important;\n}\ndiv[data-baseweb="select"] > div:focus-within,\ninput:focus,\ntextarea:focus{\n  border-color:#9fb4ff !important;\n  box-shadow:0 0 0 2px rgba(49,95,244,.07) !important;\n}\n\n/* Tabs */\ndiv[data-testid="stTabs"] [data-baseweb="tab-list"]{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\ndiv[data-testid="stTabs"] button[aria-selected="true"]{\n  background:#f1f4ff !important;\n  color:#3155c6 !important;\n}\n\n/* Logo shell */\n.vf-logo-shell{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n.vf-logo-fallback{\n  background:#f0f3f8 !important;\n  color:#46546a !important;\n}\n\n/* Agent box: sober, visible */\n.vf-agent-callout{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n.vf-agent-title{\n  color:#3155c6 !important;\n}\n.vf-agent-copy{\n  color:#414956 !important;\n}\n\n/* Alert / status boxes */\n[data-testid="stAlert"]{\n  border-radius:12px !important;\n  box-shadow:none !important;\n}\n\n/* Charts/table containers cleaner */\ndiv[data-testid="stDataFrame"]{\n  border-radius:14px !important;\n}\n\n/* Remove extra glow from command cards */\n.vf-command-card{\n  background:#ffffff !important;\n  border:1px solid var(--vf-border) !important;\n  box-shadow:none !important;\n}\n\n/* Editorial hierarchy words */\n.vf-eyebrow{\n  color:#3155c6 !important;\n  letter-spacing:.09em !important;\n  font-size:.68rem !important;\n}\n\n/* Footer */\nhr{\n  border-color:#e6e9ee !important;\n}\n</style>\n', unsafe_allow_html=True)
 
@@ -4172,16 +4175,15 @@ def vf_alert_chip(alert_type):
 
 def vf_global_topbar():
     html = (
-        '<div class="vf-topbar">'
+        '<div class="vf-topbar" style="background:#fff;border:1px solid #e2e5ea;box-shadow:none;border-radius:14px;padding:14px 16px">'
         '<div>'
-        '<div class="vf-brand">🔭 VISION FUTURE</div>'
-        f'<div class="vf-brand-sub">{APP_VERSION} • {APP_SUBTITLE}</div>'
-        f'<div class="vf-topbar-tag">{APP_TAGLINE}</div>'
+        '<div class="vf-brand" style="color:#171a21">🔭 VISION FUTURE</div>'
+        f'<div class="vf-brand-sub">{APP_VERSION} • Capital Intelligence</div>'
         '</div>'
         '<div class="vf-topbar-right">'
-        + vf_board_badge("VISION", "blue")
-        + vf_board_badge("STEP UP", "green")
-        + vf_board_badge("GLOW UP", "amber")
+        + vf_board_badge("VISION","blue")
+        + vf_board_badge("MOMENTUM","muted")
+        + vf_board_badge("GROWTH","muted")
         + '</div>'
         '</div>'
     )
@@ -4392,10 +4394,33 @@ def vf_watchlist_board():
 
 
 
+
+def vf_editorial_level(index, title, copy):
+    st.markdown(
+        '<div class="vf-editorial-level">'
+        '<div class="vf-editorial-level-head">'
+        f'<div class="vf-editorial-index">{index}</div>'
+        f'<div class="vf-editorial-title">{title}</div>'
+        '</div>'
+        f'<div class="vf-editorial-copy">{copy}</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
+
 def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
-        "Pilotage, opportunités et croissance du capital dans une lecture claire et structurée."
+        "Une lecture sobre de vos décisions : pilotage, opportunités et croissance du capital."
+    )
+    st.markdown(
+        '<div class="vf-future-strip">'
+        '<div class="vf-future-strip-title">VISION FUTURE</div>'
+        '<div class="vf-future-strip-text">Build the Future of Your Capital</div>'
+        '<div class="vf-brand-line"></div>'
+        '</div>',
+        unsafe_allow_html=True
     )
     st.markdown(
         '<div class="vf-future-strip">'
@@ -4440,6 +4465,12 @@ def vf_dashboard_command_center():
         unsafe_allow_html=True
     )
 
+    vf_editorial_level(
+        "01",
+        "Pilotage",
+        "Comprendre la situation actuelle, le risque et les décisions prioritaires."
+    )
+
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
     c2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
@@ -4469,6 +4500,12 @@ def vf_dashboard_command_center():
     with q3: vf_nav_button("📊 Instrument","📊 Instrument","v15_q_instr")
     with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","v15_q_arb")
     with q5: vf_nav_button("📈 Performance","📈 Performance","v15_q_perf")
+
+    vf_editorial_level(
+        "02",
+        "Opportunités",
+        "Identifier les configurations qui combinent momentum, conviction et discipline."
+    )
 
     left,right=st.columns([1.25,1])
 
@@ -4521,6 +4558,12 @@ def vf_dashboard_command_center():
                         st.caption(f"Valeur : {value:,.0f} €")
                     if st.button("📊 Fiche",key=f"v19_risk_{vf_identity_key(symbol, name, _clean_text(r.get('ISIN'), upper=True))}",use_container_width=True):
                         open_instrument_identity(symbol, name, _clean_text(r.get("ISIN"), upper=True))
+
+    vf_editorial_level(
+        "03",
+        "Croissance du capital",
+        "Mesurer la progression, l'allocation et la construction du patrimoine dans le temps."
+    )
 
     vf_section("Allocation","Répartition des comptes et contribution au P/L.")
     d=pd.DataFrame(cards)
@@ -5170,4 +5213,4 @@ else:
     else: st.warning("Setup indisponible.")
 
 st.markdown("---")
-st.caption(f"VISION FUTURE • {APP_VERSION} • {APP_TAGLINE} • Analyse décisionnelle, portefeuille et agent marché.")
+st.caption(f"VISION FUTURE • {APP_VERSION} • Build the Future of Your Capital")
