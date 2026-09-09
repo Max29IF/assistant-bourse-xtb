@@ -23,7 +23,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V9 Market Intelligence Agent"
+APP_VERSION = "V10 Event Driven"
 
 # ==========================================================
 # AUTHENTICATION
@@ -1599,7 +1599,11 @@ def load_market_alerts(limit=100, status=None):
         q = SUPABASE.table("market_alerts").select("*").order("created_at", desc=True).limit(limit)
         if status:
             q = q.eq("status", status)
-        return pd.DataFrame(_sb_data(q.execute()))
+        df = pd.DataFrame(_sb_data(q.execute()))
+        if not df.empty and "alert_type" in df.columns:
+            actionable = {"ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
+            df = df[df["alert_type"].isin(actionable)].copy()
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -1620,7 +1624,7 @@ def acknowledge_alert(alert_id):
 def show_market_agent_page():
     st.header("🛰️ Agent marché — veille automatique")
     st.caption(
-        "Cette page lit les alertes produites par le worker VISION FUTURE. "
+        "V10 n’affiche que les événements de trading actionnables produits par VISION FUTURE. "
         "Le worker surveille les positions et les meilleurs setups, puis peut consulter "
         "un modèle OpenAI avec recherche web lorsque OPENAI_API_KEY est configurée."
     )
@@ -1634,9 +1638,10 @@ def show_market_agent_page():
         return
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Alertes", len(alerts))
+    c1.metric("Alertes actionnables", len(alerts))
     c2.metric("Entrées", int((alerts.get("alert_type","") == "ENTRY").sum()) if "alert_type" in alerts else 0)
-    c3.metric("Positions", int((alerts.get("alert_type","") == "POSITION").sum()) if "alert_type" in alerts else 0)
+    risk_types = {"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
+    c3.metric("Gestion / sorties", int(alerts["alert_type"].isin(risk_types).sum()) if "alert_type" in alerts else 0)
 
     for _, r in alerts.head(50).iterrows():
         typ = r.get("alert_type","ALERT")
