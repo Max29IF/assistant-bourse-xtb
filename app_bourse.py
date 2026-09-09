@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V13.0.2 Navigation Hotfix"
+APP_VERSION = "V14 Premium Command Center"
 
 
 # ==========================================================
@@ -3017,6 +3017,12 @@ if _pending_nav:
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
     mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
+    st.markdown("---")
+    st.caption("ACCÈS INSTRUMENT")
+    _quick_symbol = st.text_input("Ticker rapide", placeholder="TSLA, MC.PA…", key="sidebar_quick_symbol")
+    if st.button("📊 Ouvrir l'instrument", key="sidebar_quick_open", use_container_width=True):
+        if _clean_text(_quick_symbol, upper=True):
+            open_instrument(_quick_symbol)
 
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"]=False; st.rerun()
@@ -3559,6 +3565,25 @@ def vf_full_instrument_page(symbol, row=None):
     else:
         st.info("Analyse technique indisponible ou historique insuffisant pour cette valeur.")
 
+    vf_section("Décision & risque","Lecture compacte du setup et dimensionnement théorique du risque.")
+    dleft,dright = st.columns([1.1,1])
+    with dleft:
+        vf_compact_decision_panel(symbol, scan_setup)
+    with dright:
+        sizing = vf_trade_sizing(scan_setup, capital, risk_pct)
+        with st.container(border=True):
+            st.markdown("**Dimensionnement du risque**")
+            if sizing:
+                s1,s2 = st.columns(2)
+                s1.metric("Risque max",f"{sizing['risk_amount']:.0f} €")
+                s2.metric("Stop",f"{sizing['stop_pct']:.2f}%")
+                s3,s4 = st.columns(2)
+                s3.metric("Quantité théorique",f"{sizing['qty']}")
+                s4.metric("Capital mobilisé",f"{sizing['capital_needed']:.0f} €")
+                st.caption(f"Basé sur {risk_pct:.2f}% de risque pour un capital de référence de {capital:,.0f} €.")
+            else:
+                st.caption("Dimensionnement indisponible : niveaux entrée/stop insuffisants.")
+
     # Tabs in the same visual language
     tab_chart, tab_momentum, tab_funda, tab_news, tab_plan = st.tabs(
         ["📈 Graphique", "⚡ Momentum", "🏢 Fondamentaux", "📰 Actualités", "🎯 Plan de trade"]
@@ -3754,10 +3779,82 @@ def vf_portfolio_risk_board(limit=6):
 
 
 
+
+def vf_market_pulse():
+    runs = load_agent_runs(5)
+    if runs is None or runs.empty:
+        return {"status":"—","regime":"—","regime_score":"—","universe":"—","confirmed":"—","created":"—"}
+    latest = runs.iloc[0]
+    details = parse_agent_details(latest.get("details"))
+    raw = details.get("REGIME","—")
+    regime = raw
+    regime_score = "—"
+    m = re.match(r"^([A-Z_]+)\(([^)]+)\)$", str(raw))
+    if m:
+        regime, regime_score = m.group(1), m.group(2)
+    return {
+        "status": _clean_text(latest.get("status")) or "—",
+        "regime": regime,
+        "regime_score": regime_score,
+        "universe": details.get("UNIVERSE","—"),
+        "confirmed": details.get("CONFIRMED","—"),
+        "created": int(latest.get("created_alerts") or 0),
+    }
+
+
+def vf_trade_sizing(setup, capital_value, risk_pct_value):
+    entry = _vf_num(setup.get("entry"))
+    stop = _vf_num(setup.get("stop"))
+    if pd.isna(entry) or pd.isna(stop) or entry <= 0 or entry <= stop:
+        return {}
+    risk_amount = float(capital_value) * float(risk_pct_value) / 100.0
+    risk_per_share = float(entry - stop)
+    qty = int(max(risk_amount // risk_per_share, 0))
+    capital_needed = qty * float(entry)
+    stop_pct = (risk_per_share / float(entry)) * 100
+    return {
+        "risk_amount": risk_amount,
+        "risk_per_share": risk_per_share,
+        "qty": qty,
+        "capital_needed": capital_needed,
+        "stop_pct": stop_pct,
+    }
+
+
+def vf_compact_decision_panel(symbol, setup):
+    score = _vf_num(setup.get("score"))
+    upside = _vf_num(setup.get("upside"))
+    rr = _vf_num(setup.get("rr"))
+    confirmed = _clean_text(setup.get("confirmed_1h"))
+
+    if pd.notna(score) and pd.notna(upside) and pd.notna(rr):
+        if score >= 76 and upside >= 3 and rr >= 2 and confirmed == "✅":
+            kind, title, text = "green", "SETUP VALIDÉ", "Critères principaux + confirmation 1H validés."
+        elif score >= 76 and upside >= 3 and rr >= 2:
+            kind, title, text = "amber", "SETUP À CONFIRMER", "Critères journaliers valides, confirmation 1H insuffisante."
+        elif score >= 65:
+            kind, title, text = "amber", "WATCHLIST", "Configuration intéressante mais encore incomplète."
+        else:
+            kind, title, text = "muted", "PAS PRIORITAIRE", "Le setup ne passe pas les seuils actuels."
+    else:
+        kind, title, text = "muted", "DONNÉES INCOMPLÈTES", "Impossible de valider le setup avec les données disponibles."
+
+    st.markdown(
+        '<div class="vf-command-card">'
+        f'<div class="vf-command-title">Décision VISION FUTURE</div>'
+        f'<div class="vf-command-value">{title}</div>'
+        f'<div class="vf-command-note">{text}</div>'
+        f'<div style="margin-top:8px">{vf_board_badge(symbol, kind)}</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+
+
 def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
-        "Une seule vue pour portefeuille, opportunités, risques et décisions de marché."
+        "Portefeuille, marché, opportunités et risques dans une seule vue."
     )
 
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -3768,43 +3865,55 @@ def vf_dashboard_command_center():
     for acc,label in accounts:
         try:
             val,pos=portfolio_valuation(acc,use_live=False)
-            txc=len(load_transactions(acc))
             value=float(val.get("value",0) or 0)
             unrealized=float(val.get("unrealized",0) or 0)
             pcount=len(pos) if pos is not None else 0
         except Exception:
             value=unrealized=0.0
-            txc=pcount=0
+            pcount=0
         total_value += value
         total_unrealized += unrealized
         total_positions += pcount
-        cards.append({"Compte":label,"Valeur":value,"P/L latent":unrealized,"Transactions":txc,"Positions":pcount})
+        cards.append({"Compte":label,"Valeur":value,"P/L latent":unrealized,"Positions":pcount})
 
     alerts=load_market_alerts(limit=100)
-    active_entries=0
-    risk_alerts=0
+    entries=0
+    risks=0
     if alerts is not None and not alerts.empty and "alert_type" in alerts.columns:
-        active_entries=int((alerts["alert_type"]=="ENTRY").sum())
-        risk_alerts=int(alerts["alert_type"].isin(["EXIT","RISK","PROTECT","INVALIDATED","NEWS_RISK"]).sum())
+        entries=int((alerts["alert_type"]=="ENTRY").sum())
+        risks=int(alerts["alert_type"].isin(["EXIT","RISK","PROTECT","INVALIDATED","NEWS_RISK"]).sum())
 
-    c1,c2,c3,c4=st.columns(4)
+    pulse = vf_market_pulse()
+
+    # Main strip
+    c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
     c2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
-    c3.metric("Opportunités actives",active_entries)
-    c4.metric("Alertes de gestion",risk_alerts)
+    c3.metric("Opportunités",entries)
+    c4.metric("Alertes risque",risks)
+    c5.metric("Régime marché",pulse["regime"],pulse["regime_score"])
 
-    vf_section("Accès rapide","Les modules les plus utiles, sans repasser par le menu.")
+    # Quick actions
+    vf_section("Navigation rapide","Les cinq écrans opérationnels.")
     q1,q2,q3,q4,q5=st.columns(5)
-    with q1: vf_nav_button("⚡ Scanner","🔎 Scanner","v13_q_scan")
-    with q2: vf_nav_button("🛰️ Agent","🛰️ Agent marché","v13_q_agent")
-    with q3: vf_nav_button("📊 Instrument","📊 Instrument","v13_q_instr")
-    with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","v13_q_arb")
-    with q5: vf_nav_button("📈 Performance","📈 Performance","v13_q_perf")
+    with q1: vf_nav_button("⚡ Scanner","🔎 Scanner","v14_q_scan")
+    with q2: vf_nav_button("🛰️ Agent","🛰️ Agent marché","v14_q_agent")
+    with q3: vf_nav_button("📊 Instrument","📊 Instrument","v14_q_instr")
+    with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","v14_q_arb")
+    with q5: vf_nav_button("📈 Performance","📈 Performance","v14_q_perf")
 
-    left,right=st.columns([1.2,1])
+    # Market pulse
+    vf_section("Market Pulse","État du dernier cycle automatique.")
+    p1,p2,p3,p4=st.columns(4)
+    p1.metric("Agent",pulse["status"])
+    p2.metric("Univers analysé",pulse["universe"])
+    p3.metric("Candidats confirmés",pulse["confirmed"])
+    p4.metric("Alertes créées",pulse["created"])
+
+    left,right=st.columns([1.25,1])
 
     with left:
-        vf_section("Top opportunités","Les meilleures alertes ENTRY actuellement visibles.")
+        vf_section("Top opportunités","Les meilleurs ENTRY actuellement visibles.")
         watch=vf_watchlist_from_alerts(6)
         if watch is None or watch.empty:
             st.info("Aucune opportunité ENTRY active.")
@@ -3817,19 +3926,21 @@ def vf_dashboard_command_center():
                         break
                     with col:
                         r=watch.iloc[idx].to_dict()
-                        r["Ticker"]=r.get("symbol")
-                        r["Entreprise"]=r.get("name")
-                        r["ISIN"]=r.get("isin")
-                        r["Score combiné"]=r.get("score")
-                        r["Potentiel %"]=r.get("upside")
-                        r["R/R"]=r.get("rr")
-                        r["Entrée"]=r.get("entry")
-                        r["Stop"]=r.get("stop")
-                        r["TP2"]=r.get("tp2")
-                        vf_setup_card(r,key_prefix=f"dash_top_{idx}")
+                        r.update({
+                            "Ticker":r.get("symbol"),
+                            "Entreprise":r.get("name"),
+                            "ISIN":r.get("isin"),
+                            "Score combiné":r.get("score"),
+                            "Potentiel %":r.get("upside"),
+                            "R/R":r.get("rr"),
+                            "Entrée":r.get("entry"),
+                            "Stop":r.get("stop"),
+                            "TP2":r.get("tp2"),
+                        })
+                        vf_setup_card(r,key_prefix=f"v14_dash_top_{idx}")
 
     with right:
-        vf_section("Risques portefeuille","Les lignes les plus faibles selon le P/L actuel.")
+        vf_section("Risques portefeuille","Les lignes à surveiller en priorité.")
         risk=vf_portfolio_risk_board(6)
         if risk is None or risk.empty:
             st.info("Aucune donnée de risque disponible.")
@@ -3845,21 +3956,17 @@ def vf_dashboard_command_center():
                         st.markdown(f"**{symbol} • {name}**")
                         st.caption(_clean_text(r.get("ISIN"),upper=True) or "ISIN non renseigné")
                     with b:
-                        if pd.notna(pnl_pct):
-                            st.metric("P/L",f"{pnl_pct:+.1f}%")
+                        st.metric("P/L",f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else "—")
                     if pd.notna(value):
                         st.caption(f"Valeur suivie : {value:,.0f} €")
-                    if symbol and st.button("📊 Ouvrir",key=f"dash_risk_{symbol}",use_container_width=True):
+                    if symbol and st.button("📊 Fiche",key=f"v14_risk_{symbol}",use_container_width=True):
                         open_instrument(symbol)
 
-    vf_section("Répartition des comptes","Vision synthétique du capital suivi.")
+    vf_section("Allocation","Répartition des comptes et contribution au P/L.")
     d=pd.DataFrame(cards)
     a,b=st.columns(2)
     with a: vf_pie(d,"Compte","Valeur","Allocation")
     with b: vf_signed_bar(d,"Compte","P/L latent","P/L latent")
-
-    with st.expander("📋 Détail des comptes"):
-        st.dataframe(d,use_container_width=True,hide_index=True)
 
 vf_global_topbar()
 
@@ -3897,7 +4004,7 @@ elif mode=="⚖️ Arbitrage":
 elif mode=="🔎 Scanner":
     vf_page_header(
         "⚡ Scanner mondial",
-        "Discovery Board — recherche mondiale, scoring multi-timeframe et plans de trade dans une seule vue."
+        "Discovery Board — découverte mondiale, scoring multi-timeframe, confirmation 1H et plan de risque."
     )
 
     # Top visual controls
