@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.7 Premium Unified"
+APP_VERSION = "V11.7.1 Hotfix Agent"
 
 
 # ==========================================================
@@ -1930,7 +1930,18 @@ def load_instrument_directory():
 def instrument_identity(symbol, row=None):
     """Always return (symbol, full_name, isin). Existing alert fields win, then central directory."""
     sym = _clean_text(symbol, upper=True)
-    row = row or {}
+    # Hotfix: pandas Series/DataFrame cannot be evaluated as True/False.
+    if row is None:
+        row = {}
+    elif isinstance(row, pd.DataFrame):
+        row = row.iloc[0].to_dict() if not row.empty else {}
+    elif isinstance(row, pd.Series):
+        row = row.to_dict()
+    elif not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
     name = _clean_text(row.get("name") if hasattr(row, "get") else None)
     isin = _clean_text(row.get("isin") if hasattr(row, "get") else None, upper=True)
     if sym and (not name or not isin):
@@ -2676,7 +2687,17 @@ def vf_instrument_sheet(symbol, row=None):
 
     if hasattr(row, "to_dict"):
         row = row.to_dict()
-    row = row or {}
+    if row is None:
+        row = {}
+    elif isinstance(row, pd.DataFrame):
+        row = row.iloc[0].to_dict() if not row.empty else {}
+    elif isinstance(row, pd.Series):
+        row = row.to_dict()
+    elif not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
 
     q = live_quote(symbol)
     scan_setup = _vf_setup_from_row(row)
