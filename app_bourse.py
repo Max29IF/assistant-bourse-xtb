@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V11.7.1 Hotfix Agent"
+APP_VERSION = "V11.8 Instrument Command Center"
 
 
 # ==========================================================
@@ -2564,7 +2564,7 @@ def show_transactions_page():
 # ==========================================================
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","🛰️ Agent marché","📊 Analyse","🧪 Simulation"])
+    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"])
     if st.button("🔒 Déconnexion"):
         st.session_state["authenticated"]=False; st.rerun()
     st.markdown("---")
@@ -2847,6 +2847,323 @@ def vf_instrument_sheet(symbol, row=None):
 
 
 
+
+def vf_candlestick_chart(symbol, setup=None, period="6mo", interval="1d"):
+    """Candles + volume + trade levels in the premium DA."""
+    df = history(symbol, period, interval)
+    if df is None or df.empty:
+        st.info("Historique indisponible.")
+        return
+
+    d = df.reset_index().copy()
+    date_col = d.columns[0]
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    d = d.dropna(subset=[date_col, "Open", "High", "Low", "Close"])
+    if d.empty:
+        return
+
+    d["Direction"] = (d["Close"] >= d["Open"]).map({True: "Hausse", False: "Baisse"})
+
+    base = alt.Chart(d).encode(
+        x=alt.X(f"{date_col}:T", title=None, axis=alt.Axis(labelAngle=0))
+    )
+
+    wick = base.mark_rule().encode(
+        y=alt.Y("Low:Q", title="Cours", scale=alt.Scale(zero=False)),
+        y2="High:Q",
+        tooltip=[
+            alt.Tooltip(f"{date_col}:T", title="Date"),
+            alt.Tooltip("Open:Q", title="Ouverture", format=".2f"),
+            alt.Tooltip("High:Q", title="Plus haut", format=".2f"),
+            alt.Tooltip("Low:Q", title="Plus bas", format=".2f"),
+            alt.Tooltip("Close:Q", title="Clôture", format=".2f"),
+        ]
+    )
+
+    body = base.mark_bar(size=5).encode(
+        y="Open:Q",
+        y2="Close:Q",
+        color=alt.Color(
+            "Direction:N",
+            scale=alt.Scale(domain=["Hausse","Baisse"]),
+            legend=None
+        )
+    )
+
+    layers = [wick, body]
+
+    if setup:
+        levels = []
+        for label, key in [("Entrée","entry"),("Stop","stop"),("TP1","tp1"),("TP2","tp2")]:
+            v = _vf_num(setup.get(key))
+            if pd.notna(v):
+                levels.append({"Niveau": label, "Prix": float(v)})
+        if levels:
+            ld = pd.DataFrame(levels)
+            layers.append(
+                alt.Chart(ld).mark_rule(strokeDash=[7,4], strokeWidth=1.6).encode(
+                    y="Prix:Q",
+                    tooltip=["Niveau:N", alt.Tooltip("Prix:Q", format=".2f")]
+                )
+            )
+            layers.append(
+                alt.Chart(ld).mark_text(
+                    align="left", dx=8, dy=-4, fontWeight="bold", fontSize=11
+                ).encode(y="Prix:Q", text="Niveau:N")
+            )
+
+    st.altair_chart(
+        alt.layer(*layers).properties(height=390).interactive(),
+        use_container_width=True
+    )
+
+    if "Volume" in d.columns:
+        vol = alt.Chart(d).mark_bar().encode(
+            x=alt.X(f"{date_col}:T", title=None),
+            y=alt.Y("Volume:Q", title="Volume"),
+            tooltip=[
+                alt.Tooltip(f"{date_col}:T", title="Date"),
+                alt.Tooltip("Volume:Q", title="Volume", format=",")
+            ]
+        ).properties(height=120)
+        st.altair_chart(vol, use_container_width=True)
+
+
+def vf_fundamentals(symbol):
+    """Best-effort fundamentals from yfinance. Missing data stays missing."""
+    try:
+        info = yf.Ticker(symbol).info or {}
+    except Exception:
+        info = {}
+
+    return {
+        "market_cap": info.get("marketCap"),
+        "pe": info.get("trailingPE"),
+        "forward_pe": info.get("forwardPE"),
+        "dividend_yield": info.get("dividendYield"),
+        "beta": info.get("beta"),
+        "sector": info.get("sector"),
+        "industry": info.get("industry"),
+        "country": info.get("country"),
+        "currency": info.get("currency"),
+        "target_mean": info.get("targetMeanPrice"),
+        "recommendation": info.get("recommendationKey"),
+        "profit_margin": info.get("profitMargins"),
+        "revenue_growth": info.get("revenueGrowth"),
+    }
+
+
+def vf_fmt_large_number(v):
+    n = _vf_num(v)
+    if pd.isna(n):
+        return "—"
+    n = float(n)
+    if abs(n) >= 1_000_000_000_000:
+        return f"{n/1_000_000_000_000:.2f} T"
+    if abs(n) >= 1_000_000_000:
+        return f"{n/1_000_000_000:.2f} Md"
+    if abs(n) >= 1_000_000:
+        return f"{n/1_000_000:.1f} M"
+    return f"{n:,.0f}"
+
+
+def vf_full_instrument_page(symbol, row=None):
+    """Full-screen visual command center for one instrument."""
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        st.warning("Aucune valeur sélectionnée.")
+        return
+
+    if row is None:
+        row = {}
+    elif isinstance(row, pd.Series):
+        row = row.to_dict()
+    elif isinstance(row, pd.DataFrame):
+        row = row.iloc[0].to_dict() if not row.empty else {}
+    elif not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
+
+    scan_setup = _vf_setup_from_row(row)
+    quote = live_quote(symbol)
+    fundamentals = vf_fundamentals(symbol)
+
+    name = _clean_text(row.get("Entreprise") or row.get("name")) or quote.get("name", symbol)
+    isin = _clean_text(row.get("ISIN") or row.get("isin"), upper=True)
+    if not isin:
+        _, _, resolved_isin = instrument_identity(symbol, row)
+        isin = "" if "NON RENSEIGN" in _clean_text(resolved_isin, upper=True) else resolved_isin
+
+    # Header
+    left, right = st.columns([5,2])
+    with left:
+        st.markdown(f"# {symbol} • {name}")
+        meta = []
+        if isin:
+            meta.append(f"ISIN {isin}")
+        if fundamentals.get("sector"):
+            meta.append(str(fundamentals.get("sector")))
+        if fundamentals.get("country"):
+            meta.append(str(fundamentals.get("country")))
+        if fundamentals.get("currency"):
+            meta.append(str(fundamentals.get("currency")))
+        st.caption(" • ".join(meta) if meta else "Instrument")
+    with right:
+        score = _vf_num(scan_setup.get("score"))
+        if pd.notna(score):
+            st.metric("Score VISION FUTURE", f"{score:.1f}/100")
+        confirm = _clean_text(scan_setup.get("confirmed_1h"))
+        if confirm:
+            st.metric("Confirmation 1H", confirm)
+
+    # Main decision KPIs
+    k = st.columns(6)
+    price = _vf_num(scan_setup.get("price"))
+    if pd.isna(price):
+        price = _vf_num(quote.get("price"))
+    values = [
+        ("Cours", price, ""),
+        ("Entrée", _vf_num(scan_setup.get("entry")), ""),
+        ("Stop", _vf_num(scan_setup.get("stop")), ""),
+        ("TP2", _vf_num(scan_setup.get("tp2")), ""),
+        ("Potentiel", _vf_num(scan_setup.get("upside")), "%"),
+        ("R/R", _vf_num(scan_setup.get("rr")), ""),
+    ]
+    for col,(label,val,suffix) in zip(k, values):
+        col.metric(label, f"{float(val):.2f}{suffix}" if pd.notna(val) else "—")
+
+    # Verdict
+    score = _vf_num(scan_setup.get("score"))
+    upside = _vf_num(scan_setup.get("upside"))
+    rr = _vf_num(scan_setup.get("rr"))
+    if pd.notna(score) and pd.notna(upside) and pd.notna(rr):
+        if score >= 76 and upside >= 3 and rr >= 2:
+            st.success("🟢 SETUP ÉLIGIBLE — critères techniques principaux validés.")
+        elif score >= 65:
+            st.warning("🟠 WATCHLIST — setup intéressant mais incomplet.")
+        else:
+            st.info("⚪ PAS PRIORITAIRE — critères d'entrée insuffisants.")
+    else:
+        st.info("Analyse scanner incomplète pour cette valeur.")
+
+    # Tabs in the same visual language
+    tab_chart, tab_momentum, tab_funda, tab_news, tab_plan = st.tabs(
+        ["📈 Graphique", "⚡ Momentum", "🏢 Fondamentaux", "📰 Actualités", "🎯 Plan de trade"]
+    )
+
+    with tab_chart:
+        p1,p2,p3 = st.columns([1,1,4])
+        period = p1.selectbox("Période", ["3mo","6mo","1y","2y"], index=1, key=f"period_{symbol}")
+        interval = p2.selectbox("Unité", ["1d","1h"], index=0, key=f"interval_{symbol}")
+        with p3:
+            st.caption("Chandeliers, volumes et niveaux du setup.")
+        vf_candlestick_chart(symbol, scan_setup, period=period, interval=interval)
+
+    with tab_momentum:
+        try:
+            hist = history(symbol, "6mo", "1d")
+            ind = indicators(hist.copy()) if hist is not None and not hist.empty else None
+        except Exception:
+            ind = None
+
+        if ind is None or ind.empty:
+            st.info("Indicateurs indisponibles.")
+        else:
+            last = ind.iloc[-1]
+            rsi = _vf_num(last.get("RSI"))
+            macd = _vf_num(last.get("MACD"))
+            sig = _vf_num(last.get("MACD_SIGNAL"))
+            sma20 = _vf_num(last.get("SMA20"))
+            sma50 = _vf_num(last.get("SMA50"))
+
+            m1,m2,m3,m4 = st.columns(4)
+            m1.metric("RSI", f"{rsi:.0f}" if pd.notna(rsi) else "—")
+            if pd.notna(macd) and pd.notna(sig):
+                m2.metric("MACD", f"{macd:.3f}", "Haussier" if macd > sig else "Baissier")
+            else:
+                m2.metric("MACD", "—")
+            m3.metric("SMA20", f"{sma20:.2f}" if pd.notna(sma20) else "—")
+            m4.metric("SMA50", f"{sma50:.2f}" if pd.notna(sma50) else "—")
+
+            if "RSI" in ind.columns:
+                dd = ind.reset_index()
+                xcol = dd.columns[0]
+                rsi_chart = alt.Chart(dd.dropna(subset=["RSI"])).mark_line().encode(
+                    x=alt.X(f"{xcol}:T", title=None),
+                    y=alt.Y("RSI:Q", title="RSI", scale=alt.Scale(domain=[0,100])),
+                    tooltip=[alt.Tooltip(f"{xcol}:T"), alt.Tooltip("RSI:Q", format=".1f")]
+                ).properties(height=220)
+                st.altair_chart(rsi_chart, use_container_width=True)
+
+    with tab_funda:
+        a,b,c,d = st.columns(4)
+        a.metric("Capitalisation", vf_fmt_large_number(fundamentals.get("market_cap")))
+        b.metric("PER", f"{_vf_num(fundamentals.get('pe')):.1f}" if pd.notna(_vf_num(fundamentals.get("pe"))) else "—")
+        c.metric("PER forward", f"{_vf_num(fundamentals.get('forward_pe')):.1f}" if pd.notna(_vf_num(fundamentals.get("forward_pe"))) else "—")
+        dy = _vf_num(fundamentals.get("dividend_yield"))
+        d.metric("Rendement dividende", f"{dy*100:.2f}%" if pd.notna(dy) else "—")
+
+        e,f,g,h = st.columns(4)
+        beta = _vf_num(fundamentals.get("beta"))
+        margin = _vf_num(fundamentals.get("profit_margin"))
+        growth = _vf_num(fundamentals.get("revenue_growth"))
+        target = _vf_num(fundamentals.get("target_mean"))
+        e.metric("Beta", f"{beta:.2f}" if pd.notna(beta) else "—")
+        f.metric("Marge nette", f"{margin*100:.1f}%" if pd.notna(margin) else "—")
+        g.metric("Croissance CA", f"{growth*100:.1f}%" if pd.notna(growth) else "—")
+        h.metric("Objectif analystes", f"{target:.2f}" if pd.notna(target) else "—")
+
+        st.caption(
+            "Données fondamentales best-effort via Yahoo Finance. "
+            "Les champs absents restent volontairement vides."
+        )
+
+    with tab_news:
+        try:
+            news = yf.Ticker(symbol).news or []
+        except Exception:
+            news = []
+
+        if not news:
+            st.info("Aucune actualité Yahoo disponible actuellement.")
+        else:
+            for item in news[:8]:
+                content = item.get("content", item) if isinstance(item, dict) else {}
+                title = _clean_text(content.get("title"))
+                if not title:
+                    continue
+                provider = content.get("provider") or {}
+                source = _clean_text(provider.get("displayName") if isinstance(provider, dict) else "")
+                pub = _clean_text(content.get("pubDate"))
+                summary = _clean_text(content.get("summary") or content.get("description"))
+                with st.container(border=True):
+                    st.markdown(f"**{title}**")
+                    if summary:
+                        st.write(summary[:500])
+                    st.caption(" • ".join(x for x in [source, pub] if x))
+
+    with tab_plan:
+        p = st.columns(4)
+        for col,label,key in zip(p,["Entrée","Stop","TP1","TP2"],["entry","stop","tp1","tp2"]):
+            v = _vf_num(scan_setup.get(key))
+            col.metric(label, f"{v:.2f}" if pd.notna(v) else "—")
+
+        reasons = _clean_text(scan_setup.get("reasons"))
+        if reasons:
+            st.markdown("**Lecture technique**")
+            st.write(reasons)
+
+        st.markdown("**Discipline de risque**")
+        st.caption(
+            "Le plan affiche des niveaux techniques issus du moteur. "
+            "Il ne constitue pas une garantie de performance et doit rester compatible "
+            "avec la taille de position et le risque accepté."
+        )
+
+
+
 if mode=="🏠 Dashboard":
     vf_page_header("🏠 Vue d'ensemble", "Synthèse de tes comptes, exposition et performance latente.")
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -3069,6 +3386,7 @@ elif mode=="🔎 Scanner":
 
                         with st.expander("🔎 Ouvrir la fiche premium"):
                             vf_instrument_sheet(r["Ticker"], r.to_dict())
+                            st.caption("Pour la version plein écran, ouvre le menu « 📊 Instrument » et sélectionne cette valeur.")
 
                 with st.expander("📋 Voir le tableau complet"):
                     visible = [
@@ -3081,6 +3399,71 @@ elif mode=="🔎 Scanner":
                         use_container_width=True,
                         hide_index=True
                     )
+
+
+elif mode=="📊 Instrument":
+    vf_page_header(
+        "📊 Instrument",
+        "Fiche plein écran : graphique, momentum, fondamentaux, actualités et plan de trade."
+    )
+
+    # Build a compact searchable universe from portfolio + broker universe.
+    choices = []
+
+    try:
+        bu = load_broker_universe()
+        if bu is not None and not bu.empty:
+            for _, r in bu.iterrows():
+                s = _clean_text(r.get("symbol"), upper=True)
+                if s:
+                    label = f"{s} • {_clean_text(r.get('name')) or s}"
+                    choices.append((label, s, r.to_dict()))
+    except Exception:
+        pass
+
+    try:
+        pp = load_positions()
+        if pp is not None and not pp.empty:
+            for _, r in pp.iterrows():
+                s = _clean_text(r.get("ticker"), upper=True)
+                if s:
+                    label = f"{s} • {_clean_text(r.get('name')) or s}"
+                    choices.append((label, s, r.to_dict()))
+    except Exception:
+        pass
+
+    # De-duplicate by symbol.
+    dedup = {}
+    for label,s,row in choices:
+        dedup.setdefault(s, (label,s,row))
+    choices = list(dedup.values())
+
+    c1,c2 = st.columns([4,1])
+    labels = [x[0] for x in choices]
+    default_label = labels[0] if labels else ""
+    selection = c1.selectbox(
+        "Valeur",
+        labels if labels else ["Aucune valeur disponible"],
+        index=0
+    )
+    manual_symbol = c2.text_input("Ticker manuel", placeholder="TSLA")
+
+    selected_symbol = ""
+    selected_row = {}
+    if manual_symbol.strip():
+        selected_symbol = _clean_text(manual_symbol, upper=True)
+    elif choices:
+        for label,s,row in choices:
+            if label == selection:
+                selected_symbol = s
+                selected_row = row
+                break
+
+    if selected_symbol:
+        vf_full_instrument_page(selected_symbol, selected_row)
+    else:
+        st.info("Sélectionne une valeur ou saisis un ticker.")
+
 
 elif mode=="🛰️ Agent marché":
     show_market_agent_page()
