@@ -24,7 +24,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V14 Premium Command Center"
+APP_VERSION = "V15 Premium Terminal"
 
 
 # ==========================================================
@@ -228,6 +228,9 @@ div[data-testid="stTabs"] button{
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown('\n<style>\n.vf-terminal-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:10px 0 16px;}\n.vf-terminal-box{\n  background:#fff;border:1px solid var(--vf-border);border-radius:18px;\n  padding:14px 15px;box-shadow:0 5px 18px rgba(15,23,42,.03);\n}\n.vf-terminal-label{font-size:.72rem;color:var(--vf-muted);font-weight:800;text-transform:uppercase;letter-spacing:.06em;}\n.vf-terminal-value{font-size:1.2rem;font-weight:900;color:var(--vf-text);margin-top:4px;}\n.vf-terminal-note{font-size:.75rem;color:var(--vf-muted);margin-top:3px;}\n.vf-panel-title{font-size:1rem;font-weight:850;color:var(--vf-text);margin-bottom:3px;}\n.vf-panel-sub{font-size:.78rem;color:var(--vf-muted);}\n.vf-watch-row{\n  background:#fff;border:1px solid var(--vf-border);border-radius:16px;\n  padding:12px 14px;margin-bottom:8px;\n}\n</style>\n', unsafe_allow_html=True)
+
 
 st.markdown('\n<style>\nsection[data-testid="stSidebar"]{\n  background:linear-gradient(180deg,#fbfcfe 0%,#f7f9fc 100%);\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] > div{gap:.2rem;}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label{\n  padding:.46rem .55rem;border:1px solid transparent;border-radius:12px;\n}\nsection[data-testid="stSidebar"] [data-testid="stRadio"] label:hover{\n  background:#eef4ff;border-color:#dce8fb;\n}\n.vf-topbar{\n  display:flex;align-items:center;justify-content:space-between;gap:16px;\n  background:#fff;border:1px solid var(--vf-border);border-radius:18px;\n  padding:12px 16px;margin-bottom:14px;box-shadow:0 5px 18px rgba(15,23,42,.025);\n}\n.vf-brand{font-weight:900;letter-spacing:-.035em;font-size:1.1rem;}\n.vf-brand-sub{color:var(--vf-muted);font-size:.76rem;}\n</style>\n', unsafe_allow_html=True)
 
@@ -3016,7 +3019,7 @@ if _pending_nav:
 
 with st.sidebar:
     st.header(f"🔭 {APP_NAME}")
-    mode=st.radio("Navigation", ["🏠 Dashboard","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
+    mode=st.radio("Navigation", ["🏠 Dashboard","⭐ Watchlist","📥 Imports & documents","🏦 PEA","💼 CTO","💰 Transactions","📈 Performance","⚖️ Arbitrage","🔎 Scanner","📊 Instrument","🛰️ Agent marché","📊 Analyse","🧪 Simulation"], key="nav_mode")
     st.markdown("---")
     st.caption("ACCÈS INSTRUMENT")
     _quick_symbol = st.text_input("Ticker rapide", placeholder="TSLA, MC.PA…", key="sidebar_quick_symbol")
@@ -3527,6 +3530,7 @@ def vf_full_instrument_page(symbol, row=None):
             badge_parts.append(vf_board_badge(_clean_text(row.get("Courtier")),"green"))
         if badge_parts:
             st.markdown("".join(badge_parts), unsafe_allow_html=True)
+        vf_instrument_watch_controls(symbol)
     with right:
         score = _vf_num(scan_setup.get("score"))
         if pd.notna(score):
@@ -3550,6 +3554,16 @@ def vf_full_instrument_page(symbol, row=None):
     ]
     for col,(label,val,suffix) in zip(k, values):
         col.metric(label, f"{float(val):.2f}{suffix}" if pd.notna(val) else "—")
+
+    owned = vf_position_context(symbol)
+    if owned:
+        vf_section("Position détenue","Contexte portefeuille relié à cette valeur.")
+        for pos_ctx in owned:
+            pc1,pc2,pc3,pc4 = st.columns(4)
+            pc1.metric("Compte",pos_ctx["account"])
+            pc2.metric("Quantité",f"{pos_ctx['qty']:.4f}" if pd.notna(pos_ctx["qty"]) else "—")
+            pc3.metric("Valeur",f"{pos_ctx['value']:,.0f} €" if pd.notna(pos_ctx["value"]) else "—")
+            pc4.metric("P/L",f"{pos_ctx['pnl_pct']:+.1f}%" if pd.notna(pos_ctx["pnl_pct"]) else "—")
 
     # Verdict
     score = _vf_num(scan_setup.get("score"))
@@ -3583,6 +3597,17 @@ def vf_full_instrument_page(symbol, row=None):
                 st.caption(f"Basé sur {risk_pct:.2f}% de risque pour un capital de référence de {capital:,.0f} €.")
             else:
                 st.caption("Dimensionnement indisponible : niveaux entrée/stop insuffisants.")
+
+    vf_section("Trade Terminal","Synthèse immédiate du setup.")
+    tcols=st.columns(4)
+    terminal_values=[
+        ("Entrée",_vf_num(scan_setup.get("entry"))),
+        ("Stop",_vf_num(scan_setup.get("stop"))),
+        ("TP1",_vf_num(scan_setup.get("tp1"))),
+        ("TP2",_vf_num(scan_setup.get("tp2"))),
+    ]
+    for c,(lab,val) in zip(tcols,terminal_values):
+        c.metric(lab,f"{val:.2f}" if pd.notna(val) else "—")
 
     # Tabs in the same visual language
     tab_chart, tab_momentum, tab_funda, tab_news, tab_plan = st.tabs(
@@ -3851,10 +3876,103 @@ def vf_compact_decision_panel(symbol, setup):
 
 
 
+
+def vf_watchlist_get():
+    return st.session_state.setdefault("vf_watchlist", [])
+
+
+def vf_watchlist_add(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return
+    wl = vf_watchlist_get()
+    if symbol not in wl:
+        wl.append(symbol)
+        st.session_state["vf_watchlist"] = wl
+
+
+def vf_watchlist_remove(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    wl = [x for x in vf_watchlist_get() if x != symbol]
+    st.session_state["vf_watchlist"] = wl
+
+
+def vf_position_context(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    found = []
+    for acc,label in [("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic"),("cto_autre","CTO autre")]:
+        try:
+            _,df = portfolio_valuation(acc,use_live=False)
+        except Exception:
+            df = pd.DataFrame()
+        if df is None or df.empty:
+            continue
+        if "Ticker" not in df.columns:
+            continue
+        hit = df[df["Ticker"].astype(str).str.upper() == symbol]
+        if hit.empty:
+            continue
+        for _,r in hit.iterrows():
+            found.append({
+                "account":label,
+                "qty":_vf_num(r.get("Quantité") if r.get("Quantité") is not None else r.get("quantity")),
+                "value":_vf_num(r.get("Valeur référence")),
+                "pnl":_vf_num(r.get("P/L latent")),
+                "pnl_pct":_vf_num(r.get("P/L %")),
+                "pru":_vf_num(r.get("PRU") if r.get("PRU") is not None else r.get("pru")),
+            })
+    return found
+
+
+def vf_instrument_watch_controls(symbol):
+    wl = vf_watchlist_get()
+    if symbol in wl:
+        if st.button("★ Retirer de la watchlist", key=f"watch_remove_{symbol}", use_container_width=True):
+            vf_watchlist_remove(symbol)
+            st.rerun()
+    else:
+        if st.button("☆ Ajouter à la watchlist", key=f"watch_add_{symbol}", use_container_width=True):
+            vf_watchlist_add(symbol)
+            st.rerun()
+
+
+def vf_watchlist_board():
+    wl = vf_watchlist_get()
+    if not wl:
+        st.info("Watchlist vide. Ajoute une valeur depuis une fiche Instrument.")
+        return
+    for symbol in wl[:12]:
+        try:
+            q = live_quote(symbol)
+            setup = trade_setup(history(symbol,"6mo","1d")) or {}
+        except Exception:
+            q,setup = {},{}
+        name = _clean_text(q.get("name")) or symbol
+        score = _vf_num(setup.get("score"))
+        upside = _vf_num(setup.get("upside"))
+        rr = _vf_num(setup.get("rr"))
+        with st.container(border=True):
+            a,b = st.columns([4,1.2])
+            with a:
+                st.markdown(f"**{symbol} • {name}**")
+                meta=[]
+                if pd.notna(score): meta.append(f"Score {score:.0f}")
+                if pd.notna(upside): meta.append(f"Potentiel {upside:.1f}%")
+                if pd.notna(rr): meta.append(f"R/R {rr:.2f}")
+                if meta: st.caption(" • ".join(meta))
+            with b:
+                if st.button("📊 Ouvrir", key=f"watch_open_{symbol}", use_container_width=True):
+                    open_instrument(symbol)
+            if st.button("Retirer", key=f"watch_delete_{symbol}", use_container_width=True):
+                vf_watchlist_remove(symbol)
+                st.rerun()
+
+
+
 def vf_dashboard_command_center():
     vf_page_header(
         "Command Center",
-        "Portefeuille, marché, opportunités et risques dans une seule vue."
+        "VISION FUTURE — portefeuille, marché, opportunités, risques et watchlist."
     )
 
     accounts=[("pea","PEA"),("cto_xtb","CTO XTB"),("cto_trade_republic","CTO Trade Republic")]
@@ -3883,32 +4001,31 @@ def vf_dashboard_command_center():
         entries=int((alerts["alert_type"]=="ENTRY").sum())
         risks=int(alerts["alert_type"].isin(["EXIT","RISK","PROTECT","INVALIDATED","NEWS_RISK"]).sum())
 
-    pulse = vf_market_pulse()
+    pulse=vf_market_pulse()
+    watch_count=len(vf_watchlist_get())
 
-    # Main strip
-    c1,c2,c3,c4,c5 = st.columns(5)
+    c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
     c2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
     c3.metric("Opportunités",entries)
     c4.metric("Alertes risque",risks)
-    c5.metric("Régime marché",pulse["regime"],pulse["regime_score"])
+    c5.metric("Watchlist",watch_count)
 
-    # Quick actions
-    vf_section("Navigation rapide","Les cinq écrans opérationnels.")
-    q1,q2,q3,q4,q5=st.columns(5)
-    with q1: vf_nav_button("⚡ Scanner","🔎 Scanner","v14_q_scan")
-    with q2: vf_nav_button("🛰️ Agent","🛰️ Agent marché","v14_q_agent")
-    with q3: vf_nav_button("📊 Instrument","📊 Instrument","v14_q_instr")
-    with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","v14_q_arb")
-    with q5: vf_nav_button("📈 Performance","📈 Performance","v14_q_perf")
-
-    # Market pulse
-    vf_section("Market Pulse","État du dernier cycle automatique.")
-    p1,p2,p3,p4=st.columns(4)
+    vf_section("Market Pulse","Dernier cycle de l'agent.")
+    p1,p2,p3,p4,p5=st.columns(5)
     p1.metric("Agent",pulse["status"])
-    p2.metric("Univers analysé",pulse["universe"])
-    p3.metric("Candidats confirmés",pulse["confirmed"])
-    p4.metric("Alertes créées",pulse["created"])
+    p2.metric("Régime",pulse["regime"],pulse["regime_score"])
+    p3.metric("Univers",pulse["universe"])
+    p4.metric("Confirmés",pulse["confirmed"])
+    p5.metric("Alertes créées",pulse["created"])
+
+    vf_section("Accès rapide","Navigation opérationnelle.")
+    q1,q2,q3,q4,q5=st.columns(5)
+    with q1: vf_nav_button("⚡ Scanner","🔎 Scanner","v15_q_scan")
+    with q2: vf_nav_button("🛰️ Agent","🛰️ Agent marché","v15_q_agent")
+    with q3: vf_nav_button("📊 Instrument","📊 Instrument","v15_q_instr")
+    with q4: vf_nav_button("⚖️ Arbitrage","⚖️ Arbitrage","v15_q_arb")
+    with q5: vf_nav_button("📈 Performance","📈 Performance","v15_q_perf")
 
     left,right=st.columns([1.25,1])
 
@@ -3922,8 +4039,7 @@ def vf_dashboard_command_center():
                 cols=st.columns(2)
                 for j,col in enumerate(cols):
                     idx=i+j
-                    if idx>=len(watch):
-                        break
+                    if idx>=len(watch): break
                     with col:
                         r=watch.iloc[idx].to_dict()
                         r.update({
@@ -3937,29 +4053,30 @@ def vf_dashboard_command_center():
                             "Stop":r.get("stop"),
                             "TP2":r.get("tp2"),
                         })
-                        vf_setup_card(r,key_prefix=f"v14_dash_top_{idx}")
+                        vf_setup_card(r,key_prefix=f"v15_dash_top_{idx}")
 
     with right:
-        vf_section("Risques portefeuille","Les lignes à surveiller en priorité.")
-        risk=vf_portfolio_risk_board(6)
-        if risk is None or risk.empty:
-            st.info("Aucune donnée de risque disponible.")
-        else:
-            for _,r in risk.iterrows():
+        vf_section("Watchlist","Valeurs suivies manuellement.")
+        vf_watchlist_board()
+
+    vf_section("Risques portefeuille","Lignes les plus fragiles selon le P/L courant.")
+    risk=vf_portfolio_risk_board(6)
+    if risk is None or risk.empty:
+        st.info("Aucune donnée de risque disponible.")
+    else:
+        cols=st.columns(3)
+        for i,(_,r) in enumerate(risk.iterrows()):
+            with cols[i % 3]:
                 symbol=_clean_text(r.get("Ticker"),upper=True)
                 name=_clean_text(r.get("Entreprise") or r.get("Nom")) or symbol
                 pnl_pct=_vf_num(r.get("P/L %"))
                 value=_vf_num(r.get("Valeur référence"))
                 with st.container(border=True):
-                    a,b=st.columns([4,1.2])
-                    with a:
-                        st.markdown(f"**{symbol} • {name}**")
-                        st.caption(_clean_text(r.get("ISIN"),upper=True) or "ISIN non renseigné")
-                    with b:
-                        st.metric("P/L",f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else "—")
+                    st.markdown(f"**{symbol} • {name}**")
+                    st.metric("P/L",f"{pnl_pct:+.1f}%" if pd.notna(pnl_pct) else "—")
                     if pd.notna(value):
-                        st.caption(f"Valeur suivie : {value:,.0f} €")
-                    if symbol and st.button("📊 Fiche",key=f"v14_risk_{symbol}",use_container_width=True):
+                        st.caption(f"Valeur : {value:,.0f} €")
+                    if symbol and st.button("📊 Fiche",key=f"v15_risk_{symbol}",use_container_width=True):
                         open_instrument(symbol)
 
     vf_section("Allocation","Répartition des comptes et contribution au P/L.")
@@ -3972,6 +4089,10 @@ vf_global_topbar()
 
 if mode=="🏠 Dashboard":
     vf_dashboard_command_center()
+
+elif mode=="⭐ Watchlist":
+    vf_page_header("⭐ Watchlist","Board personnel des valeurs que tu souhaites suivre.")
+    vf_watchlist_board()
 
 elif mode=="📥 Imports & documents":
     show_import_page()
