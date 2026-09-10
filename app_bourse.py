@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V29 Capital Recovery + XTB Zero"
+APP_VERSION = "V30 Smart Simulation Search"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -5738,16 +5738,238 @@ elif mode=="📊 Analyse":
 
 
 else:
-    st.header("🧪 Simulation")
-    symbol=st.text_input("Ticker","AAPL").upper().strip(); t=trade_setup(history(symbol,"6mo","1d"))
-    if t:
-        sym_i, name_i, isin_i = instrument_identity(symbol)
-        st.markdown(f"**{sym_i} • {name_i}**")
-        st.caption(f"ISIN : {isin_i}")
-        entry=st.number_input("Entrée",value=float(t["entry"])); stop=st.number_input("Stop",value=float(t["stop"])); target=st.number_input("TP2",value=float(t["tp2"]))
-        risk_e,qty,exposure,profit,rr=position_calc(capital,risk_pct,entry,stop,target)
-        c=st.columns(5); c[0].metric("Risque max",f"{risk_e:.2f} €"); c[1].metric("Quantité",qty); c[2].metric("Exposition",f"{exposure:.2f} €"); c[3].metric("Gain cible",f"{profit:.2f} €"); c[4].metric("R/R",f"{rr:.2f}")
-    else: st.warning("Setup indisponible.")
+    vf_page_header(
+        "🧪 Simulation",
+        "Recherche intelligente par ticker ou nom, puis simulation du risque, de l’exposition et du gain cible."
+    )
+
+    st.markdown(
+        '<div class="vf-future-strip">'
+        '<div class="vf-future-strip-title">SMART SIMULATION</div>'
+        '<div class="vf-future-strip-text">Retrouve une valeur par son nom ou son ticker, puis ajuste ton scénario de trade.</div>'
+        '<div class="vf-brand-line"></div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    base = vf_analysis_universe()
+
+    q1,q2 = st.columns([2.2,1])
+    search_query = q1.text_input(
+        "Rechercher une valeur",
+        placeholder="Ex. TotalEnergies, LVMH, Tesla, AAPL…",
+        key="simulation_search_query"
+    )
+
+    yahoo_matches = vf_yahoo_search_instruments(search_query) if search_query.strip() else pd.DataFrame()
+
+    frames = []
+    if yahoo_matches is not None and not yahoo_matches.empty:
+        frames.append(yahoo_matches)
+    if base is not None and not base.empty:
+        frames.append(base)
+
+    if frames:
+        candidates = pd.concat(frames, ignore_index=True, sort=False).drop_duplicates("symbol")
+    else:
+        candidates = pd.DataFrame(columns=["symbol","name","isin","source"])
+
+    if search_query.strip() and not candidates.empty:
+        query_norm = search_query.strip().lower()
+        mask = (
+            candidates["symbol"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["name"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["isin"].fillna("").astype(str).str.lower().str.contains(query_norm, regex=False)
+            | candidates["source"].fillna("").eq("Recherche Yahoo")
+        )
+        filtered = candidates[mask].copy()
+        if not filtered.empty:
+            candidates = filtered
+
+    labels = []
+    label_to_row = {}
+    for _, rr in candidates.head(500).iterrows():
+        label = vf_analysis_option_label(rr)
+        labels.append(label)
+        label_to_row[label] = rr.to_dict()
+
+    if labels:
+        default_index = 0
+        if not search_query.strip():
+            for i, lab in enumerate(labels):
+                if lab.startswith("AAPL •"):
+                    default_index = i
+                    break
+
+        selected_label = q1.selectbox(
+            "Valeur",
+            labels,
+            index=default_index,
+            key="simulation_value_select",
+            help="Le menu est recherchable : tape un nom ou un ticker pour filtrer."
+        )
+    else:
+        selected_label = q1.selectbox(
+            "Valeur",
+            ["Aucun résultat"],
+            index=0,
+            key="simulation_value_select_empty"
+        )
+
+    manual_symbol = q2.text_input(
+        "Ticker libre",
+        placeholder="MC.PA",
+        key="simulation_manual_ticker",
+        help="Option de secours si la valeur recherchée n’apparaît pas."
+    )
+
+    selected_row = {}
+    symbol = ""
+
+    if manual_symbol.strip():
+        symbol = _clean_text(manual_symbol, upper=True)
+    elif selected_label in label_to_row:
+        selected_row = label_to_row[selected_label]
+        symbol = _clean_text(selected_row.get("symbol"), upper=True)
+
+    if not symbol:
+        st.warning("Sélectionne une valeur dans le menu ou saisis un ticker.")
+    else:
+        with st.spinner(f"Préparation de la simulation pour {symbol}…"):
+            setup = trade_setup(history(symbol, "6mo", "1d"))
+            quote = live_quote(symbol)
+
+        selected_name = (
+            _clean_text(selected_row.get("name"))
+            or _clean_text(quote.get("name"))
+            or symbol
+        )
+        selected_isin = _clean_text(selected_row.get("isin"), upper=True)
+
+        st.markdown(
+            vf_identity_html(symbol, selected_name, selected_isin, resolve=True),
+            unsafe_allow_html=True
+        )
+
+        if not setup:
+            st.warning(
+                "Setup indisponible pour cette valeur. "
+                "Les données Yahoo sont insuffisantes ou temporairement indisponibles."
+            )
+        else:
+            vf_section(
+                "Setup de référence",
+                "Les niveaux ci-dessous proviennent du moteur technique puis restent modifiables pour tester ton scénario."
+            )
+
+            s1,s2,s3,s4,s5 = st.columns(5)
+            s1.metric("Cours", f"{setup['price']:.2f}")
+            s2.metric("Entrée", f"{setup['entry']:.2f}")
+            s3.metric("Stop", f"{setup['stop']:.2f}")
+            s4.metric("TP2", f"{setup['tp2']:.2f}")
+            s5.metric("R/R", f"{setup['rr']:.2f}")
+
+            vf_section(
+                "Paramètres de simulation",
+                "Ajuste librement l’entrée, le stop, l’objectif, le capital et le risque maximum."
+            )
+
+            p1,p2,p3 = st.columns(3)
+            entry = p1.number_input(
+                "Entrée",
+                value=float(setup["entry"]),
+                step=0.01,
+                key=f"sim_entry_{symbol}"
+            )
+            stop = p2.number_input(
+                "Stop",
+                value=float(setup["stop"]),
+                step=0.01,
+                key=f"sim_stop_{symbol}"
+            )
+            target = p3.number_input(
+                "TP2",
+                value=float(setup["tp2"]),
+                step=0.01,
+                key=f"sim_target_{symbol}"
+            )
+
+            p4,p5 = st.columns(2)
+            sim_capital = p4.number_input(
+                "Capital de référence (€)",
+                min_value=0.0,
+                value=float(capital),
+                step=100.0,
+                key=f"sim_capital_{symbol}"
+            )
+            sim_risk_pct = p5.number_input(
+                "Risque max par trade (%)",
+                min_value=0.1,
+                max_value=5.0,
+                value=float(risk_pct),
+                step=0.1,
+                key=f"sim_risk_{symbol}"
+            )
+
+            risk_e, qty, exposure, profit, rr = position_calc(
+                sim_capital,
+                sim_risk_pct,
+                entry,
+                stop,
+                target
+            )
+
+            vf_section("Résultat", "Dimensionnement théorique basé sur les paramètres saisis.")
+            c = st.columns(5)
+            c[0].metric("Risque max", f"{risk_e:.2f} €")
+            c[1].metric("Quantité", qty)
+            c[2].metric("Exposition", f"{exposure:.2f} €")
+            c[3].metric("Gain cible", f"{profit:.2f} €")
+            c[4].metric("R/R", f"{rr:.2f}")
+
+            if entry <= stop:
+                st.error("Le stop doit être inférieur à l’entrée pour une simulation acheteuse.")
+            elif target <= entry:
+                st.warning("L’objectif est inférieur ou égal au niveau d’entrée.")
+            else:
+                if rr >= 2:
+                    st.success("R/R ≥ 2 : scénario conforme au seuil de qualité utilisé par VISION FUTURE.")
+                elif rr >= 1.5:
+                    st.warning("R/R correct mais inférieur au seuil cible de 2.")
+                else:
+                    st.info("R/R faible : scénario peu favorable au regard du risque engagé.")
+
+            a,b = st.columns([3,1])
+            with a:
+                st.caption(
+                    "La simulation est indicative : elle ne tient pas compte du slippage, "
+                    "des frais, de la fiscalité ni d’une exécution réelle."
+                )
+            with b:
+                if st.button(
+                    "📊 Ouvrir la fiche Instrument",
+                    key=f"sim_open_{symbol}",
+                    use_container_width=True
+                ):
+                    open_instrument_identity(
+                        symbol,
+                        selected_name,
+                        selected_isin,
+                        setup_row={
+                            "Ticker": symbol,
+                            "Entreprise": selected_name,
+                            "ISIN": selected_isin,
+                            "Prix": setup.get("price"),
+                            "Entrée": setup.get("entry"),
+                            "Stop": setup.get("stop"),
+                            "TP1": setup.get("tp1"),
+                            "TP2": setup.get("tp2"),
+                            "Potentiel %": setup.get("upside"),
+                            "R/R": setup.get("rr"),
+                            "Score combiné": setup.get("score"),
+                        }
+                    )
+
 
 st.markdown("---")
 st.caption(f"VISION FUTURE • {APP_VERSION} • Des idées au patrimoine • Build the Future of Your Capital")
