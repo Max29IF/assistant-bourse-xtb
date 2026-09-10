@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V34 Manual Trade Journal + Live Tracking"
+APP_VERSION = "V34.1 Manual Trade Journal + Live Tracking Fix"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -4200,6 +4200,29 @@ def vf_trade_id(symbol):
 
 
 @st.cache_data(ttl=30, show_spinner=False)
+
+def vf_safe_cache_clear(func=None):
+    """
+    Streamlit-version-safe cache invalidation.
+    Some deployed Streamlit versions do not expose `.clear()` on a cached
+    function wrapper, so we gracefully fall back to clearing data caches.
+    """
+    if func is not None:
+        try:
+            clear_method = getattr(func, "clear", None)
+            if callable(clear_method):
+                clear_method()
+                return
+        except Exception:
+            pass
+
+    try:
+        st.cache_data.clear()
+    except Exception:
+        pass
+
+
+
 def vf_trade_journal_backend_ready():
     if SUPABASE is None:
         return False
@@ -4268,7 +4291,7 @@ def vf_save_trade_journal_record(payload):
             SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
                 clean, on_conflict="trade_id"
             ).execute()
-            vf_load_trade_journal.clear()
+            vf_safe_cache_clear(vf_load_trade_journal)
             return True, "Supabase"
         except Exception:
             pass
@@ -4706,7 +4729,7 @@ def vf_trade_journal_page():
                 )
                 if ok:
                     st.success(f"Trade ajouté au suivi • {where}.")
-                    vf_load_trade_journal.clear()
+                    vf_safe_cache_clear(vf_load_trade_journal)
                     st.rerun()
 
     st.caption(
@@ -4720,7 +4743,7 @@ def vf_trade_journal_page():
     rfa,rfb = st.columns([1,4])
     if rfa.button("↻ Actualiser les cours", use_container_width=True, key="journal_refresh_quotes"):
         try:
-            live_quote.clear()
+            vf_safe_cache_clear(live_quote)
         except Exception:
             pass
         st.rerun()
@@ -4872,7 +4895,7 @@ def vf_trade_journal_page():
             ok, where = vf_close_trade_record(selected, exit_price, exit_reason, fees, notes)
             if ok:
                 st.success(f"Trade clôturé • journal {where}.")
-                vf_load_trade_journal.clear()
+                vf_safe_cache_clear(vf_load_trade_journal)
                 st.rerun()
 
     # ------------------------------------------------------
