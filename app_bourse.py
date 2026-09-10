@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V32 Trade Horizon + Capital Rotation"
+APP_VERSION = "V33 Trade Journal + Strategy Analytics"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -4132,12 +4132,523 @@ def vf_xtb_microtrade_desk():
                 key_prefix=f"xtb_micro_{idx}"
             )
 
+            st.markdown("**Journal d'exécution**")
+            j1,j2 = st.columns([1,1])
+            planned_entry = float(entry) if pd.notna(entry) else 0.0
+            actual_entry = j1.number_input(
+                "Entrée réellement exécutée",
+                min_value=0.0,
+                value=max(planned_entry, 0.0),
+                step=0.01,
+                key=f"journal_actual_entry_{idx}_{symbol}"
+            )
+            actual_qty = j2.number_input(
+                "Quantité réellement achetée",
+                min_value=0,
+                value=max(int(qty), 0),
+                step=1,
+                key=f"journal_actual_qty_{idx}_{symbol}"
+            )
+
+            actual_capital = float(actual_qty) * float(actual_entry)
+            actual_risk = (
+                float(actual_qty) * abs(float(actual_entry) - float(stop))
+                if actual_qty > 0 and pd.notna(stop) else 0.0
+            )
+
+            if st.button(
+                "📓 Enregistrer comme trade OPEN",
+                key=f"journal_open_{idx}_{vf_identity_key(symbol,name,'')}",
+                use_container_width=True,
+                type="primary"
+            ):
+                if actual_qty <= 0:
+                    st.warning("Quantité nulle : le trade n'est pas enregistré.")
+                else:
+                    ok, where = vf_register_trade_plan(
+                        symbol=symbol,
+                        name=name,
+                        isin="",
+                        setup_row=rr.to_dict(),
+                        qty=int(actual_qty),
+                        risk_amount=actual_risk,
+                        capital_committed=actual_capital,
+                        actual_entry=actual_entry,
+                    )
+                    if ok:
+                        st.success(f"Trade OPEN enregistré dans le journal • {where}.")
+
             if st.button(
                 "📊 Fiche Instrument",
                 key=f"xtb_desk_open_{idx}_{vf_identity_key(symbol,name,'')}",
                 use_container_width=True
             ):
                 open_instrument_identity(symbol, name, "", setup_row=rr.to_dict())
+
+
+
+
+# ==========================================================
+# V33 — TRADE JOURNAL + STRATEGY ANALYTICS
+# ==========================================================
+TRADE_JOURNAL_TABLE = "trade_journal"
+
+
+def vf_trade_id(symbol):
+    raw = f"{_clean_text(symbol, upper=True)}|{datetime.utcnow().isoformat()}|{np.random.random()}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def vf_trade_journal_backend_ready():
+    if SUPABASE is None:
+        return False
+    try:
+        SUPABASE.table(TRADE_JOURNAL_TABLE).select("trade_id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def vf_journal_session():
+    return st.session_state.setdefault("vf_trade_journal_fallback", [])
+
+
+def vf_load_trade_journal(account="cto_xtb"):
+    cols = [
+        "trade_id","account","broker","symbol","name","isin","status",
+        "planned_entry","actual_entry","stop","tp1","tp2","quantity",
+        "risk_amount","capital_committed","score","rr","upside",
+        "horizon_tp1","horizon_tp2","sessions_tp1","sessions_tp2",
+        "rotation","opened_at","closed_at","exit_price","exit_reason",
+        "fees","realized_pnl","realized_pct","r_multiple","notes"
+    ]
+
+    if vf_trade_journal_backend_ready():
+        try:
+            res = (
+                SUPABASE.table(TRADE_JOURNAL_TABLE)
+                .select(",".join(cols))
+                .eq("account", account)
+                .order("opened_at", desc=True)
+                .execute()
+            )
+            df = pd.DataFrame(_sb_data(res))
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = np.nan
+            return df[cols]
+        except Exception:
+            pass
+
+    rows = [r for r in vf_journal_session() if r.get("account") == account]
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows)
+    for c in cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[cols]
+
+
+def vf_save_trade_journal_record(payload):
+    clean = {}
+    for k, v in payload.items():
+        if isinstance(v, (np.floating, np.integer)):
+            v = v.item()
+        try:
+            if pd.isna(v):
+                v = None
+        except Exception:
+            pass
+        clean[k] = v
+
+    if vf_trade_journal_backend_ready():
+        try:
+            SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
+                clean, on_conflict="trade_id"
+            ).execute()
+            vf_load_trade_journal.clear()
+            return True, "Supabase"
+        except Exception:
+            pass
+
+    rows = vf_journal_session()
+    found = False
+    for i, r in enumerate(rows):
+        if r.get("trade_id") == clean.get("trade_id"):
+            rows[i] = {**r, **clean}
+            found = True
+            break
+    if not found:
+        rows.append(clean)
+    st.session_state["vf_trade_journal_fallback"] = rows
+    return True, "Session"
+
+
+def vf_register_trade_plan(
+    symbol, name, isin, setup_row, qty, risk_amount, capital_committed,
+    actual_entry=None, notes=""
+):
+    if hasattr(setup_row, "to_dict"):
+        setup_row = setup_row.to_dict()
+    setup_row = dict(setup_row or {})
+
+    symbol = _clean_text(symbol, upper=True)
+    entry = _vf_num(setup_row.get("Entrée") if setup_row.get("Entrée") is not None else setup_row.get("entry"))
+    stop = _vf_num(setup_row.get("Stop") if setup_row.get("Stop") is not None else setup_row.get("stop"))
+    tp1 = _vf_num(setup_row.get("TP1") if setup_row.get("TP1") is not None else setup_row.get("tp1"))
+    tp2 = _vf_num(setup_row.get("TP2") if setup_row.get("TP2") is not None else setup_row.get("tp2"))
+    score = _vf_num(
+        setup_row.get("Score combiné")
+        if setup_row.get("Score combiné") is not None
+        else setup_row.get("score")
+    )
+    rr = _vf_num(setup_row.get("R/R") if setup_row.get("R/R") is not None else setup_row.get("rr"))
+    upside = _vf_num(
+        setup_row.get("Potentiel %")
+        if setup_row.get("Potentiel %") is not None
+        else setup_row.get("upside")
+    )
+
+    horizon = vf_trade_horizon_context(symbol, entry, tp1, tp2)
+    h1 = horizon.get("tp1", {})
+    h2 = horizon.get("tp2", {})
+
+    actual = _vf_num(actual_entry)
+    if pd.isna(actual):
+        actual = entry
+
+    payload = {
+        "trade_id": vf_trade_id(symbol),
+        "account": "cto_xtb",
+        "broker": "XTB",
+        "symbol": symbol,
+        "name": _clean_text(name) or symbol,
+        "isin": _clean_text(isin, upper=True),
+        "status": "OPEN",
+        "planned_entry": float(entry) if pd.notna(entry) else None,
+        "actual_entry": float(actual) if pd.notna(actual) else None,
+        "stop": float(stop) if pd.notna(stop) else None,
+        "tp1": float(tp1) if pd.notna(tp1) else None,
+        "tp2": float(tp2) if pd.notna(tp2) else None,
+        "quantity": int(qty or 0),
+        "risk_amount": float(risk_amount or 0),
+        "capital_committed": float(capital_committed or 0),
+        "score": float(score) if pd.notna(score) else None,
+        "rr": float(rr) if pd.notna(rr) else None,
+        "upside": float(upside) if pd.notna(upside) else None,
+        "horizon_tp1": h1.get("label"),
+        "horizon_tp2": h2.get("label"),
+        "sessions_tp1": h1.get("sessions"),
+        "sessions_tp2": h2.get("sessions"),
+        "rotation": h1.get("rotation"),
+        "opened_at": datetime.utcnow().isoformat(),
+        "closed_at": None,
+        "exit_price": None,
+        "exit_reason": None,
+        "fees": 0.0,
+        "realized_pnl": None,
+        "realized_pct": None,
+        "r_multiple": None,
+        "notes": _clean_text(notes),
+    }
+    return vf_save_trade_journal_record(payload)
+
+
+def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""):
+    if hasattr(trade_row, "to_dict"):
+        trade_row = trade_row.to_dict()
+    row = dict(trade_row)
+
+    entry = _vf_num(row.get("actual_entry"))
+    stop = _vf_num(row.get("stop"))
+    qty = int(_vf_num(row.get("quantity")) or 0)
+    exit_price = _vf_num(exit_price)
+    fees = float(_vf_num(fees) if pd.notna(_vf_num(fees)) else 0.0)
+
+    pnl = np.nan
+    pct = np.nan
+    r_multiple = np.nan
+
+    if pd.notna(entry) and pd.notna(exit_price) and qty > 0:
+        pnl = (exit_price - entry) * qty - fees
+        pct = ((exit_price - entry) / entry * 100) if entry else np.nan
+
+        initial_risk = abs(entry - stop) * qty if pd.notna(stop) else np.nan
+        if pd.notna(initial_risk) and initial_risk > 0:
+            r_multiple = pnl / initial_risk
+
+    payload = {
+        **row,
+        "status": "CLOSED",
+        "closed_at": datetime.utcnow().isoformat(),
+        "exit_price": float(exit_price) if pd.notna(exit_price) else None,
+        "exit_reason": _clean_text(exit_reason, upper=True),
+        "fees": fees,
+        "realized_pnl": float(pnl) if pd.notna(pnl) else None,
+        "realized_pct": float(pct) if pd.notna(pct) else None,
+        "r_multiple": float(r_multiple) if pd.notna(r_multiple) else None,
+        "notes": _clean_text(notes) or _clean_text(row.get("notes")),
+    }
+    return vf_save_trade_journal_record(payload)
+
+
+def vf_trade_journal_stats(df):
+    closed = df[df["status"].astype(str).str.upper() == "CLOSED"].copy() if not df.empty else pd.DataFrame()
+    if closed.empty:
+        return {
+            "closed": 0, "wins": 0, "losses": 0, "win_rate": 0.0,
+            "pnl": 0.0, "avg_win": 0.0, "avg_loss": 0.0,
+            "profit_factor": 0.0, "avg_r": 0.0, "max_drawdown": 0.0
+        }
+
+    pnl = pd.to_numeric(closed["realized_pnl"], errors="coerce").fillna(0.0)
+    wins = pnl[pnl > 0]
+    losses = pnl[pnl < 0]
+    gross_profit = float(wins.sum())
+    gross_loss = abs(float(losses.sum()))
+
+    closed["_closed_dt"] = pd.to_datetime(closed["closed_at"], errors="coerce")
+    curve = closed.sort_values("_closed_dt")["realized_pnl"].pipe(pd.to_numeric, errors="coerce").fillna(0).cumsum()
+    peak = curve.cummax()
+    drawdown = curve - peak
+    max_dd = abs(float(drawdown.min())) if not drawdown.empty else 0.0
+
+    rvals = pd.to_numeric(closed["r_multiple"], errors="coerce").dropna()
+
+    return {
+        "closed": len(closed),
+        "wins": int((pnl > 0).sum()),
+        "losses": int((pnl < 0).sum()),
+        "win_rate": float((pnl > 0).mean() * 100),
+        "pnl": float(pnl.sum()),
+        "avg_win": float(wins.mean()) if not wins.empty else 0.0,
+        "avg_loss": float(losses.mean()) if not losses.empty else 0.0,
+        "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else (np.inf if gross_profit > 0 else 0.0),
+        "avg_r": float(rvals.mean()) if not rvals.empty else 0.0,
+        "max_drawdown": max_dd,
+    }
+
+
+def vf_trade_journal_page():
+    vf_page_header(
+        "📓 Trade Journal",
+        "Mesurer la qualité réelle des micro-trades : prévu vs réalisé, R multiples, durée et performance cumulée."
+    )
+
+    backend = vf_trade_journal_backend_ready()
+    if backend:
+        st.success("Journal persistant : Supabase connecté.")
+    else:
+        st.warning(
+            "La table Supabase trade_journal n'est pas encore disponible. "
+            "Le journal fonctionne temporairement dans la session, mais ne survivra pas à un redémarrage."
+        )
+
+    df = vf_load_trade_journal("cto_xtb")
+    stats = vf_trade_journal_stats(df)
+
+    k1,k2,k3,k4,k5 = st.columns(5)
+    k1.metric("Trades clôturés", stats["closed"])
+    k2.metric("Win rate", f"{stats['win_rate']:.1f}%")
+    k3.metric("P/L micro-trades", f"{stats['pnl']:+.2f} €")
+    pf = stats["profit_factor"]
+    k4.metric("Profit Factor", "∞" if pf == np.inf else f"{pf:.2f}")
+    k5.metric("R moyen", f"{stats['avg_r']:+.2f} R")
+
+    k6,k7,k8 = st.columns(3)
+    k6.metric("Gain moyen", f"{stats['avg_win']:+.2f} €")
+    k7.metric("Perte moyenne", f"{stats['avg_loss']:+.2f} €")
+    k8.metric("Drawdown réalisé", f"-{stats['max_drawdown']:.2f} €")
+
+    if df.empty:
+        st.info(
+            "Aucun micro-trade enregistré. Depuis CTO XTB → XTB Micro Trade Desk, "
+            "utilise « Enregistrer dans le journal » sur un setup."
+        )
+        return
+
+    # ------------------------------------------------------
+    # OPEN trades
+    # ------------------------------------------------------
+    opened = df[df["status"].astype(str).str.upper() == "OPEN"].copy()
+    vf_section("Positions OPEN", "Suivi des micro-trades enregistrés mais pas encore clôturés.")
+
+    if opened.empty:
+        st.info("Aucun micro-trade OPEN.")
+    else:
+        for idx, (_, rr) in enumerate(opened.iterrows()):
+            symbol = _clean_text(rr.get("symbol"), upper=True)
+            name = _clean_text(rr.get("name")) or symbol
+            entry = _vf_num(rr.get("actual_entry"))
+            qty = int(_vf_num(rr.get("quantity")) or 0)
+            current = _vf_num(live_quote(symbol).get("price"))
+
+            unreal = (current - entry) * qty if pd.notna(current) and pd.notna(entry) else np.nan
+            unreal_pct = ((current-entry)/entry*100) if pd.notna(current) and pd.notna(entry) and entry else np.nan
+
+            with st.container(border=True):
+                a,b = st.columns([4,1])
+                with a:
+                    st.markdown(vf_identity_html(symbol, name, _clean_text(rr.get("isin"), upper=True)), unsafe_allow_html=True)
+                with b:
+                    st.markdown(vf_board_badge("OPEN","green"), unsafe_allow_html=True)
+
+                c1,c2,c3,c4,c5 = st.columns(5)
+                c1.metric("Entrée réelle", f"{entry:.2f}" if pd.notna(entry) else "—")
+                c2.metric("Cours", f"{current:.2f}" if pd.notna(current) else "—")
+                c3.metric("P/L live", f"{unreal:+.2f} €" if pd.notna(unreal) else "—",
+                          f"{unreal_pct:+.2f}%" if pd.notna(unreal_pct) else None)
+                c4.metric("Stop", f"{_vf_num(rr.get('stop')):.2f}" if pd.notna(_vf_num(rr.get("stop"))) else "—")
+                c5.metric("TP1 / TP2",
+                          f"{_vf_num(rr.get('tp1')):.2f} / {_vf_num(rr.get('tp2')):.2f}"
+                          if pd.notna(_vf_num(rr.get("tp1"))) and pd.notna(_vf_num(rr.get("tp2"))) else "—")
+
+                opened_at = pd.to_datetime(rr.get("opened_at"), errors="coerce")
+                if pd.notna(opened_at):
+                    now = pd.Timestamp.utcnow()
+                    try:
+                        if opened_at.tzinfo is None:
+                            opened_at = opened_at.tz_localize("UTC")
+                        age_days = max((now - opened_at).total_seconds() / 86400, 0)
+                        st.caption(
+                            f"Ouvert depuis ~{age_days:.1f} jour(s) • "
+                            f"TP1 prévu : {rr.get('horizon_tp1') or '—'} / {rr.get('sessions_tp1') or '—'} séances"
+                        )
+                    except Exception:
+                        pass
+
+    # ------------------------------------------------------
+    # Close a trade
+    # ------------------------------------------------------
+    if not opened.empty:
+        vf_section("Clôturer un trade", "Saisir l'exécution réelle pour mesurer prévu vs réalisé.")
+
+        labels = {}
+        for _, rr in opened.iterrows():
+            lab = f"{rr.get('symbol')} • {rr.get('name')} • {str(rr.get('trade_id'))[-6:]}"
+            labels[lab] = rr
+
+        choice = st.selectbox("Trade OPEN", list(labels.keys()), key="journal_close_trade")
+        selected = labels[choice]
+        symbol = _clean_text(selected.get("symbol"), upper=True)
+        current = _vf_num(live_quote(symbol).get("price"))
+        default_exit = float(current) if pd.notna(current) else float(_vf_num(selected.get("actual_entry")) or 0)
+
+        q1,q2,q3 = st.columns(3)
+        exit_price = q1.number_input(
+            "Prix de sortie réel",
+            min_value=0.0,
+            value=max(default_exit, 0.0),
+            step=0.01,
+            key=f"journal_exit_{selected.get('trade_id')}"
+        )
+        exit_reason = q2.selectbox(
+            "Motif de sortie",
+            ["TP1","TP2","STOP","MANUEL","INVALIDATION","NEWS/RISK"],
+            key=f"journal_reason_{selected.get('trade_id')}"
+        )
+        fees = q3.number_input(
+            "Frais (€)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            key=f"journal_fees_{selected.get('trade_id')}"
+        )
+        notes = st.text_input(
+            "Note de sortie",
+            placeholder="Ex. momentum cassé, sortie volontaire avant news…",
+            key=f"journal_notes_{selected.get('trade_id')}"
+        )
+
+        if st.button("✅ Clôturer et calculer le résultat", type="primary", use_container_width=True):
+            ok, where = vf_close_trade_record(selected, exit_price, exit_reason, fees, notes)
+            if ok:
+                st.success(f"Trade clôturé • journal {where}.")
+                vf_load_trade_journal.clear()
+                st.rerun()
+
+    # ------------------------------------------------------
+    # Strategy analytics
+    # ------------------------------------------------------
+    closed = df[df["status"].astype(str).str.upper() == "CLOSED"].copy()
+    if not closed.empty:
+        vf_section("Strategy Analytics", "Identifier les setups qui créent réellement de la performance.")
+
+        closed["realized_pnl"] = pd.to_numeric(closed["realized_pnl"], errors="coerce")
+        closed["score"] = pd.to_numeric(closed["score"], errors="coerce")
+        closed["r_multiple"] = pd.to_numeric(closed["r_multiple"], errors="coerce")
+        closed["opened_at"] = pd.to_datetime(closed["opened_at"], errors="coerce")
+        closed["closed_at"] = pd.to_datetime(closed["closed_at"], errors="coerce")
+        closed["Durée jours"] = (
+            (closed["closed_at"] - closed["opened_at"]).dt.total_seconds() / 86400
+        )
+
+        def score_bucket(x):
+            if pd.isna(x):
+                return "Non classé"
+            if x >= 85:
+                return "85+"
+            if x >= 76:
+                return "76–84"
+            if x >= 72:
+                return "72–75"
+            return "<72"
+
+        closed["Bucket score"] = closed["score"].map(score_bucket)
+
+        perf_by_score = (
+            closed.groupby("Bucket score", dropna=False)
+            .agg(
+                Trades=("trade_id","count"),
+                **{
+                    "P/L €":("realized_pnl","sum"),
+                    "R moyen":("r_multiple","mean"),
+                    "Durée moy. jours":("Durée jours","mean")
+                }
+            )
+            .reset_index()
+        )
+
+        perf_by_horizon = (
+            closed.groupby("horizon_tp1", dropna=False)
+            .agg(
+                Trades=("trade_id","count"),
+                **{
+                    "P/L €":("realized_pnl","sum"),
+                    "R moyen":("r_multiple","mean"),
+                    "Durée moy. jours":("Durée jours","mean")
+                }
+            )
+            .reset_index()
+            .rename(columns={"horizon_tp1":"Horizon TP1"})
+        )
+
+        a,b = st.columns(2)
+        with a:
+            st.markdown("**Performance par score initial**")
+            st.dataframe(perf_by_score, use_container_width=True, hide_index=True)
+        with b:
+            st.markdown("**Performance par horizon**")
+            st.dataframe(perf_by_horizon, use_container_width=True, hide_index=True)
+
+        curve = closed.sort_values("closed_at")[["closed_at","realized_pnl"]].dropna()
+        if not curve.empty:
+            curve["P/L cumulé"] = curve["realized_pnl"].cumsum()
+            vf_line(curve, "closed_at", ["P/L cumulé"], "Courbe de performance des micro-trades")
+
+        st.markdown("**Historique clôturé**")
+        visible = [
+            "closed_at","symbol","name","actual_entry","exit_price","quantity",
+            "exit_reason","realized_pnl","realized_pct","r_multiple",
+            "score","horizon_tp1","rotation","Durée jours"
+        ]
+        st.dataframe(
+            closed[[c for c in visible if c in closed.columns]].sort_values("closed_at", ascending=False),
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 
@@ -4374,6 +4885,7 @@ with st.sidebar:
     _nav_button("📈 Performance", "nav_perf")
     _nav_button("⚖️ Arbitrage", "nav_arb")
     _nav_button("💰 Transactions", "nav_tx")
+    _nav_button("📓 Trade Journal", "nav_trade_journal")
 
     st.markdown('<div class="vf-group-title">Marché</div>', unsafe_allow_html=True)
     _nav_button("🔎 Scanner", "nav_scanner")
@@ -5490,9 +6002,21 @@ def vf_dashboard_command_center():
     except Exception:
         _xtb_equity = _xtb_gain = 0.0
 
-    rcv1,rcv2 = st.columns(2)
+    try:
+        _journal = vf_load_trade_journal("cto_xtb")
+        _jstats = vf_trade_journal_stats(_journal)
+    except Exception:
+        _journal = pd.DataFrame()
+        _jstats = {"closed":0,"win_rate":0.0,"pnl":0.0}
+
+    rcv1,rcv2,rcv3 = st.columns(3)
     rcv1.metric("Capital Recovery PEA", f"{_pea_loss:,.0f} € à récupérer")
     rcv2.metric("XTB Project Zero", f"{_xtb_equity:,.0f} €", f"{_xtb_gain:+,.0f} € créés")
+    rcv3.metric(
+        "Micro-trades suivis",
+        int(_jstats.get("closed",0)),
+        f"{float(_jstats.get('pnl',0)):+.0f} € • WR {float(_jstats.get('win_rate',0)):.0f}%"
+    )
 
     vf_section("Agent Intelligence","L'agent reste un module central et accessible directement depuis cette vue.")
     ai1,ai2 = st.columns([4,1])
@@ -5716,6 +6240,9 @@ elif mode=="💼 CTO":
 
 elif mode=="💰 Transactions":
     show_transactions_page()
+
+elif mode=="📓 Trade Journal":
+    vf_trade_journal_page()
 
 elif mode=="📈 Performance":
     show_performance_page()
