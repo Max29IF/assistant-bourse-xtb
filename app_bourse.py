@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V30 Smart Simulation Search"
+APP_VERSION = "V32 Trade Horizon + Capital Rotation"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -3645,10 +3645,24 @@ def vf_capital_recovery_panel(broker=None):
             c4.metric("R/R", f"{_vf_num(rr.get('R/R')):.2f}")
             c5.metric("Potentiel", f"{_vf_num(rr.get('Potentiel %')):.1f}%")
 
-            s1,s2,s3 = st.columns(3)
+            horizon_ctx = vf_trade_horizon_context(
+                symbol,
+                entry,
+                _vf_num(rr.get("TP1")),
+                tp2
+            )
+            tp1_h = (horizon_ctx or {}).get("tp1", {})
+            tp2_h = (horizon_ctx or {}).get("tp2", {})
+
+            s1,s2,s3,s4 = st.columns(4)
             s1.metric("Risque théorique", f"{risk_amount:.0f} €")
             s2.metric("Taille théorique", f"{qty} titre(s)")
             s3.metric("Gain TP2 théorique", f"{potential_gain:.0f} €")
+            s4.metric(
+                "Rotation",
+                tp1_h.get("rotation","Indéterminée"),
+                f"TP1 ≈ {tp1_h.get('sessions','—')} séance(s)"
+            )
 
             if capital_needed > recovery_capital and qty > 0:
                 st.caption("⚠️ Capital requis supérieur à l'enveloppe dédiée : réduire ou ignorer ce setup.")
@@ -3656,12 +3670,475 @@ def vf_capital_recovery_panel(broker=None):
             if _clean_text(rr.get("Éligibilité")) == "PEA à vérifier":
                 st.warning("Éligibilité PEA non confirmée par les données actuelles : vérifier avant toute opération.")
 
+            # XTB execution translation is shown as an operational reference.
+            # This does not change PEA eligibility or the selected account.
+            current_quote = live_quote(symbol)
+            vf_xtb_execution_block(
+                symbol=symbol,
+                entry=entry,
+                stop=stop,
+                tp1=_vf_num(rr.get("TP1")),
+                tp2=tp2,
+                qty=qty,
+                current_price=_vf_num(current_quote.get("price")),
+                key_prefix=f"pea_recovery_xtb_{idx}"
+            )
+
             if st.button(
                 "📊 Fiche complète",
                 key=f"recovery_candidate_{idx}_{vf_identity_key(symbol,name,isin)}",
                 use_container_width=True
             ):
                 open_instrument_identity(symbol, name, isin, setup_row=rr.to_dict())
+
+
+
+def vf_xtb_order_type(entry, current_price):
+    entry = _vf_num(entry)
+    current_price = _vf_num(current_price)
+
+    if pd.isna(entry):
+        return "À définir"
+
+    if pd.isna(current_price):
+        return "Ordre limite"
+
+    # Long-only educational execution helper:
+    # entry below current market -> Buy Limit.
+    # entry around/above market -> market order or wait for trigger depending strategy.
+    gap = (entry - current_price) / current_price * 100 if current_price else 0
+
+    if entry < current_price * 0.997:
+        return "Achat limite"
+    if abs(gap) <= 0.3:
+        return "Ordre au marché / limite proche"
+    return "Attendre le niveau d'entrée"
+
+
+
+def vf_estimate_trade_horizon(entry, target, atr_pct=None, daily_vol_pct=None):
+    """
+    Estimate number of trading sessions needed to reach a target.
+    This is not a forecast or guarantee: it converts distance-to-target into a
+    rough volatility-based time bucket for capital-rotation decisions.
+    """
+    entry = _vf_num(entry)
+    target = _vf_num(target)
+    atr_pct = _vf_num(atr_pct)
+    daily_vol_pct = _vf_num(daily_vol_pct)
+
+    if pd.isna(entry) or pd.isna(target) or entry <= 0:
+        return {"sessions": np.nan, "label": "Indéterminé", "rotation": "Indéterminée"}
+
+    distance_pct = abs(target - entry) / entry * 100
+
+    # Prefer ATR-based daily movement when available.
+    movement = atr_pct if pd.notna(atr_pct) and atr_pct > 0 else daily_vol_pct
+    if pd.isna(movement) or movement <= 0:
+        # Conservative generic fallback for liquid equities.
+        movement = 1.5
+
+    # We assume only a fraction of daily movement is directional toward target.
+    effective_move = max(movement * 0.55, 0.35)
+    sessions = max(distance_pct / effective_move, 1.0)
+
+    if sessions <= 5:
+        label = "Court terme"
+        rotation = "Rapide"
+    elif sessions <= 20:
+        label = "Moyen terme"
+        rotation = "Modérée"
+    else:
+        label = "Long terme"
+        rotation = "Lente"
+
+    return {
+        "sessions": round(float(sessions), 1),
+        "label": label,
+        "rotation": rotation,
+        "distance_pct": round(float(distance_pct), 2),
+    }
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def vf_trade_horizon_context(symbol, entry, tp1, tp2):
+    symbol = _clean_text(symbol, upper=True)
+    atr_pct = np.nan
+    daily_vol_pct = np.nan
+
+    try:
+        hist = history(symbol, "6mo", "1d")
+        if hist is not None and not hist.empty:
+            ind = indicators(hist.copy())
+            if ind is not None and not ind.empty:
+                atr_pct = _vf_num(ind.iloc[-1].get("ATR_PCT"))
+
+            ret = pd.to_numeric(hist["Close"], errors="coerce").pct_change().dropna()
+            if not ret.empty:
+                daily_vol_pct = float(ret.std() * 100)
+    except Exception:
+        pass
+
+    return {
+        "tp1": vf_estimate_trade_horizon(entry, tp1, atr_pct=atr_pct, daily_vol_pct=daily_vol_pct),
+        "tp2": vf_estimate_trade_horizon(entry, tp2, atr_pct=atr_pct, daily_vol_pct=daily_vol_pct),
+        "atr_pct": atr_pct,
+        "daily_vol_pct": daily_vol_pct,
+    }
+
+
+def vf_horizon_allowed(horizon_label, max_horizon):
+    order = {
+        "Court terme": 1,
+        "Moyen terme": 2,
+        "Long terme": 3,
+        "Indéterminé": 99,
+    }
+    if max_horizon == "Sans limite":
+        return True
+    limit = {
+        "5 séances": 1,
+        "20 séances": 2,
+        "Plus d'un mois": 3,
+    }.get(max_horizon, 3)
+    return order.get(horizon_label, 99) <= limit
+
+
+def vf_rotation_badge(rotation):
+    if rotation == "Rapide":
+        return vf_board_badge("Rotation rapide", "green")
+    if rotation == "Modérée":
+        return vf_board_badge("Rotation modérée", "amber")
+    if rotation == "Lente":
+        return vf_board_badge("Rotation lente", "violet")
+    return vf_board_badge("Rotation indéterminée", "muted")
+
+
+
+def vf_xtb_execution_block(symbol, entry, stop, tp1, tp2, qty, current_price=None, key_prefix="xtb_exec"):
+    symbol = _clean_text(symbol, upper=True)
+    entry = _vf_num(entry)
+    stop = _vf_num(stop)
+    tp1 = _vf_num(tp1)
+    tp2 = _vf_num(tp2)
+    current_price = _vf_num(current_price)
+
+    try:
+        qty = int(qty or 0)
+    except Exception:
+        qty = 0
+
+    order_type = vf_xtb_order_type(entry, current_price)
+    horizon = vf_trade_horizon_context(symbol, entry, tp1, tp2)
+    h1 = horizon.get("tp1", {})
+    h2 = horizon.get("tp2", {})
+
+    stop_risk_pct = np.nan
+    if pd.notna(entry) and entry > 0 and pd.notna(stop):
+        stop_risk_pct = (entry - stop) / entry * 100
+
+    st.markdown("#### 📲 Exécution XTB")
+    st.caption(
+        "Guide opérationnel pour xStation avec estimation d'horizon et vitesse de rotation du capital."
+    )
+
+    a,b,c,d = st.columns(4)
+    a.metric("Cours actuel", f"{current_price:.2f}" if pd.notna(current_price) else "—")
+    b.metric("Prix à entrer", f"{entry:.2f}" if pd.notna(entry) else "—")
+    c.metric("Type d'ordre", order_type)
+    d.metric("Volume", f"{qty} titre(s)" if qty > 0 else "0")
+
+    st.markdown("**Horizon des objectifs**")
+    hcol1,hcol2 = st.columns(2)
+
+    with hcol1:
+        with st.container(border=True):
+            st.markdown("**TP1**")
+            st.metric("Objectif", f"{tp1:.2f}" if pd.notna(tp1) else "—")
+            st.metric(
+                "Horizon estimé",
+                h1.get("label","Indéterminé"),
+                f"≈ {h1.get('sessions','—')} séance(s)" if pd.notna(_vf_num(h1.get("sessions"))) else None
+            )
+            st.markdown(vf_rotation_badge(h1.get("rotation","Indéterminée")), unsafe_allow_html=True)
+
+    with hcol2:
+        with st.container(border=True):
+            st.markdown("**TP2**")
+            st.metric("Objectif", f"{tp2:.2f}" if pd.notna(tp2) else "—")
+            st.metric(
+                "Horizon estimé",
+                h2.get("label","Indéterminé"),
+                f"≈ {h2.get('sessions','—')} séance(s)" if pd.notna(_vf_num(h2.get("sessions"))) else None
+            )
+            st.markdown(vf_rotation_badge(h2.get("rotation","Indéterminée")), unsafe_allow_html=True)
+
+    st.caption(
+        "Estimation basée sur la distance à l'objectif et la volatilité récente. "
+        "Ce n'est pas une prévision de délai ni une garantie d'atteinte du TP."
+    )
+
+    st.markdown("**Séquence recommandée — protection prioritaire**")
+
+    if qty <= 0:
+        st.warning(
+            "La taille théorique est inférieure à 1 titre avec le risque choisi. "
+            "Ne pas augmenter artificiellement le risque pour forcer le trade."
+        )
+        return
+
+    if order_type == "Achat limite":
+        st.markdown(
+            f"1. Place un **Achat limite** de {qty} titre(s) à **{entry:.2f}**."
+        )
+    elif order_type == "Ordre au marché / limite proche":
+        st.markdown(
+            f"1. Si le setup reste valide, achète {qty} titre(s) autour de **{entry:.2f}**."
+        )
+    else:
+        st.markdown(
+            f"1. Attends la zone d'entrée autour de **{entry:.2f}** avant d'exécuter."
+        )
+
+    if pd.notna(stop):
+        st.markdown(
+            f"2. Après exécution, protège les {qty} titre(s) avec un **ordre de vente Stop** autour de **{stop:.2f}**."
+        )
+
+    if pd.notna(tp1):
+        st.markdown(
+            f"3. **TP1 {tp1:.2f} — {h1.get('label','Indéterminé')} "
+            f"(≈ {h1.get('sessions','—')} séances)**."
+        )
+
+    if pd.notna(tp2):
+        st.markdown(
+            f"4. **TP2 {tp2:.2f} — {h2.get('label','Indéterminé')} "
+            f"(≈ {h2.get('sessions','—')} séances)**."
+        )
+
+    if pd.notna(stop_risk_pct):
+        st.caption(f"Distance entrée → stop : {stop_risk_pct:.2f}%.")
+
+    # Capital-rotation guidance
+    if h1.get("rotation") == "Rapide":
+        st.success("Rotation du capital favorable : TP1 compatible avec une logique de micro-trade court.")
+    elif h1.get("rotation") == "Modérée":
+        st.warning("Rotation modérée : le capital peut rester mobilisé plusieurs séances à quelques semaines.")
+    elif h1.get("rotation") == "Lente":
+        st.info("Rotation lente : ce setup est moins adapté à un capital micro-trade que tu veux faire tourner rapidement.")
+
+    st.warning(
+        "Contrainte XTB actions/ETF au comptant : un ordre différé réserve le volume concerné. "
+        "Le mode par défaut reste donc Stop sur 100% de la position, puis gestion manuelle de TP1/TP2."
+    )
+
+    with st.expander("Alternative : fractionner les objectifs"):
+        if qty < 2:
+            st.write(
+                "Avec 1 seul titre, pas de fractionnement utile. "
+                "Stop automatique + sortie manuelle sur TP1/TP2 reste la logique la plus simple."
+            )
+        else:
+            q1 = max(1, qty // 2)
+            q2 = qty - q1
+            st.write(
+                f"Répartition possible : **{q1} titre(s)** vers TP1 et **{q2} titre(s)** vers TP2. "
+                "Mais les titres affectés aux limites ne sont plus disponibles simultanément pour un stop séparé."
+            )
+
+
+
+def vf_xtb_microtrade_candidates(top_n=6):
+    """Verified XTB universe first; falls back to the built-in scanner universe."""
+    try:
+        universe = load_broker_universe(brokers=["XTB"])
+    except Exception:
+        universe = pd.DataFrame()
+
+    if universe is None or universe.empty:
+        universe = _fallback_universe()
+
+    if universe is None or universe.empty or "symbol" not in universe.columns:
+        return pd.DataFrame()
+
+    symbols = [
+        _clean_text(x, upper=True)
+        for x in universe["symbol"].dropna().tolist()
+        if _clean_text(x, upper=True)
+    ]
+    symbols = list(dict.fromkeys(symbols))[:180]
+
+    if not symbols:
+        return pd.DataFrame()
+
+    scan = fast_scan(
+        symbols,
+        min_upside=3.0,
+        min_rr=2.0,
+        min_score=72,
+        top_n=max(int(top_n), 3)
+    )
+    if scan is None or scan.empty:
+        return pd.DataFrame()
+
+    meta = {}
+    try:
+        for _, rr in universe.iterrows():
+            s = _clean_text(rr.get("symbol"), upper=True)
+            if s and s not in meta:
+                meta[s] = rr.to_dict()
+    except Exception:
+        pass
+
+    names, markets = [], []
+    for sym in scan["Ticker"].tolist():
+        rr = meta.get(sym, {})
+        names.append(_clean_text(rr.get("name")) or live_quote(sym).get("name", sym))
+        markets.append(_clean_text(rr.get("market")))
+
+    scan = scan.copy()
+    scan["Entreprise"] = names
+    scan["Marché"] = markets
+    scan["Courtier"] = "XTB"
+    return scan
+
+
+def vf_xtb_microtrade_desk():
+    vf_section(
+        "⚡ XTB Micro Trade Desk",
+        "Setups courts issus de l'univers XTB avec plan d'exécution directement lisible dans xStation."
+    )
+
+    x1,x2,x3,x4 = st.columns(4)
+    capital = x1.number_input(
+        "Capital micro-trade XTB (€)",
+        min_value=0.0,
+        value=1000.0,
+        step=100.0,
+        key="xtb_micro_capital"
+    )
+    risk_pct = x2.number_input(
+        "Risque max / trade (%)",
+        min_value=0.1,
+        max_value=2.0,
+        value=0.5,
+        step=0.1,
+        key="xtb_micro_risk"
+    )
+    top_n = x3.slider(
+        "Setups affichés",
+        min_value=3,
+        max_value=10,
+        value=5,
+        key="xtb_micro_topn"
+    )
+    max_horizon = x4.selectbox(
+        "Durée max estimée",
+        ["5 séances","20 séances","Plus d'un mois","Sans limite"],
+        index=0,
+        key="xtb_micro_max_horizon",
+        help="Filtre les setups selon l'horizon estimé de TP1."
+    )
+
+    st.caption(
+        "Filtre VISION FUTURE : potentiel ≥ 3%, R/R ≥ 2, score ≥ 72. "
+        "Le risque reste fixe et n'augmente pas après une perte."
+    )
+
+    with st.spinner("Recherche des micro-trades XTB…"):
+        candidates = vf_xtb_microtrade_candidates(top_n=top_n)
+
+    if candidates is None or candidates.empty:
+        st.info("Aucun setup XTB ne passe actuellement les filtres.")
+        return
+
+    filtered_rows = []
+    for _, _rr in candidates.iterrows():
+        _entry = _vf_num(_rr.get("Entrée"))
+        _tp1 = _vf_num(_rr.get("TP1"))
+        _tp2 = _vf_num(_rr.get("TP2"))
+        _symbol = _clean_text(_rr.get("Ticker"), upper=True)
+        _h = vf_trade_horizon_context(_symbol, _entry, _tp1, _tp2)
+        _tp1_h = (_h or {}).get("tp1", {})
+        if vf_horizon_allowed(_tp1_h.get("label","Indéterminé"), max_horizon):
+            _row = _rr.to_dict()
+            _row["Horizon TP1"] = _tp1_h.get("label","Indéterminé")
+            _row["Séances TP1"] = _tp1_h.get("sessions", np.nan)
+            _row["Rotation"] = _tp1_h.get("rotation","Indéterminée")
+            filtered_rows.append(_row)
+
+    candidates = pd.DataFrame(filtered_rows)
+
+    if candidates.empty:
+        st.info("Aucun setup ne respecte actuellement la durée maximale sélectionnée.")
+        return
+
+    for idx, rr in candidates.reset_index(drop=True).iterrows():
+        symbol = _clean_text(rr.get("Ticker"), upper=True)
+        name = _clean_text(rr.get("Entreprise")) or symbol
+
+        entry = _vf_num(rr.get("Entrée"))
+        stop = _vf_num(rr.get("Stop"))
+        tp1 = _vf_num(rr.get("TP1"))
+        tp2 = _vf_num(rr.get("TP2"))
+
+        q = live_quote(symbol)
+        current_price = _vf_num(q.get("price"))
+
+        risk_amount = capital * risk_pct / 100
+        distance = abs(entry - stop) if pd.notna(entry) and pd.notna(stop) else np.nan
+        qty = int(risk_amount // distance) if pd.notna(distance) and distance > 0 else 0
+
+        capital_needed = qty * entry if qty > 0 and pd.notna(entry) else 0.0
+        max_loss = qty * distance if qty > 0 and pd.notna(distance) else 0.0
+
+        with st.container(border=True):
+            h1,h2 = st.columns([4,1])
+            with h1:
+                st.markdown(vf_identity_html(symbol, name, ""), unsafe_allow_html=True)
+                st.caption(f"XTB • {_clean_text(rr.get('Marché')) or 'Marché'}")
+            with h2:
+                score = _vf_num(rr.get("Score combiné"))
+                st.metric("Score", f"{score:.0f}/100" if pd.notna(score) else "—")
+
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Entrée", f"{entry:.2f}" if pd.notna(entry) else "—")
+            c2.metric("Stop", f"{stop:.2f}" if pd.notna(stop) else "—")
+            c3.metric("TP1", f"{tp1:.2f}" if pd.notna(tp1) else "—")
+            c4.metric("TP2", f"{tp2:.2f}" if pd.notna(tp2) else "—")
+            c5.metric("R/R", f"{_vf_num(rr.get('R/R')):.2f}")
+
+            s1,s2,s3,s4 = st.columns(4)
+            s1.metric("Volume théorique", f"{qty} titre(s)")
+            s2.metric("Capital mobilisé", f"{capital_needed:.0f} €")
+            s3.metric("Perte max théorique", f"{max_loss:.2f} €")
+            h_label = _clean_text(rr.get("Horizon TP1")) or "—"
+            h_sessions = _vf_num(rr.get("Séances TP1"))
+            s4.metric(
+                "Horizon TP1",
+                h_label,
+                f"≈ {h_sessions:.0f} séance(s)" if pd.notna(h_sessions) else None
+            )
+
+            vf_xtb_execution_block(
+                symbol=symbol,
+                entry=entry,
+                stop=stop,
+                tp1=tp1,
+                tp2=tp2,
+                qty=qty,
+                current_price=current_price,
+                key_prefix=f"xtb_micro_{idx}"
+            )
+
+            if st.button(
+                "📊 Fiche Instrument",
+                key=f"xtb_desk_open_{idx}_{vf_identity_key(symbol,name,'')}",
+                use_container_width=True
+            ):
+                open_instrument_identity(symbol, name, "", setup_row=rr.to_dict())
+
 
 
 def vf_xtb_zero_panel():
@@ -3744,6 +4221,8 @@ def vf_xtb_zero_panel():
             st.markdown(f"**Prochain palier : {next_milestone:,.0f} €**")
             st.progress(progress)
             st.caption(f"{equity:,.0f} € / {next_milestone:,.0f} €")
+
+    vf_xtb_microtrade_desk()
 
 
 
