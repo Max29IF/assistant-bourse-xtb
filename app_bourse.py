@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V28 Dashboard Hero + Scanner Sync"
+APP_VERSION = "V29 Capital Recovery + XTB Zero"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -3335,6 +3335,418 @@ def vf_setup_card(row, key_prefix="setup", show_expand=False):
 
 
 
+
+def vf_recovery_action(pnl_pct, setup):
+    """
+    Deterministic decision support. It deliberately avoids martingale logic:
+    losing positions never receive a larger risk budget simply because they are down.
+    """
+    score = _vf_num((setup or {}).get("score"))
+    rr = _vf_num((setup or {}).get("rr"))
+    upside = _vf_num((setup or {}).get("upside"))
+    confirmed = _clean_text((setup or {}).get("confirmed_1h"))
+
+    if pd.isna(score):
+        return "CONSERVER / À RÉÉVALUER", "Données techniques insuffisantes pour justifier une action."
+
+    strong = score >= 76 and pd.notna(rr) and rr >= 2 and pd.notna(upside) and upside >= 3
+    medium = score >= 65
+    confirmed_ok = confirmed == "✅" or not confirmed
+
+    if pnl_pct <= -18 and score < 60:
+        return "RÉDUIRE / SORTIR", "Perte importante et momentum insuffisant : priorité à la protection du capital."
+    if pnl_pct <= -10 and strong and confirmed_ok:
+        return "RENFORCER SOUS CONDITIONS", "Setup redevenu solide ; renforcement seulement avec taille de risque plafonnée."
+    if pnl_pct <= -10 and medium:
+        return "CONSERVER", "Pas de signal assez fort pour renforcer ; attendre une confirmation plus nette."
+    if pnl_pct < 0 and strong:
+        return "CONSERVER / RENFORCER LÉGER", "La structure technique reste constructive malgré la moins-value."
+    if pnl_pct < 0 and score < 60:
+        return "ROTATION À ÉTUDIER", "Conviction technique faible ; comparer avec une opportunité au meilleur couple rendement/risque."
+    return "CONSERVER", "Aucun signal de dégradation majeur détecté."
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def vf_recovery_setup(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return {}
+    try:
+        daily = trade_setup(history(symbol, "6mo", "1d"))
+    except Exception:
+        daily = None
+    if not daily:
+        return {}
+
+    out = dict(daily)
+    try:
+        hourly = trade_setup(history(symbol, "3mo", "1h"))
+    except Exception:
+        hourly = None
+
+    if hourly:
+        conf = float(hourly.get("score", 0) or 0)
+        trend_ok = bool(conf >= 65 and float(hourly.get("rr", 0) or 0) >= 1.5)
+        out["hourly_score"] = conf
+        out["confirmed_1h"] = "✅" if trend_ok else "⚠️"
+        out["score"] = round(.65 * float(daily.get("score", 0)) + .35 * conf, 1)
+    else:
+        out["confirmed_1h"] = "⚠️"
+
+    return out
+
+
+def vf_pea_recovery_candidates(exclude_symbols=None, top_n=8):
+    """
+    Candidate micro-trades:
+    - prioritises instruments already held in the PEA (eligibility known in practice);
+    - then adds broker-universe European names as 'eligibility to verify'.
+    """
+    exclude_symbols = {str(x).upper() for x in (exclude_symbols or [])}
+    rows = []
+
+    try:
+        pea = load_positions("pea")
+    except Exception:
+        pea = pd.DataFrame()
+
+    if pea is not None and not pea.empty:
+        for _, r in pea.iterrows():
+            s = _clean_text(r.get("Ticker"), upper=True)
+            if s and s not in exclude_symbols:
+                rows.append({
+                    "symbol": s,
+                    "name": _clean_text(r.get("Nom")) or s,
+                    "isin": _clean_text(r.get("ISIN"), upper=True),
+                    "eligibility": "PEA détenu",
+                    "source": "Portefeuille PEA",
+                })
+
+    # Broaden with Europe, but never claim PEA eligibility.
+    try:
+        bu = load_broker_universe()
+    except Exception:
+        bu = pd.DataFrame()
+
+    if bu is not None and not bu.empty:
+        european = {
+            "France","Germany","Allemagne","Netherlands","Pays-Bas",
+            "Spain","Espagne","Italy","Italie","Belgium","Belgique",
+            "Portugal","Finland","Finlande","Sweden","Suède","Denmark","Danemark"
+        }
+        for _, r in bu.iterrows():
+            market = _clean_text(r.get("market"))
+            s = _clean_text(r.get("symbol"), upper=True)
+            if s and s not in exclude_symbols and market in european:
+                rows.append({
+                    "symbol": s,
+                    "name": _clean_text(r.get("name")) or s,
+                    "isin": _clean_text(r.get("isin"), upper=True),
+                    "eligibility": "PEA à vérifier",
+                    "source": "Référentiel Europe",
+                })
+
+    if not rows:
+        return pd.DataFrame()
+
+    base = pd.DataFrame(rows).drop_duplicates("symbol")
+    symbols = base["symbol"].head(120).tolist()
+
+    scan = fast_scan(symbols, min_upside=3.0, min_rr=2.0, min_score=72, top_n=max(top_n * 2, 12))
+    if scan is None or scan.empty:
+        return pd.DataFrame()
+
+    meta = base.set_index("symbol")
+    extras = []
+    for _, r in scan.iterrows():
+        s = _clean_text(r.get("Ticker"), upper=True)
+        if s in meta.index:
+            mr = meta.loc[s]
+            if isinstance(mr, pd.DataFrame):
+                mr = mr.iloc[0]
+            extras.append({
+                "Entreprise": _clean_text(mr.get("name")) or s,
+                "ISIN": _clean_text(mr.get("isin"), upper=True),
+                "Éligibilité": _clean_text(mr.get("eligibility")),
+                "Source": _clean_text(mr.get("source")),
+            })
+        else:
+            extras.append({"Entreprise":s,"ISIN":"","Éligibilité":"PEA à vérifier","Source":""})
+
+    extra_df = pd.DataFrame(extras)
+    scan = pd.concat([scan.reset_index(drop=True), extra_df], axis=1)
+    return scan.sort_values(["Score combiné","R/R","Potentiel %"], ascending=False).head(top_n)
+
+
+def vf_capital_recovery_panel(broker=None):
+    vf_section(
+        "🧠 Capital Recovery Intelligence",
+        "Diagnostic des lignes négatives, actions possibles et micro-trades de récupération à risque plafonné."
+    )
+
+    totals, positions = portfolio_valuation("pea", use_live=True, broker=broker)
+    if positions is None or positions.empty:
+        st.info("Aucune position PEA disponible pour construire un plan de récupération.")
+        return
+
+    positions = positions.copy()
+    positions["P/L latent"] = pd.to_numeric(positions["P/L latent"], errors="coerce")
+    positions["P/L %"] = pd.to_numeric(positions["P/L %"], errors="coerce")
+    losses = positions[positions["P/L latent"] < 0].copy()
+    target_loss = abs(float(losses["P/L latent"].sum(skipna=True))) if not losses.empty else 0.0
+
+    tx = load_transactions("pea")
+    led, realized, _ = ledger_summary(tx)
+    realized_gain = max(float(led.get("realized_gross", 0) or 0), 0.0)
+    dividends = max(float(led.get("dividends", 0) or 0), 0.0)
+    recovered = realized_gain + dividends
+    remaining = max(target_loss - recovered, 0.0)
+    progress = (recovered / target_loss * 100) if target_loss > 0 else 100.0
+
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("Moins-values ciblées", f"{target_loss:,.0f} €")
+    k2.metric("Réalisé + dividendes", f"{recovered:,.0f} €")
+    k3.metric("Reste théorique", f"{remaining:,.0f} €")
+    k4.metric("Recovery progress", f"{min(progress,100):.0f}%")
+
+    st.progress(min(max(progress / 100, 0.0), 1.0))
+
+    st.caption(
+        "Le compteur mesure une progression comptable, pas une promesse de récupération. "
+        "Le risque d'un nouveau trade n'augmente jamais parce qu'une ancienne position est en perte."
+    )
+
+    if losses.empty:
+        st.success("Aucune ligne PEA actuellement en moins-value selon la valorisation de référence.")
+        return
+
+    vf_section("Diagnostic expert par ligne", "Décision issue du P/L, du score technique, du R/R et de la confirmation 1H.")
+
+    diagnostic_rows = []
+    for _, r in losses.sort_values("P/L %").iterrows():
+        symbol = _clean_text(r.get("Ticker"), upper=True)
+        name = _clean_text(r.get("Entreprise")) or symbol
+        isin = _clean_text(r.get("ISIN"), upper=True)
+        pnl_eur = float(r.get("P/L latent") or 0)
+        pnl_pct = float(r.get("P/L %") or 0)
+
+        setup = vf_recovery_setup(symbol)
+        action, reason = vf_recovery_action(pnl_pct, setup)
+        score = _vf_num(setup.get("score"))
+        rr = _vf_num(setup.get("rr"))
+        upside = _vf_num(setup.get("upside"))
+
+        diagnostic_rows.append({
+            "Ticker": symbol,
+            "Entreprise": name,
+            "P/L €": pnl_eur,
+            "P/L %": pnl_pct,
+            "Score": score,
+            "R/R": rr,
+            "Potentiel %": upside,
+            "Confirmation 1H": _clean_text(setup.get("confirmed_1h")),
+            "Action": action,
+            "Lecture": reason,
+        })
+
+    diag = pd.DataFrame(diagnostic_rows)
+
+    for i in range(0, len(diag), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            idx = i + j
+            if idx >= len(diag):
+                break
+            rr = diag.iloc[idx]
+            with col:
+                with st.container(border=True):
+                    symbol = rr["Ticker"]
+                    name = rr["Entreprise"]
+                    isin_hit = ""
+                    try:
+                        src = losses[losses["Ticker"] == symbol]
+                        if not src.empty:
+                            isin_hit = _clean_text(src.iloc[0].get("ISIN"), upper=True)
+                    except Exception:
+                        pass
+                    st.markdown(vf_identity_html(symbol, name, isin_hit), unsafe_allow_html=True)
+                    a,b,c = st.columns(3)
+                    a.metric("P/L", f"{rr['P/L €']:+,.0f} €", f"{rr['P/L %']:+.1f}%")
+                    b.metric("Score", f"{rr['Score']:.0f}/100" if pd.notna(rr["Score"]) else "—")
+                    c.metric("R/R", f"{rr['R/R']:.2f}" if pd.notna(rr["R/R"]) else "—")
+                    st.markdown(f"**{rr['Action']}**")
+                    st.caption(rr["Lecture"])
+                    if st.button(
+                        "📊 Ouvrir la fiche",
+                        key=f"recovery_{vf_identity_key(symbol,name,isin_hit)}",
+                        use_container_width=True
+                    ):
+                        open_instrument_identity(symbol, name, isin_hit)
+
+    vf_section(
+        "Micro-trades de récupération",
+        "Setups ≥ 3% de potentiel, R/R ≥ 2 et score ≥ 72. Taille de risque indépendante de la perte passée."
+    )
+
+    r1,r2,r3 = st.columns(3)
+    recovery_capital = r1.number_input(
+        "Capital dédié aux micro-trades (€)",
+        min_value=0.0,
+        value=1000.0,
+        step=100.0,
+        key="recovery_capital"
+    )
+    recovery_risk = r2.number_input(
+        "Risque max / trade (%)",
+        min_value=0.1,
+        max_value=2.0,
+        value=0.5,
+        step=0.1,
+        key="recovery_risk"
+    )
+    max_trades = r3.slider("Opportunités affichées", 3, 10, 5, key="recovery_trades")
+
+    with st.spinner("Recherche des setups de récupération…"):
+        candidates = vf_pea_recovery_candidates(
+            exclude_symbols=[],
+            top_n=max_trades
+        )
+
+    if candidates is None or candidates.empty:
+        st.info("Aucun micro-trade ne passe actuellement les filtres de qualité.")
+        return
+
+    for idx, rr in candidates.reset_index(drop=True).iterrows():
+        symbol = _clean_text(rr.get("Ticker"), upper=True)
+        name = _clean_text(rr.get("Entreprise")) or symbol
+        isin = _clean_text(rr.get("ISIN"), upper=True)
+        entry = _vf_num(rr.get("Entrée"))
+        stop = _vf_num(rr.get("Stop"))
+        tp2 = _vf_num(rr.get("TP2"))
+
+        risk_amount = recovery_capital * recovery_risk / 100
+        distance = abs(entry - stop) if pd.notna(entry) and pd.notna(stop) else np.nan
+        qty = int(risk_amount // distance) if pd.notna(distance) and distance > 0 else 0
+        capital_needed = qty * entry if qty > 0 and pd.notna(entry) else 0.0
+        potential_gain = qty * max(tp2 - entry, 0) if qty > 0 and pd.notna(tp2) and pd.notna(entry) else 0.0
+
+        with st.container(border=True):
+            h1,h2 = st.columns([4,1])
+            with h1:
+                st.markdown(vf_identity_html(symbol, name, isin), unsafe_allow_html=True)
+                st.caption(f"{_clean_text(rr.get('Éligibilité'))} • {_clean_text(rr.get('Source'))}")
+            with h2:
+                st.metric("Score", f"{_vf_num(rr.get('Score combiné')):.0f}/100")
+
+            c1,c2,c3,c4,c5 = st.columns(5)
+            c1.metric("Entrée", f"{entry:.2f}" if pd.notna(entry) else "—")
+            c2.metric("Stop", f"{stop:.2f}" if pd.notna(stop) else "—")
+            c3.metric("TP2", f"{tp2:.2f}" if pd.notna(tp2) else "—")
+            c4.metric("R/R", f"{_vf_num(rr.get('R/R')):.2f}")
+            c5.metric("Potentiel", f"{_vf_num(rr.get('Potentiel %')):.1f}%")
+
+            s1,s2,s3 = st.columns(3)
+            s1.metric("Risque théorique", f"{risk_amount:.0f} €")
+            s2.metric("Taille théorique", f"{qty} titre(s)")
+            s3.metric("Gain TP2 théorique", f"{potential_gain:.0f} €")
+
+            if capital_needed > recovery_capital and qty > 0:
+                st.caption("⚠️ Capital requis supérieur à l'enveloppe dédiée : réduire ou ignorer ce setup.")
+
+            if _clean_text(rr.get("Éligibilité")) == "PEA à vérifier":
+                st.warning("Éligibilité PEA non confirmée par les données actuelles : vérifier avant toute opération.")
+
+            if st.button(
+                "📊 Fiche complète",
+                key=f"recovery_candidate_{idx}_{vf_identity_key(symbol,name,isin)}",
+                use_container_width=True
+            ):
+                open_instrument_identity(symbol, name, isin, setup_row=rr.to_dict())
+
+
+def vf_xtb_zero_panel():
+    """
+    CTO XTB 'Project Zero': starts conceptually from €0 and separates
+    deposits from actual investment performance.
+    """
+    vf_section(
+        "🚀 XTB Project Zero",
+        "Suivre une progression réelle depuis 0 € : capital versé, valeur actuelle et performance générée séparément."
+    )
+
+    metrics, positions, tx, realized, _ = performance_metrics("cto_xtb")
+    save_performance_snapshot("cto_xtb", metrics)
+
+    contributions = float(metrics.get("contributions", 0) or 0)
+    withdrawals = float(metrics.get("withdrawals", 0) or 0)
+    net_contrib = contributions - withdrawals
+
+    assets = float(metrics.get("assets_value", 0) or 0)
+    cash = metrics.get("cash_estimate")
+    equity = metrics.get("equity_estimate")
+    if equity is None:
+        equity = assets
+    equity = float(equity or 0)
+
+    # If no contribution history exists yet, the tracker remains genuinely at 0.
+    gain = equity - net_contrib if net_contrib > 0 else 0.0
+    return_pct = gain / net_contrib * 100 if net_contrib > 0 else 0.0
+
+    z1,z2,z3,z4 = st.columns(4)
+    z1.metric("Point de départ", "0 €")
+    z2.metric("Capital net versé", f"{net_contrib:,.0f} €")
+    z3.metric("Valeur suivie", f"{equity:,.0f} €")
+    z4.metric("Performance créée", f"{gain:+,.0f} €", f"{return_pct:+.2f}%")
+
+    st.caption(
+        "Les dépôts ne sont pas comptés comme des gains. La performance créée correspond à la valeur "
+        "du compte moins les apports nets, sous réserve que l'historique XTB importé soit complet."
+    )
+
+    hist = load_performance_snapshots("cto_xtb").copy()
+    if hist.empty:
+        zero = pd.DataFrame([{
+            "snapshot_date": pd.Timestamp(date.today()),
+            "equity_estimate": 0.0,
+            "net_contributions": 0.0,
+            "assets_value": 0.0,
+        }])
+        hist = zero
+    else:
+        hist["snapshot_date"] = pd.to_datetime(hist["snapshot_date"], errors="coerce")
+        first_date = hist["snapshot_date"].min()
+        baseline_date = first_date - pd.Timedelta(days=1)
+        baseline = pd.DataFrame([{
+            "snapshot_date": baseline_date,
+            "equity_estimate": 0.0,
+            "net_contributions": 0.0,
+            "assets_value": 0.0,
+        }])
+        hist = pd.concat([baseline, hist], ignore_index=True).sort_values("snapshot_date")
+
+    vf_line(
+        hist,
+        "snapshot_date",
+        ["equity_estimate","net_contributions"],
+        "Évolution depuis zéro — valeur du compte vs capital versé"
+    )
+
+    if net_contrib <= 0:
+        st.info(
+            "Le CTO XTB est actuellement au point zéro. Dès le premier dépôt/import, "
+            "VISION FUTURE séparera automatiquement capital apporté et performance réellement générée."
+        )
+    else:
+        milestones = [100, 500, 1000, 2500, 5000, 10000]
+        next_milestone = next((x for x in milestones if equity < x), None)
+        if next_milestone:
+            progress = min(equity / next_milestone, 1.0)
+            st.markdown(f"**Prochain palier : {next_milestone:,.0f} €**")
+            st.progress(progress)
+            st.caption(f"{equity:,.0f} € / {next_milestone:,.0f} €")
+
+
+
 def show_portfolio_page(account, title, broker: str | None = None):
     try:
         reconcile_orphan_portfolio_data()
@@ -4581,6 +4993,28 @@ def vf_dashboard_command_center():
     c4.metric("Alertes risque",risks)
     c5.metric("Watchlist",watch_count)
 
+    # V29 — Recovery + Project Zero overview
+    try:
+        _pea_totals, _pea_pos = portfolio_valuation("pea", use_live=False)
+        _pea_loss = abs(float(pd.to_numeric(
+            _pea_pos.loc[pd.to_numeric(_pea_pos["P/L latent"], errors="coerce") < 0, "P/L latent"],
+            errors="coerce"
+        ).sum())) if _pea_pos is not None and not _pea_pos.empty else 0.0
+    except Exception:
+        _pea_loss = 0.0
+
+    try:
+        _xtb_m, _, _, _, _ = performance_metrics("cto_xtb")
+        _xtb_net = float(_xtb_m.get("net_contributions", 0) or 0)
+        _xtb_equity = float(_xtb_m.get("equity_estimate") or _xtb_m.get("assets_value") or 0)
+        _xtb_gain = (_xtb_equity - _xtb_net) if _xtb_net > 0 else 0.0
+    except Exception:
+        _xtb_equity = _xtb_gain = 0.0
+
+    rcv1,rcv2 = st.columns(2)
+    rcv1.metric("Capital Recovery PEA", f"{_pea_loss:,.0f} € à récupérer")
+    rcv2.metric("XTB Project Zero", f"{_xtb_equity:,.0f} €", f"{_xtb_gain:+,.0f} € créés")
+
     vf_section("Agent Intelligence","L'agent reste un module central et accessible directement depuis cette vue.")
     ai1,ai2 = st.columns([4,1])
     with ai1:
@@ -4784,6 +5218,7 @@ elif mode=="🏦 PEA":
     brokers = available_brokers("pea")
     broker = st.selectbox("Courtier PEA", brokers if brokers else ["BoursoBank"], key="pea_broker")
     show_portfolio_page("pea","🏦 PEA", broker=broker)
+    vf_capital_recovery_panel(broker=broker)
 
 elif mode=="💼 CTO":
     acc=st.selectbox("CTO",["cto_xtb","cto_trade_republic","cto_autre"],format_func=lambda x:{"cto_xtb":"XTB","cto_trade_republic":"Trade Republic","cto_autre":"Autre"}[x])
@@ -4794,7 +5229,11 @@ elif mode=="💼 CTO":
         st.caption(f"Filtre courtier verrouillé : {broker}")
     else:
         broker=st.selectbox("Courtier",brokers if brokers else ["Autre"],key="cto_other_broker")
-    show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
+    if acc == "cto_xtb":
+        vf_xtb_zero_panel()
+        show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
+    else:
+        show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
 
 elif mode=="💰 Transactions":
     show_transactions_page()
