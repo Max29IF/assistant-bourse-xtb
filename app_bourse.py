@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V33 Trade Journal + Strategy Analytics"
+APP_VERSION = "V34 Manual Trade Journal + Live Tracking"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -4356,6 +4356,110 @@ def vf_register_trade_plan(
     return vf_save_trade_journal_record(payload)
 
 
+
+def vf_register_manual_open_trade(
+    symbol, name, isin, actual_entry, stop, tp1, tp2, qty,
+    broker="XTB", account="cto_xtb", notes=""
+):
+    symbol = _clean_text(symbol, upper=True)
+    name = _clean_text(name) or symbol
+    isin = _clean_text(isin, upper=True)
+
+    actual_entry = _vf_num(actual_entry)
+    stop = _vf_num(stop)
+    tp1 = _vf_num(tp1)
+    tp2 = _vf_num(tp2)
+
+    try:
+        qty = int(qty or 0)
+    except Exception:
+        qty = 0
+
+    if not symbol or pd.isna(actual_entry) or actual_entry <= 0 or qty <= 0:
+        return False, "Données invalides"
+
+    risk_amount = 0.0
+    if pd.notna(stop):
+        risk_amount = abs(float(actual_entry) - float(stop)) * qty
+
+    capital_committed = float(actual_entry) * qty
+    rr = np.nan
+    upside = np.nan
+
+    if pd.notna(stop) and pd.notna(tp2) and actual_entry > stop:
+        risk_per_share = actual_entry - stop
+        reward = tp2 - actual_entry
+        if risk_per_share > 0:
+            rr = reward / risk_per_share
+
+    if pd.notna(tp2):
+        upside = (tp2 - actual_entry) / actual_entry * 100
+
+    horizon = vf_trade_horizon_context(symbol, actual_entry, tp1, tp2)
+    h1 = horizon.get("tp1", {})
+    h2 = horizon.get("tp2", {})
+
+    payload = {
+        "trade_id": vf_trade_id(symbol),
+        "account": account,
+        "broker": broker,
+        "symbol": symbol,
+        "name": name,
+        "isin": isin,
+        "status": "OPEN",
+        "planned_entry": float(actual_entry),
+        "actual_entry": float(actual_entry),
+        "stop": float(stop) if pd.notna(stop) else None,
+        "tp1": float(tp1) if pd.notna(tp1) else None,
+        "tp2": float(tp2) if pd.notna(tp2) else None,
+        "quantity": qty,
+        "risk_amount": float(risk_amount),
+        "capital_committed": float(capital_committed),
+        "score": None,
+        "rr": float(rr) if pd.notna(rr) else None,
+        "upside": float(upside) if pd.notna(upside) else None,
+        "horizon_tp1": h1.get("label"),
+        "horizon_tp2": h2.get("label"),
+        "sessions_tp1": h1.get("sessions"),
+        "sessions_tp2": h2.get("sessions"),
+        "rotation": h1.get("rotation"),
+        "opened_at": datetime.utcnow().isoformat(),
+        "closed_at": None,
+        "exit_price": None,
+        "exit_reason": None,
+        "fees": 0.0,
+        "realized_pnl": None,
+        "realized_pct": None,
+        "r_multiple": None,
+        "notes": _clean_text(notes),
+    }
+    return vf_save_trade_journal_record(payload)
+
+
+def vf_live_trade_state(entry, current, stop=None, tp1=None, tp2=None):
+    entry = _vf_num(entry)
+    current = _vf_num(current)
+    stop = _vf_num(stop)
+    tp1 = _vf_num(tp1)
+    tp2 = _vf_num(tp2)
+
+    if pd.isna(current):
+        return "PRIX INDISPONIBLE", "muted", ""
+
+    if pd.notna(stop) and current <= stop:
+        return "STOP TOUCHÉ / À VÉRIFIER", "amber", "Le cours live est au niveau ou sous le stop enregistré."
+    if pd.notna(tp2) and current >= tp2:
+        return "TP2 ATTEINT / À VÉRIFIER", "green", "Le cours live a atteint ou dépassé TP2."
+    if pd.notna(tp1) and current >= tp1:
+        return "TP1 ATTEINT / À VÉRIFIER", "green", "Le cours live a atteint ou dépassé TP1."
+    if pd.notna(entry) and current > entry:
+        return "EN GAIN", "green", "Le cours live est au-dessus du prix d'achat."
+    if pd.notna(entry) and current < entry:
+        return "EN RETRAIT", "amber", "Le cours live est sous le prix d'achat mais au-dessus du stop."
+    return "À L'ÉQUILIBRE", "muted", ""
+
+
+
 def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""):
     if hasattr(trade_row, "to_dict"):
         trade_row = trade_row.to_dict()
@@ -4434,7 +4538,7 @@ def vf_trade_journal_stats(df):
 def vf_trade_journal_page():
     vf_page_header(
         "📓 Trade Journal",
-        "Mesurer la qualité réelle des micro-trades : prévu vs réalisé, R multiples, durée et performance cumulée."
+        "Ajout manuel des trades en cours + suivi automatique du cours, du P/L et des niveaux TP / SL."
     )
 
     backend = vf_trade_journal_backend_ready()
@@ -4446,8 +4550,181 @@ def vf_trade_journal_page():
             "Le journal fonctionne temporairement dans la session, mais ne survivra pas à un redémarrage."
         )
 
+    # ------------------------------------------------------
+    # Manual OPEN trade entry
+    # ------------------------------------------------------
+    vf_section(
+        "➕ Ajouter un trade en cours",
+        "Entre uniquement ce que tu as réellement exécuté chez XTB. Le suivi du cours se fera ensuite automatiquement."
+    )
+
+    with st.expander("Saisir manuellement une position OPEN", expanded=True):
+        q = st.text_input(
+            "Rechercher l'action / ticker",
+            placeholder="Ex. Nokia, TotalEnergies, AAPL, TSLA…",
+            key="journal_manual_search"
+        )
+
+        options = []
+        if _clean_text(q):
+            try:
+                hits = vf_yahoo_search_instruments(q, limit=10)
+            except Exception:
+                hits = []
+
+            if isinstance(hits, pd.DataFrame):
+                hits = hits.to_dict("records")
+            elif hits is None:
+                hits = []
+
+            for hit in hits:
+                sym = _clean_text(hit.get("symbol") or hit.get("Ticker"), upper=True)
+                nm = _clean_text(hit.get("name") or hit.get("Entreprise")) or sym
+                isin = _clean_text(hit.get("isin") or hit.get("ISIN"), upper=True)
+                if sym:
+                    options.append({
+                        "symbol": sym,
+                        "name": nm,
+                        "isin": isin
+                    })
+
+        # Allow a direct ticker even if Yahoo search returns nothing.
+        raw_symbol = _clean_text(q, upper=True)
+        if raw_symbol and not any(x["symbol"] == raw_symbol for x in options):
+            options.append({"symbol": raw_symbol, "name": raw_symbol, "isin": ""})
+
+        selected = None
+        if options:
+            labels = {
+                f"{x['symbol']} • {x['name']}": x
+                for x in options
+            }
+            selected_label = st.selectbox(
+                "Instrument",
+                list(labels.keys()),
+                key="journal_manual_instrument"
+            )
+            selected = labels[selected_label]
+
+        if selected:
+            symbol = selected["symbol"]
+            auto_quote = live_quote(symbol)
+            live_px = _vf_num(auto_quote.get("price"))
+            company_name = _clean_text(auto_quote.get("name")) or selected["name"]
+            isin = selected.get("isin","")
+
+            st.markdown(vf_identity_html(symbol, company_name, isin), unsafe_allow_html=True)
+
+            a,b,c = st.columns(3)
+            a.metric("Cours live", f"{live_px:.2f}" if pd.notna(live_px) else "—")
+            a.caption("Le prix affiché provient du flux de marché utilisé par VISION FUTURE.")
+
+            default_entry = float(live_px) if pd.notna(live_px) and live_px > 0 else 0.0
+            buy_price = b.number_input(
+                "Prix d'achat réel",
+                min_value=0.0,
+                value=default_entry,
+                step=0.01,
+                key=f"manual_entry_{symbol}"
+            )
+            qty = c.number_input(
+                "Quantité détenue",
+                min_value=1,
+                value=1,
+                step=1,
+                key=f"manual_qty_{symbol}"
+            )
+
+            d,e,f = st.columns(3)
+            sl = d.number_input(
+                "Stop Loss",
+                min_value=0.0,
+                value=max(buy_price * 0.95, 0.0) if buy_price else 0.0,
+                step=0.01,
+                key=f"manual_sl_{symbol}"
+            )
+            tp1 = e.number_input(
+                "TP1",
+                min_value=0.0,
+                value=buy_price * 1.03 if buy_price else 0.0,
+                step=0.01,
+                key=f"manual_tp1_{symbol}"
+            )
+            tp2 = f.number_input(
+                "TP2",
+                min_value=0.0,
+                value=buy_price * 1.06 if buy_price else 0.0,
+                step=0.01,
+                key=f"manual_tp2_{symbol}"
+            )
+
+            notes = st.text_input(
+                "Note facultative",
+                placeholder="Ex. achat déjà exécuté sur XTB, TP réservé sur toute la quantité…",
+                key=f"manual_notes_{symbol}"
+            )
+
+            # Preview calculations
+            risk_eur = max((buy_price - sl) * int(qty), 0.0) if buy_price and sl else 0.0
+            gain_tp1 = max((tp1 - buy_price) * int(qty), 0.0) if buy_price and tp1 else 0.0
+            gain_tp2 = max((tp2 - buy_price) * int(qty), 0.0) if buy_price and tp2 else 0.0
+
+            p1,p2,p3,p4 = st.columns(4)
+            p1.metric("Capital engagé", f"{buy_price * int(qty):.2f} €")
+            p2.metric("Risque jusqu'au SL", f"-{risk_eur:.2f} €")
+            p3.metric("Gain théorique TP1", f"+{gain_tp1:.2f} €")
+            p4.metric("Gain théorique TP2", f"+{gain_tp2:.2f} €")
+
+            valid = True
+            if sl >= buy_price:
+                st.error("Pour un trade acheteur, le Stop Loss doit être sous le prix d'achat.")
+                valid = False
+            if tp1 <= buy_price:
+                st.error("TP1 doit être au-dessus du prix d'achat.")
+                valid = False
+            if tp2 < tp1:
+                st.error("TP2 doit être supérieur ou égal à TP1.")
+                valid = False
+
+            if st.button(
+                "➕ Ajouter ce trade au suivi live",
+                type="primary",
+                use_container_width=True,
+                disabled=not valid,
+                key=f"manual_add_trade_{symbol}"
+            ):
+                ok, where = vf_register_manual_open_trade(
+                    symbol=symbol,
+                    name=company_name,
+                    isin=isin,
+                    actual_entry=buy_price,
+                    stop=sl,
+                    tp1=tp1,
+                    tp2=tp2,
+                    qty=int(qty),
+                    notes=notes,
+                )
+                if ok:
+                    st.success(f"Trade ajouté au suivi • {where}.")
+                    vf_load_trade_journal.clear()
+                    st.rerun()
+
+    st.caption(
+        "VISION FUTURE suit ensuite automatiquement le dernier cours disponible. "
+        "TP/SL atteints sont signalés comme niveaux à vérifier : l'app ne suppose pas qu'un ordre XTB a réellement été exécuté."
+    )
+
     df = vf_load_trade_journal("cto_xtb")
     stats = vf_trade_journal_stats(df)
+
+    rfa,rfb = st.columns([1,4])
+    if rfa.button("↻ Actualiser les cours", use_container_width=True, key="journal_refresh_quotes"):
+        try:
+            live_quote.clear()
+        except Exception:
+            pass
+        st.rerun()
+    rfb.caption("Les positions OPEN utilisent automatiquement le dernier cours disponible lors de chaque rafraîchissement de la page.")
 
     k1,k2,k3,k4,k5 = st.columns(5)
     k1.metric("Trades clôturés", stats["closed"])
@@ -4464,10 +4741,9 @@ def vf_trade_journal_page():
 
     if df.empty:
         st.info(
-            "Aucun micro-trade enregistré. Depuis CTO XTB → XTB Micro Trade Desk, "
-            "utilise « Enregistrer dans le journal » sur un setup."
+            "Aucun micro-trade enregistré pour le moment. "
+            "Ajoute ci-dessus une position déjà ouverte chez XTB ou enregistre un setup depuis le Micro Trade Desk."
         )
-        return
 
     # ------------------------------------------------------
     # OPEN trades
@@ -4488,12 +4764,20 @@ def vf_trade_journal_page():
             unreal = (current - entry) * qty if pd.notna(current) and pd.notna(entry) else np.nan
             unreal_pct = ((current-entry)/entry*100) if pd.notna(current) and pd.notna(entry) and entry else np.nan
 
+            stop_v = _vf_num(rr.get("stop"))
+            tp1_v = _vf_num(rr.get("tp1"))
+            tp2_v = _vf_num(rr.get("tp2"))
+
+            live_state, live_kind, live_note = vf_live_trade_state(
+                entry, current, stop_v, tp1_v, tp2_v
+            )
+
             with st.container(border=True):
                 a,b = st.columns([4,1])
                 with a:
                     st.markdown(vf_identity_html(symbol, name, _clean_text(rr.get("isin"), upper=True)), unsafe_allow_html=True)
                 with b:
-                    st.markdown(vf_board_badge("OPEN","green"), unsafe_allow_html=True)
+                    st.markdown(vf_board_badge(live_state, live_kind), unsafe_allow_html=True)
 
                 c1,c2,c3,c4,c5 = st.columns(5)
                 c1.metric("Entrée réelle", f"{entry:.2f}" if pd.notna(entry) else "—")
@@ -4504,6 +4788,28 @@ def vf_trade_journal_page():
                 c5.metric("TP1 / TP2",
                           f"{_vf_num(rr.get('tp1')):.2f} / {_vf_num(rr.get('tp2')):.2f}"
                           if pd.notna(_vf_num(rr.get("tp1"))) and pd.notna(_vf_num(rr.get("tp2"))) else "—")
+
+                # Live distances to exit levels
+                d1,d2,d3,d4 = st.columns(4)
+                if pd.notna(current) and current > 0:
+                    dist_sl = ((current-stop_v)/current*100) if pd.notna(stop_v) else np.nan
+                    dist_tp1 = ((tp1_v-current)/current*100) if pd.notna(tp1_v) else np.nan
+                    dist_tp2 = ((tp2_v-current)/current*100) if pd.notna(tp2_v) else np.nan
+                else:
+                    dist_sl = dist_tp1 = dist_tp2 = np.nan
+
+                d1.metric("Valeur live", f"{current*qty:.2f} €" if pd.notna(current) else "—")
+                d2.metric("Marge avant SL", f"{dist_sl:+.2f}%" if pd.notna(dist_sl) else "—")
+                d3.metric("Distance TP1", f"{dist_tp1:+.2f}%" if pd.notna(dist_tp1) else "—")
+                d4.metric("Distance TP2", f"{dist_tp2:+.2f}%" if pd.notna(dist_tp2) else "—")
+
+                if live_note:
+                    if live_kind == "green":
+                        st.success(live_note)
+                    elif live_kind == "amber":
+                        st.warning(live_note)
+                    else:
+                        st.info(live_note)
 
                 opened_at = pd.to_datetime(rr.get("opened_at"), errors="coerce")
                 if pd.notna(opened_at):
