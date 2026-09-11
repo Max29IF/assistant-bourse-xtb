@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V37.3 Crypto Trade Scanner"
+APP_VERSION = "V38.0 Patrimoine Immobilier Pro"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2142,20 +2142,6 @@ UNIVERSE = {
     "Hong Kong": ["0700.HK","9988.HK","3690.HK","1211.HK","1810.HK"],
     "Australia": ["BHP.AX","CBA.AX","CSL.AX","WBC.AX","NAB.AX","WES.AX"],
     "ETF globaux": ["SPY","QQQ","IWM","DIA","VGK","EWJ","EEM","GLD","SLV","TLT","HYG"],
-    "Crypto": ["BTC-USD","ETH-USD","SOL-USD","BNB-USD","XRP-USD","ADA-USD"],
-}
-
-CRYPTO_CATALOG = {
-    "BTC-USD": "Bitcoin",
-    "ETH-USD": "Ethereum",
-    "SOL-USD": "Solana",
-    "BNB-USD": "BNB",
-    "XRP-USD": "XRP",
-    "ADA-USD": "Cardano",
-    "DOGE-USD": "Dogecoin",
-    "AVAX-USD": "Avalanche",
-    "LINK-USD": "Chainlink",
-    "DOT-USD": "Polkadot",
 }
 TF = {
     "15 minutes": {"interval":"15m","periods":["5d","1mo","3mo"]},
@@ -3041,10 +3027,7 @@ def load_market_alerts(limit=100, status=None):
             return df
 
         if "alert_type" in df.columns:
-            actionable = {
-                "ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK",
-                "INVALIDATED","PRICE_ABOVE","PRICE_BELOW",
-            }
+            actionable = {"ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
             df = df[df["alert_type"].isin(actionable)].copy()
 
         # Per-user acknowledgement state. The shared market_alerts row is never modified.
@@ -5957,6 +5940,1149 @@ def vf_profile_security_page():
 
 
 
+
+# ==========================================================
+# V38 — PATRIMOINE IMMOBILIER PRO
+# ==========================================================
+
+RE_PROPERTY_TABLE = "real_estate_properties"
+RE_LOAN_TABLE = "real_estate_loans"
+RE_FLOW_TABLE = "real_estate_cashflows"
+RE_VALUATION_TABLE = "real_estate_valuations"
+
+RE_FLOW_TYPES = {
+    "RENT": ("Revenu", "Loyer hors charges"),
+    "TENANT_CHARGES": ("Revenu", "Charges récupérées"),
+    "OTHER_INCOME": ("Revenu", "Autre revenu"),
+    "PROPERTY_TAX": ("Charge", "Taxe foncière"),
+    "CONDO_NONRECOVERABLE": ("Charge", "Copropriété non récupérable"),
+    "CONDO_RECOVERABLE": ("Charge", "Copropriété récupérable avancée"),
+    "PNO": ("Charge", "Assurance PNO"),
+    "GLI": ("Charge", "Garantie loyers impayés"),
+    "MANAGEMENT": ("Charge", "Gestion locative"),
+    "ACCOUNTING": ("Charge", "Comptabilité"),
+    "MAINTENANCE": ("Charge", "Entretien / petites réparations"),
+    "UTILITIES": ("Charge", "Eau / énergie / abonnements"),
+    "WORKS": ("Capex", "Travaux"),
+    "FURNITURE": ("Capex", "Mobilier / équipement"),
+    "LOAN_PAYMENT": ("Financement", "Échéance de crédit"),
+    "LOAN_INTEREST": ("Financement", "Intérêts d'emprunt"),
+    "LOAN_INSURANCE": ("Financement", "Assurance emprunteur"),
+    "INCOME_TAX": ("Fiscalité", "Impôt sur le revenu lié au bien"),
+    "SOCIAL_TAX": ("Fiscalité", "Prélèvements sociaux"),
+    "CFE": ("Fiscalité", "CFE"),
+    "OTHER_TAX": ("Fiscalité", "Autre impôt / taxe"),
+    "OTHER_EXPENSE": ("Charge", "Autre charge"),
+}
+
+RE_TAX_REGIMES = [
+    "LMNP réel",
+    "LMNP micro-BIC",
+    "Location nue réel",
+    "Micro-foncier",
+    "SCI IR",
+    "SCI IS",
+    "Résidence principale",
+    "Autre",
+]
+
+RE_PROPERTY_TYPES = [
+    "Appartement",
+    "Maison",
+    "Immeuble",
+    "Studio",
+    "Parking / garage",
+    "Local commercial",
+    "Autre",
+]
+
+
+def vf_re_can_write():
+    return _clean_text(st.session_state.get("vf_profile_role"), upper=True) in {"OWNER", "MEMBER"}
+
+
+def vf_re_num(v, default=0.0):
+    x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+    return float(x) if pd.notna(x) else float(default)
+
+
+def vf_re_iso(d):
+    if d is None:
+        return None
+    try:
+        return pd.Timestamp(d).date().isoformat()
+    except Exception:
+        return None
+
+
+def vf_re_table_ready(table_name):
+    if SUPABASE is None:
+        return False
+    try:
+        SUPABASE.table(table_name).select("*").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def vf_re_backend_ready():
+    return all(
+        vf_re_table_ready(t)
+        for t in [RE_PROPERTY_TABLE, RE_LOAN_TABLE, RE_FLOW_TABLE, RE_VALUATION_TABLE]
+    )
+
+
+def vf_re_load_properties(active_only=False):
+    cols = [
+        "id","user_id","name","address","postal_code","city","property_type",
+        "tax_regime","purchase_date","purchase_price","notary_fees","agency_fees",
+        "initial_works","initial_furniture","other_acquisition_costs",
+        "surface_m2","monthly_rent_target","monthly_tenant_charges_target",
+        "ownership_share_pct","notes","active","created_at","updated_at"
+    ]
+    if not vf_re_table_ready(RE_PROPERTY_TABLE):
+        return pd.DataFrame(columns=cols)
+    try:
+        q = SUPABASE.table(RE_PROPERTY_TABLE).select(",".join(cols)).order("created_at")
+        if active_only:
+            q = q.eq("active", True)
+        df = pd.DataFrame(_sb_data(q.execute()))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+        return df[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def vf_re_load_loans(property_id=None):
+    cols = [
+        "id","user_id","property_id","lender","loan_name","loan_amount",
+        "interest_rate_pct","insurance_rate_pct","duration_months","start_date",
+        "monthly_payment","monthly_insurance","outstanding_principal",
+        "outstanding_date","notes","active","created_at","updated_at"
+    ]
+    if not vf_re_table_ready(RE_LOAN_TABLE):
+        return pd.DataFrame(columns=cols)
+    try:
+        q = SUPABASE.table(RE_LOAN_TABLE).select(",".join(cols)).order("created_at")
+        if property_id:
+            q = q.eq("property_id", property_id)
+        df = pd.DataFrame(_sb_data(q.execute()))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+        return df[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def vf_re_load_flows(property_id=None, start_date=None, end_date=None):
+    cols = [
+        "id","user_id","property_id","flow_date","flow_code","flow_group",
+        "label","amount","tax_year","notes","created_at"
+    ]
+    if not vf_re_table_ready(RE_FLOW_TABLE):
+        return pd.DataFrame(columns=cols)
+    try:
+        q = SUPABASE.table(RE_FLOW_TABLE).select(",".join(cols)).order("flow_date", desc=True)
+        if property_id:
+            q = q.eq("property_id", property_id)
+        if start_date:
+            q = q.gte("flow_date", vf_re_iso(start_date))
+        if end_date:
+            q = q.lte("flow_date", vf_re_iso(end_date))
+        df = pd.DataFrame(_sb_data(q.execute()))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+        if not df.empty:
+            df["flow_date"] = pd.to_datetime(df["flow_date"], errors="coerce")
+            df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
+        return df[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def vf_re_load_valuations(property_id=None):
+    cols = [
+        "id","user_id","property_id","valuation_date","estimated_value",
+        "source","notes","created_at"
+    ]
+    if not vf_re_table_ready(RE_VALUATION_TABLE):
+        return pd.DataFrame(columns=cols)
+    try:
+        q = SUPABASE.table(RE_VALUATION_TABLE).select(",".join(cols)).order("valuation_date", desc=True)
+        if property_id:
+            q = q.eq("property_id", property_id)
+        df = pd.DataFrame(_sb_data(q.execute()))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+        if not df.empty:
+            df["valuation_date"] = pd.to_datetime(df["valuation_date"], errors="coerce")
+            df["estimated_value"] = pd.to_numeric(df["estimated_value"], errors="coerce")
+        return df[cols]
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+
+def vf_re_save_property(payload):
+    payload = dict(payload)
+    payload["user_id"] = vf_current_user_id()
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    if payload.get("id"):
+        SUPABASE.table(RE_PROPERTY_TABLE).update(payload).eq("id", payload["id"]).execute()
+        return payload["id"]
+    payload.pop("id", None)
+    payload["created_at"] = datetime.utcnow().isoformat()
+    res = SUPABASE.table(RE_PROPERTY_TABLE).insert(payload).execute()
+    rows = _sb_data(res)
+    return rows[0].get("id") if rows else None
+
+
+def vf_re_save_loan(payload):
+    payload = dict(payload)
+    payload["user_id"] = vf_current_user_id()
+    payload["updated_at"] = datetime.utcnow().isoformat()
+    if payload.get("id"):
+        SUPABASE.table(RE_LOAN_TABLE).update(payload).eq("id", payload["id"]).execute()
+        return payload["id"]
+    payload.pop("id", None)
+    payload["created_at"] = datetime.utcnow().isoformat()
+    res = SUPABASE.table(RE_LOAN_TABLE).insert(payload).execute()
+    rows = _sb_data(res)
+    return rows[0].get("id") if rows else None
+
+
+def vf_re_add_flow(payload):
+    payload = dict(payload)
+    payload["user_id"] = vf_current_user_id()
+    payload["created_at"] = datetime.utcnow().isoformat()
+    return SUPABASE.table(RE_FLOW_TABLE).insert(payload).execute()
+
+
+def vf_re_add_valuation(payload):
+    payload = dict(payload)
+    payload["user_id"] = vf_current_user_id()
+    payload["created_at"] = datetime.utcnow().isoformat()
+    return SUPABASE.table(RE_VALUATION_TABLE).insert(payload).execute()
+
+
+def vf_re_latest_values():
+    props = vf_re_load_properties()
+    vals = vf_re_load_valuations()
+    if props.empty:
+        return {}
+    out = {}
+    if not vals.empty:
+        vals = vals.sort_values("valuation_date", ascending=False)
+        for pid, g in vals.groupby("property_id"):
+            row = g.iloc[0]
+            out[str(pid)] = {
+                "value": vf_re_num(row.get("estimated_value"), np.nan),
+                "date": row.get("valuation_date"),
+                "source": row.get("source"),
+            }
+    return out
+
+
+def vf_re_acquisition_cost(row):
+    return sum(
+        vf_re_num(row.get(k))
+        for k in [
+            "purchase_price","notary_fees","agency_fees",
+            "initial_works","initial_furniture","other_acquisition_costs"
+        ]
+    )
+
+
+def vf_re_total_initial_debt(loans):
+    if loans is None or loans.empty:
+        return 0.0
+    return float(pd.to_numeric(loans["loan_amount"], errors="coerce").fillna(0).sum())
+
+
+def vf_re_total_outstanding(loans):
+    if loans is None or loans.empty:
+        return 0.0
+    out = pd.to_numeric(loans["outstanding_principal"], errors="coerce")
+    fallback = pd.to_numeric(loans["loan_amount"], errors="coerce")
+    return float(out.fillna(fallback).fillna(0).sum())
+
+
+def vf_re_annual_debt_service(loans):
+    if loans is None or loans.empty:
+        return 0.0
+    p = pd.to_numeric(loans["monthly_payment"], errors="coerce").fillna(0)
+    ins = pd.to_numeric(loans["monthly_insurance"], errors="coerce").fillna(0)
+    return float(((p + ins) * 12).sum())
+
+
+def vf_re_flow_metrics(flows):
+    if flows is None or flows.empty:
+        return {
+            "income":0.0,"rent":0.0,"opex":0.0,"capex":0.0,
+            "financing":0.0,"taxes":0.0,"noi":0.0,"cashflow_after_tax":0.0
+        }
+
+    x = flows.copy()
+    x["amount"] = pd.to_numeric(x["amount"], errors="coerce").fillna(0.0)
+    income = float(x.loc[x["flow_group"] == "Revenu", "amount"].sum())
+    rent = float(x.loc[x["flow_code"] == "RENT", "amount"].sum())
+    opex = float(x.loc[x["flow_group"] == "Charge", "amount"].sum())
+    capex = float(x.loc[x["flow_group"] == "Capex", "amount"].sum())
+    financing = float(x.loc[x["flow_group"] == "Financement", "amount"].sum())
+    taxes = float(x.loc[x["flow_group"] == "Fiscalité", "amount"].sum())
+    noi = income - opex
+    cashflow_after_tax = income - opex - capex - financing - taxes
+
+    return {
+        "income":income,"rent":rent,"opex":opex,"capex":capex,
+        "financing":financing,"taxes":taxes,"noi":noi,
+        "cashflow_after_tax":cashflow_after_tax
+    }
+
+
+def vf_re_xirr(cashflows):
+    """
+    XIRR annualisé par Newton + fallback bisection.
+    cashflows: list[(date-like, amount)] avec au moins un flux + et un flux -.
+    """
+    if not cashflows:
+        return np.nan
+    pairs = []
+    for d, a in cashflows:
+        try:
+            dt = pd.Timestamp(d).date()
+            amt = float(a)
+            if np.isfinite(amt) and abs(amt) > 1e-12:
+                pairs.append((dt, amt))
+        except Exception:
+            pass
+    if len(pairs) < 2:
+        return np.nan
+    amounts = [a for _, a in pairs]
+    if not (any(a < 0 for a in amounts) and any(a > 0 for a in amounts)):
+        return np.nan
+
+    d0 = min(d for d, _ in pairs)
+
+    def f(rate):
+        if rate <= -0.999999:
+            return np.inf
+        return sum(a / ((1 + rate) ** (((d - d0).days) / 365.25)) for d, a in pairs)
+
+    r = 0.08
+    for _ in range(80):
+        fr = f(r)
+        eps = 1e-6
+        der = (f(r + eps) - fr) / eps
+        if not np.isfinite(fr) or not np.isfinite(der) or abs(der) < 1e-12:
+            break
+        nr = r - fr / der
+        if nr <= -0.999 or nr > 100:
+            break
+        if abs(nr - r) < 1e-9:
+            return nr
+        r = nr
+
+    lo, hi = -0.999, 10.0
+    flo, fhi = f(lo), f(hi)
+    if not np.isfinite(flo) or not np.isfinite(fhi) or flo * fhi > 0:
+        return np.nan
+    for _ in range(120):
+        mid = (lo + hi) / 2
+        fm = f(mid)
+        if abs(fm) < 1e-8:
+            return mid
+        if flo * fm <= 0:
+            hi, fhi = mid, fm
+        else:
+            lo, flo = mid, fm
+    return (lo + hi) / 2
+
+
+def vf_re_property_analysis(prop, flows=None, loans=None, current_value=None, period_months=12):
+    acq_cost = vf_re_acquisition_cost(prop)
+    purchase_price = vf_re_num(prop.get("purchase_price"))
+    monthly_rent = vf_re_num(prop.get("monthly_rent_target"))
+    annual_contract_rent = monthly_rent * 12
+
+    fm = vf_re_flow_metrics(flows)
+    initial_debt = vf_re_total_initial_debt(loans)
+    outstanding = vf_re_total_outstanding(loans)
+    debt_service_contract = vf_re_annual_debt_service(loans)
+
+    # Actual financing flows have priority for period cashflow; otherwise use
+    # contractual annual debt service prorated over the selected period.
+    financing_actual = fm["financing"]
+    debt_service_period = financing_actual
+    if debt_service_period <= 0 and debt_service_contract > 0:
+        debt_service_period = debt_service_contract * (period_months / 12.0)
+
+    noi = fm["noi"]
+    cashflow_before_tax = fm["income"] - fm["opex"] - fm["capex"] - debt_service_period
+    cashflow_after_tax = cashflow_before_tax - fm["taxes"]
+
+    gross_yield = (annual_contract_rent / acq_cost * 100) if acq_cost > 0 else np.nan
+
+    factor = (12.0 / period_months) if period_months > 0 else 1.0
+    annualized_noi = noi * factor
+    annualized_after_tax = cashflow_after_tax * factor
+    net_yield = (annualized_noi / acq_cost * 100) if acq_cost > 0 else np.nan
+    net_after_tax_yield = (annualized_after_tax / acq_cost * 100) if acq_cost > 0 else np.nan
+
+    equity_cash = max(acq_cost - initial_debt, 0.0)
+    cash_on_cash = (annualized_after_tax / equity_cash * 100) if equity_cash > 0 else np.nan
+
+    cv = vf_re_num(current_value, purchase_price if purchase_price > 0 else acq_cost)
+    equity_value = cv - outstanding
+    ltv = (outstanding / cv * 100) if cv > 0 else np.nan
+
+    debt_service_for_dscr = debt_service_period
+    dscr = (noi / debt_service_for_dscr) if debt_service_for_dscr > 0 else np.nan
+
+    return {
+        "acquisition_cost": acq_cost,
+        "purchase_price": purchase_price,
+        "annual_contract_rent": annual_contract_rent,
+        "income_period": fm["income"],
+        "rent_period": fm["rent"],
+        "opex_period": fm["opex"],
+        "capex_period": fm["capex"],
+        "taxes_period": fm["taxes"],
+        "financing_period": debt_service_period,
+        "noi_period": noi,
+        "cashflow_before_tax": cashflow_before_tax,
+        "cashflow_after_tax": cashflow_after_tax,
+        "gross_yield_pct": gross_yield,
+        "net_yield_pct": net_yield,
+        "net_after_tax_yield_pct": net_after_tax_yield,
+        "cash_on_cash_pct": cash_on_cash,
+        "initial_debt": initial_debt,
+        "outstanding_debt": outstanding,
+        "current_value": cv,
+        "equity_value": equity_value,
+        "ltv_pct": ltv,
+        "dscr": dscr,
+        "initial_equity": equity_cash,
+    }
+
+
+def vf_re_currency(v):
+    return f"{vf_re_num(v):,.0f} €".replace(",", " ")
+
+
+def vf_re_pct(v):
+    x = pd.to_numeric(pd.Series([v]), errors="coerce").iloc[0]
+    return f"{float(x):.2f}%" if pd.notna(x) else "—"
+
+
+def vf_re_property_labels(props):
+    labels = {}
+    if props is None or props.empty:
+        return labels
+    for _, r in props.iterrows():
+        city = _clean_text(r.get("city"))
+        name = _clean_text(r.get("name")) or "Bien"
+        label = f"{name}" + (f" • {city}" if city else "")
+        labels[label] = r.to_dict()
+    return labels
+
+
+def vf_re_delete_flow(flow_id):
+    if not vf_re_can_write():
+        raise PermissionError("Lecture seule")
+    SUPABASE.table(RE_FLOW_TABLE).delete().eq("id", flow_id).execute()
+
+
+def vf_re_delete_valuation(val_id):
+    if not vf_re_can_write():
+        raise PermissionError("Lecture seule")
+    SUPABASE.table(RE_VALUATION_TABLE).delete().eq("id", val_id).execute()
+
+
+def vf_re_delete_loan(loan_id):
+    if not vf_re_can_write():
+        raise PermissionError("Lecture seule")
+    SUPABASE.table(RE_LOAN_TABLE).delete().eq("id", loan_id).execute()
+
+
+def vf_real_estate_page():
+    vf_page_header(
+        "🏘️ Patrimoine immobilier",
+        "Suivi professionnel du patrimoine : acquisition, crédits, loyers, charges, travaux, mobilier, fiscalité, rendement et equity."
+    )
+
+    if not vf_re_backend_ready():
+        st.error(
+            "Le module immobilier n'est pas encore initialisé dans Supabase. "
+            "Exécute d'abord le script SQL V38 fourni avec cette version."
+        )
+        return
+
+    can_write = vf_re_can_write()
+    if not can_write:
+        st.info("Profil Viewer : consultation uniquement. Les écritures sont bloquées par RLS.")
+
+    props = vf_re_load_properties()
+    loans_all = vf_re_load_loans()
+    flows_all = vf_re_load_flows()
+    vals_all = vf_re_load_valuations()
+    latest_values = vf_re_latest_values()
+
+    # ------------------------------------------------------------------
+    # Global wealth summary
+    # ------------------------------------------------------------------
+    if props.empty:
+        st.info("Aucun bien immobilier enregistré. Commence par l'onglet « Biens ».")
+    else:
+        total_value = 0.0
+        total_debt = 0.0
+        total_acq = 0.0
+        total_target_rent = 0.0
+
+        for _, p in props[props["active"].fillna(True).astype(bool)].iterrows():
+            pid = str(p.get("id"))
+            total_acq += vf_re_acquisition_cost(p)
+            v = latest_values.get(pid, {}).get("value")
+            if pd.isna(v) if isinstance(v, float) else v is None:
+                v = vf_re_num(p.get("purchase_price"))
+            total_value += vf_re_num(v)
+            pl = loans_all[loans_all["property_id"].astype(str) == pid] if not loans_all.empty else pd.DataFrame()
+            total_debt += vf_re_total_outstanding(pl)
+            total_target_rent += vf_re_num(p.get("monthly_rent_target")) * 12
+
+        total_equity = total_value - total_debt
+        global_ltv = (total_debt / total_value * 100) if total_value > 0 else np.nan
+        global_gross_yield = (total_target_rent / total_acq * 100) if total_acq > 0 else np.nan
+
+        g1,g2,g3,g4,g5 = st.columns(5)
+        g1.metric("Valeur immobilière", vf_re_currency(total_value))
+        g2.metric("Dette restante", vf_re_currency(total_debt))
+        g3.metric("Patrimoine net", vf_re_currency(total_equity))
+        g4.metric("LTV global", vf_re_pct(global_ltv))
+        g5.metric("Rendement brut cible", vf_re_pct(global_gross_yield))
+
+    tab_overview, tab_assets, tab_loans, tab_flows, tab_analysis = st.tabs([
+        "📊 Vue globale",
+        "🏠 Biens",
+        "🏦 Crédits",
+        "💶 Flux & fiscalité",
+        "📈 Analyse pro",
+    ])
+
+    # ------------------------------------------------------------------
+    # OVERVIEW
+    # ------------------------------------------------------------------
+    with tab_overview:
+        if props.empty:
+            st.caption("La synthèse apparaîtra après l'ajout du premier bien.")
+        else:
+            rows = []
+            now = pd.Timestamp.today().normalize()
+            start = now - pd.DateOffset(months=12)
+
+            for _, p in props.iterrows():
+                pid = str(p.get("id"))
+                pf = flows_all[
+                    (flows_all["property_id"].astype(str) == pid)
+                    & (flows_all["flow_date"] >= start)
+                    & (flows_all["flow_date"] <= now)
+                ].copy() if not flows_all.empty else pd.DataFrame()
+
+                pl = loans_all[loans_all["property_id"].astype(str) == pid].copy() if not loans_all.empty else pd.DataFrame()
+                current_val = latest_values.get(pid, {}).get("value")
+                if current_val is None or pd.isna(current_val):
+                    current_val = vf_re_num(p.get("purchase_price"))
+
+                a = vf_re_property_analysis(p, pf, pl, current_val, period_months=12)
+                rows.append({
+                    "Bien": _clean_text(p.get("name")) or "Bien",
+                    "Ville": _clean_text(p.get("city")),
+                    "Régime": _clean_text(p.get("tax_regime")),
+                    "Valeur actuelle": a["current_value"],
+                    "Dette restante": a["outstanding_debt"],
+                    "Patrimoine net": a["equity_value"],
+                    "Loyer cible annuel": a["annual_contract_rent"],
+                    "Revenus 12m": a["income_period"],
+                    "Cash-flow après impôts 12m": a["cashflow_after_tax"],
+                    "Rendement brut": a["gross_yield_pct"],
+                    "Rendement net exploitation": a["net_yield_pct"],
+                    "Cash-on-cash": a["cash_on_cash_pct"],
+                    "LTV": a["ltv_pct"],
+                    "DSCR": a["dscr"],
+                })
+
+            overview = pd.DataFrame(rows)
+            st.dataframe(
+                overview,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Valeur actuelle": st.column_config.NumberColumn(format="%.0f €"),
+                    "Dette restante": st.column_config.NumberColumn(format="%.0f €"),
+                    "Patrimoine net": st.column_config.NumberColumn(format="%.0f €"),
+                    "Loyer cible annuel": st.column_config.NumberColumn(format="%.0f €"),
+                    "Revenus 12m": st.column_config.NumberColumn(format="%.0f €"),
+                    "Cash-flow après impôts 12m": st.column_config.NumberColumn(format="%.0f €"),
+                    "Rendement brut": st.column_config.NumberColumn(format="%.2f %%"),
+                    "Rendement net exploitation": st.column_config.NumberColumn(format="%.2f %%"),
+                    "Cash-on-cash": st.column_config.NumberColumn(format="%.2f %%"),
+                    "LTV": st.column_config.NumberColumn(format="%.2f %%"),
+                    "DSCR": st.column_config.NumberColumn(format="%.2f"),
+                }
+            )
+
+            if not vals_all.empty:
+                val_chart = vals_all.merge(
+                    props[["id","name"]],
+                    left_on="property_id",
+                    right_on="id",
+                    how="left",
+                    suffixes=("","_prop")
+                )
+                val_chart = val_chart.dropna(subset=["valuation_date","estimated_value"])
+                if not val_chart.empty:
+                    chart = (
+                        alt.Chart(val_chart)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("valuation_date:T", title="Date"),
+                            y=alt.Y("estimated_value:Q", title="Valeur estimée (€)", scale=alt.Scale(zero=False)),
+                            color=alt.Color("name:N", title="Bien"),
+                            tooltip=[
+                                alt.Tooltip("name:N", title="Bien"),
+                                alt.Tooltip("valuation_date:T", title="Date"),
+                                alt.Tooltip("estimated_value:Q", title="Valeur", format=",.0f"),
+                            ],
+                        )
+                        .properties(height=320, title="Évolution des valorisations")
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+
+    # ------------------------------------------------------------------
+    # ASSETS
+    # ------------------------------------------------------------------
+    with tab_assets:
+        vf_section("Fiche bien", "Prix d'achat, frais, régime fiscal, loyer cible et caractéristiques.")
+
+        asset_labels = {"➕ Nouveau bien": None}
+        asset_labels.update(vf_re_property_labels(props))
+        selected_asset_label = st.selectbox(
+            "Bien à créer / modifier",
+            list(asset_labels.keys()),
+            key="re_asset_select"
+        )
+        selected_asset = asset_labels[selected_asset_label] or {}
+
+        default_purchase_date = pd.to_datetime(selected_asset.get("purchase_date"), errors="coerce")
+        if pd.isna(default_purchase_date):
+            default_purchase_date = pd.Timestamp.today()
+
+        with st.form("re_property_form"):
+            c1,c2,c3 = st.columns(3)
+            name = c1.text_input("Nom du bien", value=_clean_text(selected_asset.get("name")), placeholder="Appartement Brest")
+            ptype_default = _clean_text(selected_asset.get("property_type"))
+            ptype = c2.selectbox(
+                "Type",
+                RE_PROPERTY_TYPES,
+                index=RE_PROPERTY_TYPES.index(ptype_default) if ptype_default in RE_PROPERTY_TYPES else 0
+            )
+            regime_default = _clean_text(selected_asset.get("tax_regime"))
+            tax_regime = c3.selectbox(
+                "Régime fiscal",
+                RE_TAX_REGIMES,
+                index=RE_TAX_REGIMES.index(regime_default) if regime_default in RE_TAX_REGIMES else 0
+            )
+
+            a1,a2,a3 = st.columns([2,1,1])
+            address = a1.text_input("Adresse", value=_clean_text(selected_asset.get("address")))
+            postal_code = a2.text_input("Code postal", value=_clean_text(selected_asset.get("postal_code")))
+            city = a3.text_input("Ville", value=_clean_text(selected_asset.get("city")))
+
+            d1,d2,d3 = st.columns(3)
+            purchase_date = d1.date_input("Date d'achat", value=default_purchase_date.date())
+            surface = d2.number_input("Surface (m²)", min_value=0.0, value=vf_re_num(selected_asset.get("surface_m2")), step=1.0)
+            share = d3.number_input(
+                "Quote-part détenue (%)",
+                min_value=0.0, max_value=100.0,
+                value=vf_re_num(selected_asset.get("ownership_share_pct"), 100.0) or 100.0,
+                step=1.0
+            )
+
+            st.markdown("**Coût d'acquisition**")
+            p1,p2,p3 = st.columns(3)
+            purchase_price = p1.number_input("Prix d'achat (€)", min_value=0.0, value=vf_re_num(selected_asset.get("purchase_price")), step=1000.0)
+            notary_fees = p2.number_input("Frais de notaire (€)", min_value=0.0, value=vf_re_num(selected_asset.get("notary_fees")), step=500.0)
+            agency_fees = p3.number_input("Frais d'agence (€)", min_value=0.0, value=vf_re_num(selected_asset.get("agency_fees")), step=500.0)
+
+            p4,p5,p6 = st.columns(3)
+            initial_works = p4.number_input("Travaux initiaux (€)", min_value=0.0, value=vf_re_num(selected_asset.get("initial_works")), step=500.0)
+            initial_furniture = p5.number_input("Mobilier initial (€)", min_value=0.0, value=vf_re_num(selected_asset.get("initial_furniture")), step=100.0)
+            other_costs = p6.number_input("Autres frais acquisition (€)", min_value=0.0, value=vf_re_num(selected_asset.get("other_acquisition_costs")), step=100.0)
+
+            st.markdown("**Location cible**")
+            r1,r2 = st.columns(2)
+            monthly_rent = r1.number_input("Loyer mensuel HC (€)", min_value=0.0, value=vf_re_num(selected_asset.get("monthly_rent_target")), step=10.0)
+            monthly_charges = r2.number_input("Charges locatives mensuelles (€)", min_value=0.0, value=vf_re_num(selected_asset.get("monthly_tenant_charges_target")), step=5.0)
+
+            notes = st.text_area("Notes", value=_clean_text(selected_asset.get("notes")))
+            active = st.checkbox("Bien actif", value=bool(selected_asset.get("active", True)))
+
+            acquisition_total = purchase_price + notary_fees + agency_fees + initial_works + initial_furniture + other_costs
+            st.caption(f"Coût de revient initial saisi : {acquisition_total:,.0f} €")
+
+            save_asset = st.form_submit_button(
+                "💾 Enregistrer le bien",
+                type="primary",
+                use_container_width=True,
+                disabled=not can_write
+            )
+
+        if save_asset:
+            if not name.strip():
+                st.error("Le nom du bien est obligatoire.")
+            else:
+                try:
+                    vf_re_save_property({
+                        "id": selected_asset.get("id"),
+                        "name": name.strip(),
+                        "address": address.strip() or None,
+                        "postal_code": postal_code.strip() or None,
+                        "city": city.strip() or None,
+                        "property_type": ptype,
+                        "tax_regime": tax_regime,
+                        "purchase_date": vf_re_iso(purchase_date),
+                        "purchase_price": purchase_price,
+                        "notary_fees": notary_fees,
+                        "agency_fees": agency_fees,
+                        "initial_works": initial_works,
+                        "initial_furniture": initial_furniture,
+                        "other_acquisition_costs": other_costs,
+                        "surface_m2": surface,
+                        "monthly_rent_target": monthly_rent,
+                        "monthly_tenant_charges_target": monthly_charges,
+                        "ownership_share_pct": share,
+                        "notes": notes.strip() or None,
+                        "active": active,
+                    })
+                    st.success("Bien enregistré.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Enregistrement impossible : {exc}")
+
+        if selected_asset.get("id"):
+            vf_section("Valorisation", "Ajoute une estimation pour suivre la valeur du patrimoine dans le temps.")
+            with st.form("re_valuation_form"):
+                v1,v2,v3 = st.columns([1,1,2])
+                valuation_date = v1.date_input("Date de valorisation", value=date.today())
+                estimated_value = v2.number_input("Valeur estimée (€)", min_value=0.0, value=vf_re_num(selected_asset.get("purchase_price")), step=1000.0)
+                val_source = v3.text_input("Source", placeholder="Estimation agence, DVF, notaire, estimation personnelle…")
+                val_notes = st.text_input("Note valorisation")
+                save_val = st.form_submit_button("Ajouter la valorisation", use_container_width=True, disabled=not can_write)
+
+            if save_val:
+                try:
+                    vf_re_add_valuation({
+                        "property_id": selected_asset["id"],
+                        "valuation_date": vf_re_iso(valuation_date),
+                        "estimated_value": estimated_value,
+                        "source": val_source.strip() or None,
+                        "notes": val_notes.strip() or None,
+                    })
+                    st.success("Valorisation ajoutée.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Ajout impossible : {exc}")
+
+            vals = vf_re_load_valuations(selected_asset["id"])
+            if not vals.empty:
+                st.dataframe(
+                    vals[["valuation_date","estimated_value","source","notes"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"estimated_value": st.column_config.NumberColumn(format="%.0f €")}
+                )
+
+    # ------------------------------------------------------------------
+    # LOANS
+    # ------------------------------------------------------------------
+    with tab_loans:
+        if props.empty:
+            st.info("Ajoute d'abord un bien.")
+        else:
+            labels = vf_re_property_labels(props)
+            property_label = st.selectbox("Bien", list(labels.keys()), key="re_loan_property")
+            prop = labels[property_label]
+            pid = prop["id"]
+            loans = vf_re_load_loans(pid)
+
+            loan_options = {"➕ Nouveau crédit": None}
+            if not loans.empty:
+                for _, lr in loans.iterrows():
+                    nm = _clean_text(lr.get("loan_name")) or _clean_text(lr.get("lender")) or "Crédit"
+                    loan_options[f"{nm} • {vf_re_currency(lr.get('loan_amount'))}"] = lr.to_dict()
+
+            loan_label = st.selectbox("Crédit à créer / modifier", list(loan_options.keys()), key="re_loan_select")
+            selected_loan = loan_options[loan_label] or {}
+
+            start_date_default = pd.to_datetime(selected_loan.get("start_date"), errors="coerce")
+            if pd.isna(start_date_default):
+                start_date_default = pd.to_datetime(prop.get("purchase_date"), errors="coerce")
+            if pd.isna(start_date_default):
+                start_date_default = pd.Timestamp.today()
+
+            outstanding_date_default = pd.to_datetime(selected_loan.get("outstanding_date"), errors="coerce")
+            if pd.isna(outstanding_date_default):
+                outstanding_date_default = pd.Timestamp.today()
+
+            with st.form("re_loan_form"):
+                l1,l2,l3 = st.columns(3)
+                lender = l1.text_input("Banque / prêteur", value=_clean_text(selected_loan.get("lender")))
+                loan_name = l2.text_input("Nom du crédit", value=_clean_text(selected_loan.get("loan_name")), placeholder="Prêt principal")
+                loan_amount = l3.number_input("Capital emprunté (€)", min_value=0.0, value=vf_re_num(selected_loan.get("loan_amount")), step=1000.0)
+
+                l4,l5,l6 = st.columns(3)
+                rate = l4.number_input("Taux nominal (%)", min_value=0.0, max_value=20.0, value=vf_re_num(selected_loan.get("interest_rate_pct")), step=0.01)
+                insurance_rate = l5.number_input("Taux assurance (%)", min_value=0.0, max_value=10.0, value=vf_re_num(selected_loan.get("insurance_rate_pct")), step=0.01)
+                duration = l6.number_input("Durée (mois)", min_value=1, max_value=600, value=int(vf_re_num(selected_loan.get("duration_months"), 240) or 240), step=12)
+
+                l7,l8,l9 = st.columns(3)
+                start_date_loan = l7.date_input("Début du prêt", value=start_date_default.date())
+                monthly_payment = l8.number_input("Mensualité hors assurance (€)", min_value=0.0, value=vf_re_num(selected_loan.get("monthly_payment")), step=10.0)
+                monthly_insurance = l9.number_input("Assurance mensuelle (€)", min_value=0.0, value=vf_re_num(selected_loan.get("monthly_insurance")), step=1.0)
+
+                l10,l11 = st.columns(2)
+                outstanding = l10.number_input(
+                    "Capital restant dû actuel (€)",
+                    min_value=0.0,
+                    value=vf_re_num(selected_loan.get("outstanding_principal"), loan_amount),
+                    step=500.0
+                )
+                outstanding_date = l11.date_input("Date du CRD", value=outstanding_date_default.date())
+
+                loan_notes = st.text_input("Notes crédit", value=_clean_text(selected_loan.get("notes")))
+                loan_active = st.checkbox("Crédit actif", value=bool(selected_loan.get("active", True)))
+                save_loan = st.form_submit_button("💾 Enregistrer le crédit", type="primary", use_container_width=True, disabled=not can_write)
+
+            if save_loan:
+                try:
+                    vf_re_save_loan({
+                        "id": selected_loan.get("id"),
+                        "property_id": pid,
+                        "lender": lender.strip() or None,
+                        "loan_name": loan_name.strip() or None,
+                        "loan_amount": loan_amount,
+                        "interest_rate_pct": rate,
+                        "insurance_rate_pct": insurance_rate,
+                        "duration_months": int(duration),
+                        "start_date": vf_re_iso(start_date_loan),
+                        "monthly_payment": monthly_payment,
+                        "monthly_insurance": monthly_insurance,
+                        "outstanding_principal": outstanding,
+                        "outstanding_date": vf_re_iso(outstanding_date),
+                        "notes": loan_notes.strip() or None,
+                        "active": loan_active,
+                    })
+                    st.success("Crédit enregistré.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Enregistrement impossible : {exc}")
+
+            if not loans.empty:
+                loans_view = loans.copy()
+                st.dataframe(
+                    loans_view[[
+                        "loan_name","lender","loan_amount","interest_rate_pct","duration_months",
+                        "monthly_payment","monthly_insurance","outstanding_principal","outstanding_date","active"
+                    ]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "loan_amount": st.column_config.NumberColumn(format="%.0f €"),
+                        "monthly_payment": st.column_config.NumberColumn(format="%.2f €"),
+                        "monthly_insurance": st.column_config.NumberColumn(format="%.2f €"),
+                        "outstanding_principal": st.column_config.NumberColumn(format="%.0f €"),
+                        "interest_rate_pct": st.column_config.NumberColumn(format="%.2f %%"),
+                    }
+                )
+
+                d1,d2,d3,d4 = st.columns(4)
+                d1.metric("Capital initial", vf_re_currency(vf_re_total_initial_debt(loans)))
+                d2.metric("CRD", vf_re_currency(vf_re_total_outstanding(loans)))
+                d3.metric("Service dette annuel", vf_re_currency(vf_re_annual_debt_service(loans)))
+                total_interest = max(
+                    float(
+                        (
+                            pd.to_numeric(loans["monthly_payment"], errors="coerce").fillna(0)
+                            * pd.to_numeric(loans["duration_months"], errors="coerce").fillna(0)
+                        ).sum()
+                    ) - vf_re_total_initial_debt(loans),
+                    0.0
+                )
+                d4.metric("Intérêts théoriques*", vf_re_currency(total_interest))
+                st.caption("*Approximation basée sur les mensualités saisies, hors remboursement anticipé et modulation.")
+
+    # ------------------------------------------------------------------
+    # FLOWS
+    # ------------------------------------------------------------------
+    with tab_flows:
+        if props.empty:
+            st.info("Ajoute d'abord un bien.")
+        else:
+            labels = vf_re_property_labels(props)
+            property_label = st.selectbox("Bien", list(labels.keys()), key="re_flow_property")
+            prop = labels[property_label]
+            pid = prop["id"]
+
+            vf_section(
+                "Ajouter un flux",
+                "Chaque encaissement ou décaissement réel alimente le calcul de rendement, cash-flow et fiscalité."
+            )
+            flow_codes = list(RE_FLOW_TYPES.keys())
+            with st.form("re_flow_form"):
+                f1,f2,f3 = st.columns([1,2,1])
+                flow_date = f1.date_input("Date", value=date.today())
+                flow_code = f2.selectbox(
+                    "Nature",
+                    flow_codes,
+                    format_func=lambda x: f"{RE_FLOW_TYPES[x][0]} • {RE_FLOW_TYPES[x][1]}"
+                )
+                amount = f3.number_input("Montant (€)", min_value=0.0, value=0.0, step=10.0)
+
+                f4,f5 = st.columns([1,3])
+                tax_year = f4.number_input("Année fiscale", min_value=2000, max_value=2100, value=date.today().year, step=1)
+                flow_notes = f5.text_input("Note / justificatif", placeholder="Facture, référence, détail…")
+                add_flow = st.form_submit_button("➕ Ajouter le flux", type="primary", use_container_width=True, disabled=not can_write)
+
+            if add_flow:
+                if amount <= 0:
+                    st.error("Le montant doit être supérieur à 0.")
+                else:
+                    group, label = RE_FLOW_TYPES[flow_code]
+                    try:
+                        vf_re_add_flow({
+                            "property_id": pid,
+                            "flow_date": vf_re_iso(flow_date),
+                            "flow_code": flow_code,
+                            "flow_group": group,
+                            "label": label,
+                            "amount": amount,
+                            "tax_year": int(tax_year),
+                            "notes": flow_notes.strip() or None,
+                        })
+                        st.success("Flux ajouté.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Ajout impossible : {exc}")
+
+            flows = vf_re_load_flows(pid)
+            if not flows.empty:
+                this_year = date.today().year
+                year_options = sorted(
+                    set(pd.to_numeric(flows["tax_year"], errors="coerce").dropna().astype(int).tolist() + [this_year]),
+                    reverse=True
+                )
+                year_filter = st.selectbox("Année", year_options, key="re_flow_year")
+                fy = flows[pd.to_numeric(flows["tax_year"], errors="coerce") == year_filter].copy()
+                fm = vf_re_flow_metrics(fy)
+
+                k1,k2,k3,k4,k5 = st.columns(5)
+                k1.metric("Revenus", vf_re_currency(fm["income"]))
+                k2.metric("Charges exploitation", vf_re_currency(fm["opex"]))
+                k3.metric("Travaux / mobilier", vf_re_currency(fm["capex"]))
+                k4.metric("Financement", vf_re_currency(fm["financing"]))
+                k5.metric("Impôts / taxes", vf_re_currency(fm["taxes"]))
+
+                show = fy.copy()
+                show["Type"] = show["flow_code"].map(lambda x: RE_FLOW_TYPES.get(x, ("",""))[1])
+                st.dataframe(
+                    show[["flow_date","flow_group","Type","amount","tax_year","notes"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={"amount": st.column_config.NumberColumn(format="%.2f €")}
+                )
+
+                grouped = (
+                    fy.groupby(["flow_group","label"], dropna=False)["amount"]
+                    .sum()
+                    .reset_index()
+                )
+                if not grouped.empty:
+                    chart = (
+                        alt.Chart(grouped)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("amount:Q", title="Montant (€)"),
+                            y=alt.Y("label:N", sort="-x", title=None),
+                            color=alt.Color("flow_group:N", title="Famille"),
+                            tooltip=["flow_group:N","label:N",alt.Tooltip("amount:Q", format=",.2f")],
+                        )
+                        .properties(height=max(260, 28 * len(grouped)), title=f"Répartition des flux {year_filter}")
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+
+                if "LMNP" in _clean_text(prop.get("tax_regime"), upper=True):
+                    st.info(
+                        "LMNP : le module suit séparément travaux, mobilier, comptabilité, CFE et impôts réellement payés. "
+                        "Il ne calcule pas automatiquement les amortissements comptables ni la liasse fiscale."
+                    )
+
+    # ------------------------------------------------------------------
+    # PRO ANALYSIS
+    # ------------------------------------------------------------------
+    with tab_analysis:
+        if props.empty:
+            st.info("Ajoute d'abord un bien.")
+        else:
+            labels = vf_re_property_labels(props)
+            property_label = st.selectbox("Bien analysé", list(labels.keys()), key="re_analysis_property")
+            prop = labels[property_label]
+            pid = str(prop["id"])
+
+            period = st.selectbox(
+                "Période d'analyse",
+                ["12 derniers mois","Année en cours","Depuis l'acquisition"],
+                key="re_analysis_period"
+            )
+
+            today = pd.Timestamp.today().normalize()
+            purchase_date = pd.to_datetime(prop.get("purchase_date"), errors="coerce")
+            if period == "12 derniers mois":
+                start = today - pd.DateOffset(months=12)
+                months = 12
+            elif period == "Année en cours":
+                start = pd.Timestamp(year=today.year, month=1, day=1)
+                months = max(today.month, 1)
+            else:
+                start = purchase_date if pd.notna(purchase_date) else today - pd.DateOffset(years=1)
+                months = max(int(round((today - start).days / 30.44)), 1)
+
+            pf = flows_all[
+                (flows_all["property_id"].astype(str) == pid)
+                & (flows_all["flow_date"] >= start)
+                & (flows_all["flow_date"] <= today)
+            ].copy() if not flows_all.empty else pd.DataFrame()
+
+            pl = loans_all[loans_all["property_id"].astype(str) == pid].copy() if not loans_all.empty else pd.DataFrame()
+            current_val = latest_values.get(pid, {}).get("value")
+            if current_val is None or pd.isna(current_val):
+                current_val = vf_re_num(prop.get("purchase_price"))
+
+            a = vf_re_property_analysis(prop, pf, pl, current_val, period_months=months)
+
+            st.markdown(f"### {_clean_text(prop.get('name')) or 'Bien'}")
+            st.caption(
+                "Rendements calculés à partir des données saisies. Le rendement net d'exploitation exclut le financement ; "
+                "le cash-flow après impôts inclut les flux de financement et la fiscalité enregistrés."
+            )
+
+            r1,r2,r3,r4 = st.columns(4)
+            r1.metric("Rendement brut cible", vf_re_pct(a["gross_yield_pct"]))
+            r2.metric("Rendement net exploitation", vf_re_pct(a["net_yield_pct"]))
+            r3.metric("Rendement après impôts", vf_re_pct(a["net_after_tax_yield_pct"]))
+            r4.metric("Cash-on-cash", vf_re_pct(a["cash_on_cash_pct"]))
+
+            r5,r6,r7,r8 = st.columns(4)
+            r5.metric("Cash-flow période", vf_re_currency(a["cashflow_after_tax"]))
+            r6.metric("NOI période", vf_re_currency(a["noi_period"]))
+            r7.metric("DSCR", f"{a['dscr']:.2f}" if pd.notna(a["dscr"]) else "—")
+            r8.metric("LTV", vf_re_pct(a["ltv_pct"]))
+
+            r9,r10,r11,r12 = st.columns(4)
+            r9.metric("Valeur actuelle", vf_re_currency(a["current_value"]))
+            r10.metric("Dette restante", vf_re_currency(a["outstanding_debt"]))
+            r11.metric("Patrimoine net", vf_re_currency(a["equity_value"]))
+            r12.metric("Coût de revient", vf_re_currency(a["acquisition_cost"]))
+
+            # Estimated patrimonial XIRR from owner equity + actual flows + current equity.
+            xirr_flows = []
+            if pd.notna(purchase_date):
+                xirr_flows.append((purchase_date, -a["initial_equity"]))
+            if not pf.empty:
+                for _, fr in pf.sort_values("flow_date").iterrows():
+                    group = _clean_text(fr.get("flow_group"))
+                    amt = vf_re_num(fr.get("amount"))
+                    signed = amt if group == "Revenu" else -amt
+                    xirr_flows.append((fr.get("flow_date"), signed))
+            xirr_flows.append((today, a["equity_value"]))
+            xirr = vf_re_xirr(xirr_flows)
+
+            st.metric(
+                "TRI patrimonial estimé",
+                vf_re_pct(xirr * 100) if pd.notna(xirr) else "—",
+                help="TRI estimatif basé sur l'equity initiale, les flux saisis et la valeur nette actuelle. À interpréter avec prudence si l'historique des flux est incomplet."
+            )
+
+            # Actual monthly cashflow chart
+            if not pf.empty:
+                chart_df = pf.copy()
+                chart_df["Mois"] = pd.to_datetime(chart_df["flow_date"]).dt.to_period("M").dt.to_timestamp()
+                chart_df["Flux signé"] = chart_df.apply(
+                    lambda r: vf_re_num(r.get("amount")) if r.get("flow_group") == "Revenu" else -vf_re_num(r.get("amount")),
+                    axis=1
+                )
+                monthly = chart_df.groupby("Mois")["Flux signé"].sum().reset_index()
+                monthly["Cumul"] = monthly["Flux signé"].cumsum()
+
+                c1,c2 = st.columns(2)
+                with c1:
+                    chart = (
+                        alt.Chart(monthly)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("Mois:T", title=None),
+                            y=alt.Y("Flux signé:Q", title="Cash-flow (€)"),
+                            tooltip=[alt.Tooltip("Mois:T"), alt.Tooltip("Flux signé:Q", format=",.2f")],
+                        )
+                        .properties(height=300, title="Cash-flow mensuel enregistré")
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+                with c2:
+                    chart = (
+                        alt.Chart(monthly)
+                        .mark_line(point=True)
+                        .encode(
+                            x=alt.X("Mois:T", title=None),
+                            y=alt.Y("Cumul:Q", title="Cumul (€)"),
+                            tooltip=[alt.Tooltip("Mois:T"), alt.Tooltip("Cumul:Q", format=",.2f")],
+                        )
+                        .properties(height=300, title="Cash-flow cumulé")
+                    )
+                    st.altair_chart(chart, use_container_width=True)
+
+            # Diagnostic indicators
+            st.markdown("#### Lecture professionnelle")
+            comments = []
+            if pd.notna(a["dscr"]):
+                if a["dscr"] >= 1.25:
+                    comments.append("🟢 **DSCR solide** : le revenu net d'exploitation couvre confortablement le service de la dette.")
+                elif a["dscr"] >= 1.0:
+                    comments.append("🟠 **DSCR serré** : la dette est couverte mais avec une marge limitée.")
+                else:
+                    comments.append("🔴 **DSCR < 1** : l'exploitation ne couvre pas entièrement le service de la dette sur la période.")
+            if pd.notna(a["ltv_pct"]):
+                if a["ltv_pct"] <= 60:
+                    comments.append("🟢 **LTV modéré** : niveau d'endettement contenu par rapport à la valeur actuelle.")
+                elif a["ltv_pct"] <= 80:
+                    comments.append("🟠 **LTV intermédiaire** : levier encore significatif.")
+                else:
+                    comments.append("🔴 **LTV élevé** : faible marge d'equity par rapport à la dette restante.")
+            if a["cashflow_after_tax"] >= 0:
+                comments.append("🟢 **Cash-flow positif** sur la période sélectionnée.")
+            else:
+                comments.append("🔴 **Cash-flow négatif** sur la période sélectionnée.")
+
+            for comment in comments:
+                st.markdown(comment)
+
+            st.caption(
+                "Les calculs sont des indicateurs de pilotage patrimonial et ne remplacent pas la comptabilité, "
+                "la déclaration fiscale, une expertise immobilière ou les données officielles du prêteur."
+            )
+
 def show_portfolio_page(account, title, broker: str | None = None):
     try:
         reconcile_orphan_portfolio_data()
@@ -6047,464 +7173,6 @@ def show_transactions_page():
     st.subheader("Journal détaillé")
     st.dataframe(df,use_container_width=True,hide_index=True)
 
-
-# ==========================================================
-# CRYPTO MONITORING & TRADE SCANNER — V37.3
-# ==========================================================
-def vf_crypto_symbol(value):
-    symbol = _clean_text(value, upper=True).replace("/", "-")
-    if symbol and "-" not in symbol:
-        symbol += "-USD"
-    return symbol if re.fullmatch(r"[A-Z0-9]{2,15}-(USD|EUR)", symbol or "") else ""
-
-
-def vf_crypto_can_write():
-    return st.session_state.get("vf_profile_role", "member") in {"owner", "member"}
-
-
-def vf_crypto_watchlist_load():
-    if SUPABASE is None:
-        return pd.DataFrame()
-    try:
-        return pd.DataFrame(_sb_data(
-            SUPABASE.table("crypto_watchlist")
-            .select("id,symbol,name,price_below,price_above,enabled,updated_at")
-            .order("symbol")
-            .execute()
-        ))
-    except Exception as exc:
-        st.error(f"Watchlist crypto indisponible : {exc}")
-        return pd.DataFrame()
-
-
-def vf_crypto_watchlist_upsert(symbol, name, price_below=None, price_above=None):
-    payload = vf_user_payload({
-        "symbol": symbol,
-        "name": name or CRYPTO_CATALOG.get(symbol) or symbol,
-        "price_below": price_below,
-        "price_above": price_above,
-        "enabled": True,
-        "updated_at": datetime.utcnow().isoformat(),
-    })
-    SUPABASE.table("crypto_watchlist").upsert(
-        payload, on_conflict="user_id,symbol"
-    ).execute()
-
-
-def vf_crypto_positions_load():
-    if SUPABASE is None:
-        return pd.DataFrame()
-    try:
-        return pd.DataFrame(_sb_data(
-            SUPABASE.table("portfolio_positions")
-            .select("id,ticker,name,broker,quantity,pru,currency,updated_at")
-            .eq("account", "crypto")
-            .order("ticker")
-            .execute()
-        ))
-    except Exception as exc:
-        st.error(f"Positions crypto indisponibles : {exc}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def vf_crypto_snapshot(symbols):
-    rows = []
-    for symbol in symbols:
-        symbol = vf_crypto_symbol(symbol)
-        if not symbol:
-            continue
-        hourly = history(symbol, "1mo", "1h")
-        daily = trade_setup(history(symbol, "6mo", "1d")) or {}
-        if hourly is None or hourly.empty or "Close" not in hourly:
-            continue
-        close = pd.to_numeric(hourly["Close"], errors="coerce").dropna()
-        if close.empty:
-            continue
-        price = float(close.iloc[-1])
-        base_24h = float(close.iloc[-25]) if len(close) >= 25 else float(close.iloc[0])
-        base_7d = float(close.iloc[-169]) if len(close) >= 169 else float(close.iloc[0])
-        rows.append({
-            "Symbole": symbol,
-            "Crypto": CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
-            "Cours USD": price,
-            "24 h %": (price / base_24h - 1) * 100 if base_24h else np.nan,
-            "7 j %": (price / base_7d - 1) * 100 if base_7d else np.nan,
-            "Score": daily.get("score"),
-            "RSI": daily.get("rsi"),
-            "Potentiel %": daily.get("upside"),
-            "R/R": daily.get("rr"),
-        })
-    return pd.DataFrame(rows)
-
-
-def vf_crypto_trade_indication(confirmed, distance_pct):
-    if not confirmed:
-        return (
-            "ATTENDRE CONFIRMATION 1H", "amber",
-            "Le setup quotidien est solide, mais la tendance 1H n'est pas encore confirmée.",
-        )
-    if pd.notna(distance_pct) and distance_pct > 1.5:
-        return (
-            "ATTENDRE UN RETEST", "violet",
-            "Le cours est déjà au-dessus de l'entrée : éviter de poursuivre l'impulsion.",
-        )
-    if pd.notna(distance_pct) and distance_pct < -1.5:
-        return (
-            "SURVEILLER LE REBOND", "amber",
-            "Le cours est sous la zone calculée : attendre un retour de momentum.",
-        )
-    return (
-        "ZONE D'ENTRÉE À ÉTUDIER", "green",
-        "Qualité quotidienne et confirmation 1H conformes, cours proche de l'entrée.",
-    )
-
-
-def vf_crypto_position_size(capital, risk_pct, entry, stop):
-    capital, risk_pct = max(_vf_num(capital), 0.0), max(_vf_num(risk_pct), 0.0)
-    entry, stop = _vf_num(entry), _vf_num(stop)
-    risk_per_unit = entry - stop
-    if entry <= 0 or risk_per_unit <= 0:
-        return {"quantity": 0.0, "committed": 0.0, "max_loss": 0.0}
-    risk_amount = capital * risk_pct / 100
-    quantity = max(0.0, min(risk_amount / risk_per_unit, capital / entry))
-    return {
-        "quantity": quantity,
-        "committed": quantity * entry,
-        "max_loss": quantity * risk_per_unit,
-    }
-
-
-@st.cache_data(ttl=180, show_spinner=False)
-def vf_crypto_trade_scanner(symbols, top_n=8):
-    """Setups crypto tactiques avec les mêmes contrôles qualité que le scanner actions."""
-    clean_symbols = tuple(dict.fromkeys(
-        vf_crypto_symbol(symbol) for symbol in symbols if vf_crypto_symbol(symbol)
-    ))
-    if not clean_symbols:
-        return pd.DataFrame()
-
-    scan = fast_scan(
-        clean_symbols, min_upside=5.0, min_rr=2.0, min_score=76,
-        top_n=max(int(top_n) * 2, 12),
-    )
-    if scan is None or scan.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for _, candidate in scan.iterrows():
-        row = candidate.to_dict()
-        symbol = vf_crypto_symbol(row.get("Ticker"))
-        price = _vf_num(row.get("Prix"))
-        entry = _vf_num(row.get("Entrée"))
-        confirmed = _clean_text(row.get("Confirmé 1h")) == "✅"
-        distance_pct = ((price / entry) - 1) * 100 if pd.notna(price) and pd.notna(entry) and entry > 0 else np.nan
-        horizon = vf_trade_horizon_context(
-            symbol, entry, _vf_num(row.get("TP1")), _vf_num(row.get("TP2"))
-        )
-        tp2_horizon = (horizon or {}).get("tp2", {})
-        days = _vf_num(tp2_horizon.get("sessions"))
-        if pd.notna(days) and days > 20:
-            continue
-
-        indication, kind, rationale = vf_crypto_trade_indication(confirmed, distance_pct)
-
-        row.update({
-            "Crypto": CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
-            "Indication": indication, "Indication kind": kind, "Lecture": rationale,
-            "Écart entrée %": distance_pct,
-            "Horizon TP2": tp2_horizon.get("label", "Indéterminé"),
-            "Jours TP2": days,
-        })
-        rows.append(row)
-
-    if not rows:
-        return pd.DataFrame()
-    return (pd.DataFrame(rows)
-            .sort_values(["Score combiné", "R/R", "Potentiel %"], ascending=False)
-            .head(max(int(top_n), 1)).reset_index(drop=True))
-
-
-def vf_crypto_scanner_panel(symbols):
-    vf_section(
-        "🎯 Scanner de trades crypto",
-        "Setups tactiques 1–20 jours : potentiel estimé ≥ 5 %, R/R ≥ 2 et score ≥ 76.",
-    )
-    f1, f2, f3 = st.columns(3)
-    capital = f1.number_input(
-        "Capital alloué par trade (USD)", min_value=0.0, value=700.0,
-        step=50.0, key="crypto_trade_capital",
-    )
-    risk_pct = f2.number_input(
-        "Risque maximal par trade (%)", min_value=0.1, max_value=1.5,
-        value=1.0, step=0.1, key="crypto_trade_risk",
-    )
-    top_n = f3.slider(
-        "Opportunités affichées", min_value=3, max_value=10,
-        value=6, key="crypto_trade_topn",
-    )
-    st.caption(
-        "Maximum conseillé : 2 à 4 positions simultanées. Conserver 20–30 % de liquidités. "
-        "Les niveaux sont indicatifs et n'incluent ni frais, ni slippage, ni fiscalité."
-    )
-
-    with st.spinner("Analyse quotidienne et confirmation 1H des cryptos…"):
-        candidates = vf_crypto_trade_scanner(tuple(symbols), top_n=top_n)
-    if candidates.empty:
-        st.info(
-            "Aucun setup crypto ne respecte actuellement tous les filtres. "
-            "L'indication correcte est d'attendre plutôt que de forcer un trade."
-        )
-        return
-
-    for idx, row in candidates.iterrows():
-        symbol = vf_crypto_symbol(row.get("Ticker"))
-        name = _clean_text(row.get("Crypto")) or symbol
-        price, entry = _vf_num(row.get("Prix")), _vf_num(row.get("Entrée"))
-        stop, tp1, tp2 = (_vf_num(row.get(k)) for k in ("Stop", "TP1", "TP2"))
-        score = _vf_num(row.get("Score combiné"))
-        rr, upside = _vf_num(row.get("R/R")), _vf_num(row.get("Potentiel %"))
-        sizing = vf_crypto_position_size(capital, risk_pct, entry, stop)
-        quantity = sizing["quantity"]
-        committed = sizing["committed"]
-        max_loss = sizing["max_loss"]
-
-        with st.container(border=True):
-            h1, h2 = st.columns([4.4, 1.6])
-            with h1:
-                st.markdown(vf_identity_html(symbol, name, ""), unsafe_allow_html=True)
-                st.markdown(vf_board_badge(row.get("Indication"), row.get("Indication kind", "muted")), unsafe_allow_html=True)
-                st.caption(row.get("Lecture", ""))
-            with h2:
-                st.metric("Score combiné", f"{score:.0f}/100" if pd.notna(score) else "—")
-
-            a, b, c, d, e, f = st.columns(6)
-            a.metric("Cours", f"{price:,.4f}" if pd.notna(price) else "—")
-            b.metric("Entrée", f"{entry:,.4f}" if pd.notna(entry) else "—")
-            c.metric("Stop", f"{stop:,.4f}" if pd.notna(stop) else "—")
-            d.metric("TP1", f"{tp1:,.4f}" if pd.notna(tp1) else "—")
-            e.metric("TP2", f"{tp2:,.4f}" if pd.notna(tp2) else "—")
-            f.metric("R/R", f"{rr:.2f}" if pd.notna(rr) else "—")
-
-            p1, p2, p3, p4 = st.columns(4)
-            p1.metric("Potentiel estimé", f"{upside:+.1f} %" if pd.notna(upside) else "—")
-            p2.metric("Quantité indicative", f"{quantity:.8f}")
-            p3.metric("Capital mobilisé", f"{committed:,.2f} $")
-            p4.metric("Perte max théorique", f"{max_loss:,.2f} $")
-            days = _vf_num(row.get("Jours TP2"))
-            st.caption(
-                f"Horizon TP2 : {row.get('Horizon TP2', 'Indéterminé')}"
-                + (f" (≈ {days:.0f} jours)" if pd.notna(days) else "")
-                + ". Une indication n'est jamais une garantie de performance."
-            )
-
-            b1, b2 = st.columns(2)
-            if vf_crypto_can_write() and b1.button(
-                "➕ Ajouter à ma surveillance", key=f"crypto_scan_watch_{idx}_{symbol}",
-                use_container_width=True,
-            ):
-                try:
-                    vf_crypto_watchlist_upsert(symbol, name)
-                    st.success(f"{symbol} ajouté à ta surveillance.")
-                    st.cache_data.clear()
-                except Exception as exc:
-                    st.error(f"Ajout impossible : {exc}")
-            if b2.button(
-                "📊 Voir le graphique", key=f"crypto_scan_chart_{idx}_{symbol}",
-                use_container_width=True,
-            ):
-                st.session_state["crypto_scan_open_chart"] = symbol
-
-    chart_symbol = st.session_state.get("crypto_scan_open_chart")
-    if chart_symbol:
-        vf_section("Graphique du setup", chart_symbol)
-        vf_candlestick_chart(chart_symbol, period="3mo", interval="1d")
-
-
-def vf_crypto_page():
-    vf_page_header(
-        "₿ Crypto Intelligence",
-        "Cours 24/7, analyse technique, watchlist privée, positions et alertes automatiques toutes les 15 minutes.",
-    )
-
-    watch = vf_crypto_watchlist_load()
-    watched_symbols = watch.get("symbol", pd.Series(dtype=str)).dropna().astype(str).tolist() if not watch.empty else []
-    display_symbols = tuple(dict.fromkeys(watched_symbols or list(CRYPTO_CATALOG)[:6]))
-
-    tab_scanner, tab_market, tab_positions, tab_alerts = st.tabs([
-        "🎯 Scanner crypto", "📡 Marché & watchlist", "💼 Mes positions", "🔔 Alertes crypto",
-    ])
-
-    with tab_scanner:
-        scanner_symbols = tuple(dict.fromkeys(list(CRYPTO_CATALOG) + watched_symbols))
-        vf_crypto_scanner_panel(scanner_symbols)
-
-    with tab_market:
-        with st.spinner("Actualisation des cours crypto…"):
-            market = vf_crypto_snapshot(display_symbols)
-
-        if market.empty:
-            st.warning("Les cours crypto sont temporairement indisponibles.")
-        else:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Cryptos suivies", len(market))
-            c2.metric("Hausses 24 h", int((pd.to_numeric(market["24 h %"], errors="coerce") > 0).sum()))
-            c3.metric("Baisses 24 h", int((pd.to_numeric(market["24 h %"], errors="coerce") < 0).sum()))
-            best = market.sort_values("24 h %", ascending=False).iloc[0]
-            c4.metric("Leader 24 h", best["Symbole"], f"{best['24 h %']:+.2f} %")
-            st.dataframe(
-                market.style.format({
-                    "Cours USD": "{:,.4f}", "24 h %": "{:+.2f}", "7 j %": "{:+.2f}",
-                    "Score": "{:.0f}", "RSI": "{:.1f}", "Potentiel %": "{:+.2f}", "R/R": "{:.2f}",
-                }, na_rep="—"),
-                use_container_width=True, hide_index=True,
-            )
-
-            selected_chart = st.selectbox(
-                "Graphique détaillé", market["Symbole"].tolist(), key="crypto_chart_symbol"
-            )
-            vf_candlestick_chart(selected_chart, period="3mo", interval="1d")
-
-        vf_section("Configurer ma surveillance", "Ajoute une crypto et, si tu le souhaites, deux seuils de prix personnels.")
-        if vf_crypto_can_write():
-            with st.form("crypto_watchlist_form"):
-                c1, c2 = st.columns(2)
-                preset = c1.selectbox(
-                    "Crypto", list(CRYPTO_CATALOG),
-                    format_func=lambda s: f"{CRYPTO_CATALOG[s]} • {s}",
-                )
-                custom = c2.text_input("Ticker libre", placeholder="DOGE ou DOGE-USD")
-                c3, c4 = st.columns(2)
-                below = c3.number_input("Alerte si le cours passe sous (USD)", min_value=0.0, value=0.0, format="%.6f")
-                above = c4.number_input("Alerte si le cours dépasse (USD)", min_value=0.0, value=0.0, format="%.6f")
-                submitted = st.form_submit_button("Enregistrer la surveillance", type="primary", use_container_width=True)
-            if submitted:
-                symbol = vf_crypto_symbol(custom or preset)
-                if not symbol:
-                    st.error("Ticker invalide. Exemple attendu : BTC-USD.")
-                elif below and above and below >= above:
-                    st.error("Le seuil bas doit être inférieur au seuil haut.")
-                else:
-                    try:
-                        vf_crypto_watchlist_upsert(
-                            symbol, CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
-                            below or None, above or None,
-                        )
-                        st.success(f"{symbol} est maintenant surveillé.")
-                        st.cache_data.clear()
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Enregistrement impossible : {exc}")
-        else:
-            st.info("Ton profil Viewer peut consulter la surveillance mais ne peut pas la modifier.")
-
-        watch = vf_crypto_watchlist_load()
-        if not watch.empty:
-            view = watch.rename(columns={
-                "symbol": "Symbole", "name": "Crypto", "price_below": "Seuil bas",
-                "price_above": "Seuil haut", "enabled": "Active",
-            })
-            st.dataframe(
-                view[["Symbole", "Crypto", "Seuil bas", "Seuil haut", "Active"]],
-                use_container_width=True, hide_index=True,
-            )
-            if vf_crypto_can_write():
-                remove_symbol = st.selectbox("Retirer de la surveillance", view["Symbole"].tolist(), key="crypto_remove_watch")
-                if st.button("Retirer", key="crypto_remove_watch_button"):
-                    SUPABASE.table("crypto_watchlist").delete().eq("symbol", remove_symbol).execute()
-                    st.cache_data.clear()
-                    st.rerun()
-
-    with tab_positions:
-        positions = vf_crypto_positions_load()
-        if vf_crypto_can_write():
-            with st.expander("➕ Ajouter ou mettre à jour une position", expanded=positions.empty):
-                with st.form("crypto_position_form"):
-                    p1, p2 = st.columns(2)
-                    symbol_input = p1.text_input("Crypto / ticker", value="BTC", placeholder="BTC ou BTC-USD")
-                    exchange = p2.selectbox("Plateforme", ["Binance", "Coinbase", "Kraken", "Ledger", "Autre"])
-                    p3, p4, p5 = st.columns(3)
-                    quantity = p3.number_input("Quantité détenue", min_value=0.0, value=0.0, format="%.8f")
-                    average_cost = p4.number_input("Prix moyen d'achat (USD)", min_value=0.0, value=0.0, format="%.6f")
-                    name = p5.text_input("Nom", placeholder="Bitcoin")
-                    save_position = st.form_submit_button("Enregistrer la position", type="primary", use_container_width=True)
-                if save_position:
-                    symbol = vf_crypto_symbol(symbol_input)
-                    if not symbol or quantity <= 0 or average_cost <= 0:
-                        st.error("Renseigne un ticker valide, une quantité et un prix moyen supérieurs à zéro.")
-                    else:
-                        payload = vf_user_payload({
-                            "account": "crypto", "broker": exchange, "instrument_key": symbol,
-                            "ticker": symbol, "name": name or CRYPTO_CATALOG.get(symbol) or symbol,
-                            "quantity": quantity, "pru": average_cost, "currency": "USD",
-                            "source": "manual_crypto", "updated_at": datetime.utcnow().isoformat(),
-                        })
-                        try:
-                            SUPABASE.table("portfolio_positions").upsert(
-                                payload, on_conflict="user_id,account,broker,instrument_key"
-                            ).execute()
-                            st.success(f"Position {symbol} enregistrée.")
-                            st.cache_data.clear()
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Position non enregistrée : {exc}")
-
-        positions = vf_crypto_positions_load()
-        if positions.empty:
-            st.info("Aucune position crypto enregistrée.")
-        else:
-            rows = []
-            for _, pos in positions.iterrows():
-                symbol = vf_crypto_symbol(pos.get("ticker"))
-                quote = live_quote(symbol) if symbol else {}
-                price = _vf_num(quote.get("price"))
-                qty = _vf_num(pos.get("quantity"))
-                pru = _vf_num(pos.get("pru"))
-                value = qty * price if pd.notna(price) else np.nan
-                cost = qty * pru
-                pnl = value - cost if pd.notna(value) else np.nan
-                rows.append({
-                    "ID": pos.get("id"), "Symbole": symbol, "Crypto": pos.get("name") or symbol,
-                    "Plateforme": pos.get("broker"), "Quantité": qty, "PRU USD": pru,
-                    "Cours USD": price, "Valeur USD": value, "P/L USD": pnl,
-                    "P/L %": (pnl / cost * 100) if pd.notna(pnl) and cost else np.nan,
-                })
-            valued = pd.DataFrame(rows)
-            total_value = pd.to_numeric(valued["Valeur USD"], errors="coerce").sum()
-            total_cost = (pd.to_numeric(valued["Quantité"], errors="coerce") * pd.to_numeric(valued["PRU USD"], errors="coerce")).sum()
-            total_pnl = total_value - total_cost
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Valeur crypto", f"{total_value:,.2f} $")
-            c2.metric("Capital investi", f"{total_cost:,.2f} $")
-            c3.metric("P/L latent", f"{total_pnl:+,.2f} $", f"{(total_pnl/total_cost*100):+.2f} %" if total_cost else None)
-            st.dataframe(
-                valued.drop(columns=["ID"]).style.format({
-                    "Quantité": "{:,.8f}", "PRU USD": "{:,.4f}", "Cours USD": "{:,.4f}",
-                    "Valeur USD": "{:,.2f}", "P/L USD": "{:+,.2f}", "P/L %": "{:+.2f}",
-                }, na_rep="—"),
-                use_container_width=True, hide_index=True,
-            )
-            if vf_crypto_can_write():
-                labels = {f"{r['Symbole']} • {r['Plateforme']}": r["ID"] for r in rows}
-                delete_label = st.selectbox("Supprimer une position", list(labels), key="crypto_delete_position")
-                if st.button("Supprimer la position", key="crypto_delete_position_button"):
-                    SUPABASE.table("portfolio_positions").delete().eq("id", labels[delete_label]).execute()
-                    st.rerun()
-
-    with tab_alerts:
-        alerts = load_market_alerts(limit=300)
-        if not alerts.empty:
-            if "asset_class" in alerts:
-                alerts = alerts[alerts["asset_class"].fillna("").str.upper() == "CRYPTO"]
-            else:
-                alerts = alerts[alerts["symbol"].fillna("").str.endswith(("-USD", "-EUR"))]
-        if alerts.empty:
-            st.info("Aucune alerte crypto pour le moment. Le worker vérifie le marché toutes les 15 minutes.")
-        else:
-            cols = [c for c in ["created_at", "symbol", "alert_type", "score", "headline", "status"] if c in alerts]
-            st.dataframe(alerts[cols], use_container_width=True, hide_index=True)
-            st.caption("Les alertes de seuil et de position sont privées. Les signaux de marché sont partagés entre les profils autorisés.")
-
 # ==========================================================
 # SIDEBAR / ROUTING — V20
 # ==========================================================
@@ -6565,11 +7233,11 @@ with st.sidebar:
     st.markdown('<div class="vf-group-title">Portefeuille</div>', unsafe_allow_html=True)
     _nav_button("🏦 PEA", "nav_pea")
     _nav_button("💼 CTO", "nav_cto")
-    _nav_button("₿ Crypto", "nav_crypto")
     _nav_button("📈 Performance", "nav_perf")
     _nav_button("⚖️ Arbitrage", "nav_arb")
     _nav_button("💰 Transactions", "nav_tx")
     _nav_button("📓 Trade Journal", "nav_trade_journal")
+    _nav_button("🏘️ Immobilier", "nav_real_estate")
 
     st.markdown('<div class="vf-group-title">Marché</div>', unsafe_allow_html=True)
     _nav_button("🔎 Scanner", "nav_scanner")
@@ -7932,14 +8600,14 @@ elif mode=="💼 CTO":
     else:
         show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
 
-elif mode=="₿ Crypto":
-    vf_crypto_page()
-
 elif mode=="💰 Transactions":
     show_transactions_page()
 
 elif mode=="📓 Trade Journal":
     vf_trade_journal_page()
+
+elif mode=="🏘️ Immobilier":
+    vf_real_estate_page()
 
 elif mode=="📈 Performance":
     show_performance_page()
