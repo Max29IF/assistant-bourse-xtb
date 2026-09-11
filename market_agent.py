@@ -25,7 +25,10 @@ MIN_UPSIDE = 3.0
 MIN_RR = 2.0
 MIN_ENTRY_SCORE = 76
 MIN_HOURLY_SCORE = 65
-ALERT_TYPES = {"ENTRY", "EXIT", "TAKE_PROFIT", "PROTECT", "RISK", "NEWS_RISK", "INVALIDATED"}
+ALERT_TYPES = {
+    "ENTRY", "EXIT", "TAKE_PROFIT", "PROTECT", "RISK", "NEWS_RISK",
+    "INVALIDATED", "PRICE_ABOVE", "PRICE_BELOW",
+}
 
 sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 diagnostics = []
@@ -187,7 +190,7 @@ def universe():
     try:
         rows = sb_data(
             sb.table("broker_universe")
-            .select("symbol,name,isin,market,broker,enabled")
+            .select("symbol,name,isin,market,asset_type,broker,enabled")
             .eq("enabled", True)
             .execute()
         )
@@ -197,6 +200,23 @@ def universe():
             frames.append(base)
     except Exception as exc:
         diagnostics.append(f"universe:{type(exc).__name__}:{str(exc)[:180]}")
+
+    try:
+        watched = pd.DataFrame(sb_data(
+            sb.table("crypto_watchlist")
+            .select("symbol,name,enabled")
+            .eq("enabled", True)
+            .execute()
+        ))
+        if not watched.empty:
+            watched["isin"] = ""
+            watched["market"] = "Crypto"
+            watched["asset_type"] = "CRYPTO"
+            watched["broker"] = "Crypto"
+            watched["source"] = "CRYPTO_WATCHLIST"
+            frames.append(watched)
+    except Exception as exc:
+        diagnostics.append(f"crypto_watchlist:{type(exc).__name__}:{str(exc)[:180]}")
 
     discovered, regions = rotating_discovery()
     if not discovered.empty:
@@ -214,38 +234,55 @@ def universe():
 
 def positions():
     try:
-        rows = sb_data(sb.table("portfolio_positions").select("account,broker,ticker,isin,name,quantity,pru,instrument_key").execute())
+        rows = sb_data(
+            sb.table("portfolio_positions")
+            .select("user_id,account,broker,ticker,isin,name,quantity,pru,instrument_key")
+            .execute()
+        )
         return pd.DataFrame(rows)
     except Exception as exc:
         diagnostics.append(f"positions:{type(exc).__name__}:{str(exc)[:180]}")
         return pd.DataFrame()
 
 
-def get_state(symbol, scope):
+def state_key(symbol, scope, user_id=None):
+    owner = f"USER:{user_id}" if user_id else "GLOBAL"
+    return f"{owner}:{scope}:{symbol}"
+
+
+def get_state(symbol, scope, user_id=None):
     try:
-        rows = sb_data(sb.table("market_agent_state").select("*").eq("symbol", symbol).eq("scope", scope).limit(1).execute())
+        rows = sb_data(
+            sb.table("market_agent_state").select("*")
+            .eq("state_key", state_key(symbol, scope, user_id))
+            .limit(1).execute()
+        )
         return rows[0] if rows else None
     except Exception as exc:
         diagnostics.append(f"state_read:{symbol}:{type(exc).__name__}")
         return None
 
 
-def save_state(symbol, scope, state, score=None, price=None):
+def save_state(symbol, scope, state, score=None, price=None, user_id=None, asset_class="EQUITY"):
     payload = {
         "symbol": symbol, "scope": scope, "state": state,
-        "score": score, "price": price, "updated_at": datetime.now(timezone.utc).isoformat()
+        "score": score, "price": price, "user_id": user_id,
+        "asset_class": asset_class, "state_key": state_key(symbol, scope, user_id),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    sb.table("market_agent_state").upsert(payload, on_conflict="symbol,scope").execute()
+    sb.table("market_agent_state").upsert(payload, on_conflict="state_key").execute()
 
 
-def recent_event(symbol, alert_type, hours=24):
+def recent_event(symbol, alert_type, hours=24, user_id=None):
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     try:
-        rows = sb_data(
+        query = (
             sb.table("market_alerts").select("id")
             .eq("symbol", symbol).eq("alert_type", alert_type)
-            .gte("created_at", cutoff).limit(1).execute()
+            .gte("created_at", cutoff)
         )
+        query = query.eq("user_id", user_id) if user_id else query.is_("user_id", "null")
+        rows = sb_data(query.limit(1).execute())
         return bool(rows)
     except Exception:
         return False
@@ -311,7 +348,8 @@ def _extract_google_news_rss(symbol, name="", limit=6):
     No API key and no payment method required.
     We use feed metadata only (title/source/date/link), not full article scraping.
     """
-    query = f'"{name}" stock' if name and str(name).strip() else f"{symbol} stock"
+    topic = "crypto" if clean_symbol(symbol).endswith(("-USD", "-EUR")) else "stock"
+    query = f'"{name}" {topic}' if name and str(name).strip() else f"{symbol} {topic}"
     params = urllib.parse.urlencode({
         "q": query,
         "hl": "en-US",
@@ -321,7 +359,7 @@ def _extract_google_news_rss(symbol, name="", limit=6):
     url = "https://news.google.com/rss/search?" + params
     req = urllib.request.Request(
         url,
-        headers={"User-Agent": "VISION-FUTURE/11.5 (+market-news-rss)"}
+        headers={"User-Agent": "VISION-FUTURE/37.2 (+market-news-rss)"}
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -444,11 +482,15 @@ LOW = aucun risque d'actualité significatif identifié dans les éléments four
             "news_risk": fallback_risk,
         }
 
-def create_alert(symbol, alert_type, broker, market, setup, ai, event_key, name="", isin=""):
+def create_alert(
+    symbol, alert_type, broker, market, setup, ai, event_key,
+    name="", isin="", user_id=None, asset_class="EQUITY",
+):
     if alert_type not in ALERT_TYPES or not symbol:
         return False
     # Stable event key: never contains price or score.
-    fingerprint = f"V10:{alert_type}:{symbol}:{event_key}"
+    owner_key = str(user_id) if user_id else "GLOBAL"
+    fingerprint = f"V37.2:{owner_key}:{alert_type}:{symbol}:{event_key}"
     try:
         rows = sb_data(sb.table("market_alerts").select("id").eq("fingerprint", fingerprint).limit(1).execute())
         if rows:
@@ -460,6 +502,7 @@ def create_alert(symbol, alert_type, broker, market, setup, ai, event_key, name=
             "tp1": setup.get("tp1"), "tp2": setup.get("tp2"), "upside": setup.get("upside"),
             "rr": setup.get("rr"), "headline": ai.get("headline", ""), "analysis": ai.get("analysis", ""),
             "news_risk": ai.get("news_risk", "UNAVAILABLE"), "status": "NEW",
+            "user_id": user_id, "asset_class": asset_class,
             "fingerprint": fingerprint, "created_at": datetime.now(timezone.utc).isoformat(),
         }
         sb.table("market_alerts").insert(payload).execute()
@@ -589,11 +632,65 @@ def classify_position(daily, hourly, pru):
     return "HOLD"
 
 
+def crypto_threshold_alerts():
+    """Create private alerts when a user's configured crypto threshold is reached."""
+    created = 0
+    try:
+        rows = sb_data(
+            sb.table("crypto_watchlist")
+            .select("user_id,symbol,name,price_below,price_above,enabled")
+            .eq("enabled", True)
+            .execute()
+        )
+    except Exception as exc:
+        diagnostics.append(f"crypto_thresholds:{type(exc).__name__}:{str(exc)[:180]}")
+        return created
+
+    price_cache = {}
+    for row in rows:
+        symbol = clean_symbol(row.get("symbol"))
+        user_id = row.get("user_id")
+        if not symbol or not user_id:
+            continue
+        if symbol not in price_cache:
+            price_cache[symbol] = trade_setup(history(symbol, "6mo", "1d"))
+        setup = price_cache.get(symbol)
+        if not setup:
+            continue
+
+        price = fnum(setup.get("price"))
+        below = fnum(row.get("price_below"))
+        above = fnum(row.get("price_above"))
+        checks = []
+        if below > 0 and price <= below:
+            checks.append(("PRICE_BELOW", below, f"Cours sous le seuil personnel de {below:,.4f} USD"))
+        if above > 0 and price >= above:
+            checks.append(("PRICE_ABOVE", above, f"Cours au-dessus du seuil personnel de {above:,.4f} USD"))
+
+        for alert_type, threshold, headline in checks:
+            if recent_event(symbol, alert_type, hours=12, user_id=user_id):
+                continue
+            bucket = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+            if create_alert(
+                symbol, alert_type, "Crypto", "Crypto", setup,
+                {
+                    "headline": headline,
+                    "analysis": f"{symbol} cote {price:,.4f} USD. Seuil configuré : {threshold:,.4f} USD.",
+                    "news_risk": "UNAVAILABLE",
+                },
+                f"THRESHOLD_{threshold:g}_{bucket}",
+                name=row.get("name", ""), user_id=user_id, asset_class="CRYPTO",
+            ):
+                created += 1
+    return created
+
+
 def run():
     uni, discovery_regions = universe()
     pos = positions()
     created = 0
     regime = market_regime()
+    created += crypto_threshold_alerts()
 
     # 1) Existing positions: alert only on meaningful STATE CHANGES.
     if not pos.empty:
@@ -602,6 +699,10 @@ def run():
             if not symbol:
                 continue
 
+            user_id = p.get("user_id")
+            is_crypto = str(p.get("account") or "").lower() == "crypto" or symbol.endswith(("-USD", "-EUR"))
+            asset_class = "CRYPTO" if is_crypto else "EQUITY"
+
             daily = trade_setup(history(symbol, "6mo", "1d"))
             if not daily:
                 continue
@@ -609,12 +710,12 @@ def run():
 
             pru, qty = fnum(p.get("pru")), fnum(p.get("quantity"))
             current_state = classify_position(daily, hourly, pru)
-            previous = get_state(symbol, "POSITION")
+            previous = get_state(symbol, "POSITION", user_id=user_id)
             previous_state = previous.get("state") if previous else None
 
             # First observation = silent baseline.
             if previous_state is None:
-                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
+                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"], user_id, asset_class)
                 continue
 
             if current_state != previous_state:
@@ -646,12 +747,14 @@ def run():
                         event_key,
                         name=p.get("name", ""),
                         isin=p.get("isin", ""),
+                        user_id=user_id,
+                        asset_class=asset_class,
                     ):
                         created += 1
 
-                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
+                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"], user_id, asset_class)
             else:
-                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"])
+                save_state(symbol, "POSITION", current_state, daily["score"], daily["price"], user_id, asset_class)
 
     # 2) Global new entries.
     # Daily gate first to keep requests light.
@@ -661,6 +764,9 @@ def run():
             symbol = clean_symbol(u.get("symbol"))
             if not symbol:
                 continue
+            asset_class = str(u.get("asset_type") or "EQUITY").upper()
+            if u.get("market") == "Crypto" or symbol.endswith(("-USD", "-EUR")):
+                asset_class = "CRYPTO"
 
             # Never propose an ENTRY for something already held.
             if is_existing_position(symbol, pos):
@@ -693,9 +799,10 @@ def run():
                         "QUALIFIED_TO_INVALID",
                         name=u.get("name", ""),
                         isin=u.get("isin", ""),
+                        asset_class=asset_class,
                     ):
                         created += 1
-                save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"])
+                save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"], asset_class=asset_class)
                 continue
 
             preliminary.append((symbol, u, daily))
@@ -708,9 +815,12 @@ def run():
 
     confirmed = []
     for symbol, u, daily in preliminary[:18]:
+        asset_class = str(u.get("asset_type") or "EQUITY").upper()
+        if u.get("market") == "Crypto" or symbol.endswith(("-USD", "-EUR")):
+            asset_class = "CRYPTO"
         hourly = trade_setup(history(symbol, "3mo", "1h"))
         if not hourly or hourly["score"] < MIN_HOURLY_SCORE:
-            save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "INVALID", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         rank = candidate_rank(daily, hourly, regime["state"])
@@ -720,11 +830,14 @@ def run():
 
     # Only the strongest candidates receive a news/Gemini call.
     for rank, symbol, u, daily, hourly in confirmed[:8]:
+        asset_class = str(u.get("asset_type") or "EQUITY").upper()
+        if u.get("market") == "Crypto" or symbol.endswith(("-USD", "-EUR")):
+            asset_class = "CRYPTO"
         prev = get_state(symbol, "ENTRY")
         previous_state = prev.get("state") if prev else None
 
         if previous_state == "QUALIFIED":
-            save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         ai = ai_context(
@@ -738,21 +851,21 @@ def run():
 
         # News gate.
         if ai.get("news_risk") == "HIGH":
-            save_state(symbol, "ENTRY", "BLOCKED_NEWS", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "BLOCKED_NEWS", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         # In a broad RISK_OFF regime, require a stronger setup.
         if regime["state"] == "RISK_OFF" and confidence < 84:
-            save_state(symbol, "ENTRY", "WAIT_REGIME", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "WAIT_REGIME", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         # MEDIUM news is allowed only for very strong setups.
         if ai.get("news_risk") == "MEDIUM" and confidence < 84:
-            save_state(symbol, "ENTRY", "WAIT_NEWS", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "WAIT_NEWS", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         if confidence < 78:
-            save_state(symbol, "ENTRY", "WATCH", daily["score"], daily["price"])
+            save_state(symbol, "ENTRY", "WATCH", daily["score"], daily["price"], asset_class=asset_class)
             continue
 
         ai["analysis"] = (
@@ -769,10 +882,11 @@ def run():
             "NEW_QUALIFIED_SETUP",
             name=u.get("name", ""),
             isin=u.get("isin", ""),
+            asset_class=asset_class,
         ):
             created += 1
 
-        save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"])
+        save_state(symbol, "ENTRY", "QUALIFIED", daily["score"], daily["price"], asset_class=asset_class)
 
     # Manual launch diagnostics only.
     health = gemini_healthcheck()
@@ -803,7 +917,7 @@ def run():
     }).execute()
 
     print(
-        f"VISION FUTURE V11.5: {created} actionable alert(s) | "
+        f"VISION FUTURE V37.2: {created} actionable alert(s) | "
         f"regime={regime['state']} | confirmed={len(confirmed)} | regions={','.join(discovery_regions)}"
     )
 

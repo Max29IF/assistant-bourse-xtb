@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V37.1 Secure Multi-Profile"
+APP_VERSION = "V37.2 Secure Crypto Monitoring"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2142,6 +2142,20 @@ UNIVERSE = {
     "Hong Kong": ["0700.HK","9988.HK","3690.HK","1211.HK","1810.HK"],
     "Australia": ["BHP.AX","CBA.AX","CSL.AX","WBC.AX","NAB.AX","WES.AX"],
     "ETF globaux": ["SPY","QQQ","IWM","DIA","VGK","EWJ","EEM","GLD","SLV","TLT","HYG"],
+    "Crypto": ["BTC-USD","ETH-USD","SOL-USD","BNB-USD","XRP-USD","ADA-USD"],
+}
+
+CRYPTO_CATALOG = {
+    "BTC-USD": "Bitcoin",
+    "ETH-USD": "Ethereum",
+    "SOL-USD": "Solana",
+    "BNB-USD": "BNB",
+    "XRP-USD": "XRP",
+    "ADA-USD": "Cardano",
+    "DOGE-USD": "Dogecoin",
+    "AVAX-USD": "Avalanche",
+    "LINK-USD": "Chainlink",
+    "DOT-USD": "Polkadot",
 }
 TF = {
     "15 minutes": {"interval":"15m","periods":["5d","1mo","3mo"]},
@@ -3027,7 +3041,10 @@ def load_market_alerts(limit=100, status=None):
             return df
 
         if "alert_type" in df.columns:
-            actionable = {"ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
+            actionable = {
+                "ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK",
+                "INVALIDATED","PRICE_ABOVE","PRICE_BELOW",
+            }
             df = df[df["alert_type"].isin(actionable)].copy()
 
         # Per-user acknowledgement state. The shared market_alerts row is never modified.
@@ -6030,6 +6047,277 @@ def show_transactions_page():
     st.subheader("Journal détaillé")
     st.dataframe(df,use_container_width=True,hide_index=True)
 
+
+# ==========================================================
+# CRYPTO MONITORING — V37.2
+# ==========================================================
+def vf_crypto_symbol(value):
+    symbol = _clean_text(value, upper=True).replace("/", "-")
+    if symbol and "-" not in symbol:
+        symbol += "-USD"
+    return symbol if re.fullmatch(r"[A-Z0-9]{2,15}-(USD|EUR)", symbol or "") else ""
+
+
+def vf_crypto_can_write():
+    return st.session_state.get("vf_profile_role", "member") in {"owner", "member"}
+
+
+def vf_crypto_watchlist_load():
+    if SUPABASE is None:
+        return pd.DataFrame()
+    try:
+        return pd.DataFrame(_sb_data(
+            SUPABASE.table("crypto_watchlist")
+            .select("id,symbol,name,price_below,price_above,enabled,updated_at")
+            .order("symbol")
+            .execute()
+        ))
+    except Exception as exc:
+        st.error(f"Watchlist crypto indisponible : {exc}")
+        return pd.DataFrame()
+
+
+def vf_crypto_watchlist_upsert(symbol, name, price_below=None, price_above=None):
+    payload = vf_user_payload({
+        "symbol": symbol,
+        "name": name or CRYPTO_CATALOG.get(symbol) or symbol,
+        "price_below": price_below,
+        "price_above": price_above,
+        "enabled": True,
+        "updated_at": datetime.utcnow().isoformat(),
+    })
+    SUPABASE.table("crypto_watchlist").upsert(
+        payload, on_conflict="user_id,symbol"
+    ).execute()
+
+
+def vf_crypto_positions_load():
+    if SUPABASE is None:
+        return pd.DataFrame()
+    try:
+        return pd.DataFrame(_sb_data(
+            SUPABASE.table("portfolio_positions")
+            .select("id,ticker,name,broker,quantity,pru,currency,updated_at")
+            .eq("account", "crypto")
+            .order("ticker")
+            .execute()
+        ))
+    except Exception as exc:
+        st.error(f"Positions crypto indisponibles : {exc}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def vf_crypto_snapshot(symbols):
+    rows = []
+    for symbol in symbols:
+        symbol = vf_crypto_symbol(symbol)
+        if not symbol:
+            continue
+        hourly = history(symbol, "1mo", "1h")
+        daily = trade_setup(history(symbol, "6mo", "1d")) or {}
+        if hourly is None or hourly.empty or "Close" not in hourly:
+            continue
+        close = pd.to_numeric(hourly["Close"], errors="coerce").dropna()
+        if close.empty:
+            continue
+        price = float(close.iloc[-1])
+        base_24h = float(close.iloc[-25]) if len(close) >= 25 else float(close.iloc[0])
+        base_7d = float(close.iloc[-169]) if len(close) >= 169 else float(close.iloc[0])
+        rows.append({
+            "Symbole": symbol,
+            "Crypto": CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
+            "Cours USD": price,
+            "24 h %": (price / base_24h - 1) * 100 if base_24h else np.nan,
+            "7 j %": (price / base_7d - 1) * 100 if base_7d else np.nan,
+            "Score": daily.get("score"),
+            "RSI": daily.get("rsi"),
+            "Potentiel %": daily.get("upside"),
+            "R/R": daily.get("rr"),
+        })
+    return pd.DataFrame(rows)
+
+
+def vf_crypto_page():
+    vf_page_header(
+        "₿ Crypto Intelligence",
+        "Cours 24/7, analyse technique, watchlist privée, positions et alertes automatiques toutes les 15 minutes.",
+    )
+
+    watch = vf_crypto_watchlist_load()
+    watched_symbols = watch.get("symbol", pd.Series(dtype=str)).dropna().astype(str).tolist() if not watch.empty else []
+    display_symbols = tuple(dict.fromkeys(watched_symbols or list(CRYPTO_CATALOG)[:6]))
+
+    tab_market, tab_positions, tab_alerts = st.tabs([
+        "📡 Marché & watchlist", "💼 Mes positions", "🔔 Alertes crypto",
+    ])
+
+    with tab_market:
+        with st.spinner("Actualisation des cours crypto…"):
+            market = vf_crypto_snapshot(display_symbols)
+
+        if market.empty:
+            st.warning("Les cours crypto sont temporairement indisponibles.")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Cryptos suivies", len(market))
+            c2.metric("Hausses 24 h", int((pd.to_numeric(market["24 h %"], errors="coerce") > 0).sum()))
+            c3.metric("Baisses 24 h", int((pd.to_numeric(market["24 h %"], errors="coerce") < 0).sum()))
+            best = market.sort_values("24 h %", ascending=False).iloc[0]
+            c4.metric("Leader 24 h", best["Symbole"], f"{best['24 h %']:+.2f} %")
+            st.dataframe(
+                market.style.format({
+                    "Cours USD": "{:,.4f}", "24 h %": "{:+.2f}", "7 j %": "{:+.2f}",
+                    "Score": "{:.0f}", "RSI": "{:.1f}", "Potentiel %": "{:+.2f}", "R/R": "{:.2f}",
+                }, na_rep="—"),
+                use_container_width=True, hide_index=True,
+            )
+
+            selected_chart = st.selectbox(
+                "Graphique détaillé", market["Symbole"].tolist(), key="crypto_chart_symbol"
+            )
+            vf_candlestick_chart(selected_chart, period="3mo", interval="1d")
+
+        vf_section("Configurer ma surveillance", "Ajoute une crypto et, si tu le souhaites, deux seuils de prix personnels.")
+        if vf_crypto_can_write():
+            with st.form("crypto_watchlist_form"):
+                c1, c2 = st.columns(2)
+                preset = c1.selectbox(
+                    "Crypto", list(CRYPTO_CATALOG),
+                    format_func=lambda s: f"{CRYPTO_CATALOG[s]} • {s}",
+                )
+                custom = c2.text_input("Ticker libre", placeholder="DOGE ou DOGE-USD")
+                c3, c4 = st.columns(2)
+                below = c3.number_input("Alerte si le cours passe sous (USD)", min_value=0.0, value=0.0, format="%.6f")
+                above = c4.number_input("Alerte si le cours dépasse (USD)", min_value=0.0, value=0.0, format="%.6f")
+                submitted = st.form_submit_button("Enregistrer la surveillance", type="primary", use_container_width=True)
+            if submitted:
+                symbol = vf_crypto_symbol(custom or preset)
+                if not symbol:
+                    st.error("Ticker invalide. Exemple attendu : BTC-USD.")
+                elif below and above and below >= above:
+                    st.error("Le seuil bas doit être inférieur au seuil haut.")
+                else:
+                    try:
+                        vf_crypto_watchlist_upsert(
+                            symbol, CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
+                            below or None, above or None,
+                        )
+                        st.success(f"{symbol} est maintenant surveillé.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Enregistrement impossible : {exc}")
+        else:
+            st.info("Ton profil Viewer peut consulter la surveillance mais ne peut pas la modifier.")
+
+        watch = vf_crypto_watchlist_load()
+        if not watch.empty:
+            view = watch.rename(columns={
+                "symbol": "Symbole", "name": "Crypto", "price_below": "Seuil bas",
+                "price_above": "Seuil haut", "enabled": "Active",
+            })
+            st.dataframe(
+                view[["Symbole", "Crypto", "Seuil bas", "Seuil haut", "Active"]],
+                use_container_width=True, hide_index=True,
+            )
+            if vf_crypto_can_write():
+                remove_symbol = st.selectbox("Retirer de la surveillance", view["Symbole"].tolist(), key="crypto_remove_watch")
+                if st.button("Retirer", key="crypto_remove_watch_button"):
+                    SUPABASE.table("crypto_watchlist").delete().eq("symbol", remove_symbol).execute()
+                    st.cache_data.clear()
+                    st.rerun()
+
+    with tab_positions:
+        positions = vf_crypto_positions_load()
+        if vf_crypto_can_write():
+            with st.expander("➕ Ajouter ou mettre à jour une position", expanded=positions.empty):
+                with st.form("crypto_position_form"):
+                    p1, p2 = st.columns(2)
+                    symbol_input = p1.text_input("Crypto / ticker", value="BTC", placeholder="BTC ou BTC-USD")
+                    exchange = p2.selectbox("Plateforme", ["Binance", "Coinbase", "Kraken", "Ledger", "Autre"])
+                    p3, p4, p5 = st.columns(3)
+                    quantity = p3.number_input("Quantité détenue", min_value=0.0, value=0.0, format="%.8f")
+                    average_cost = p4.number_input("Prix moyen d'achat (USD)", min_value=0.0, value=0.0, format="%.6f")
+                    name = p5.text_input("Nom", placeholder="Bitcoin")
+                    save_position = st.form_submit_button("Enregistrer la position", type="primary", use_container_width=True)
+                if save_position:
+                    symbol = vf_crypto_symbol(symbol_input)
+                    if not symbol or quantity <= 0 or average_cost <= 0:
+                        st.error("Renseigne un ticker valide, une quantité et un prix moyen supérieurs à zéro.")
+                    else:
+                        payload = vf_user_payload({
+                            "account": "crypto", "broker": exchange, "instrument_key": symbol,
+                            "ticker": symbol, "name": name or CRYPTO_CATALOG.get(symbol) or symbol,
+                            "quantity": quantity, "pru": average_cost, "currency": "USD",
+                            "source": "manual_crypto", "updated_at": datetime.utcnow().isoformat(),
+                        })
+                        try:
+                            SUPABASE.table("portfolio_positions").upsert(
+                                payload, on_conflict="user_id,account,broker,instrument_key"
+                            ).execute()
+                            st.success(f"Position {symbol} enregistrée.")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as exc:
+                            st.error(f"Position non enregistrée : {exc}")
+
+        positions = vf_crypto_positions_load()
+        if positions.empty:
+            st.info("Aucune position crypto enregistrée.")
+        else:
+            rows = []
+            for _, pos in positions.iterrows():
+                symbol = vf_crypto_symbol(pos.get("ticker"))
+                quote = live_quote(symbol) if symbol else {}
+                price = _vf_num(quote.get("price"))
+                qty = _vf_num(pos.get("quantity"))
+                pru = _vf_num(pos.get("pru"))
+                value = qty * price if pd.notna(price) else np.nan
+                cost = qty * pru
+                pnl = value - cost if pd.notna(value) else np.nan
+                rows.append({
+                    "ID": pos.get("id"), "Symbole": symbol, "Crypto": pos.get("name") or symbol,
+                    "Plateforme": pos.get("broker"), "Quantité": qty, "PRU USD": pru,
+                    "Cours USD": price, "Valeur USD": value, "P/L USD": pnl,
+                    "P/L %": (pnl / cost * 100) if pd.notna(pnl) and cost else np.nan,
+                })
+            valued = pd.DataFrame(rows)
+            total_value = pd.to_numeric(valued["Valeur USD"], errors="coerce").sum()
+            total_cost = (pd.to_numeric(valued["Quantité"], errors="coerce") * pd.to_numeric(valued["PRU USD"], errors="coerce")).sum()
+            total_pnl = total_value - total_cost
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Valeur crypto", f"{total_value:,.2f} $")
+            c2.metric("Capital investi", f"{total_cost:,.2f} $")
+            c3.metric("P/L latent", f"{total_pnl:+,.2f} $", f"{(total_pnl/total_cost*100):+.2f} %" if total_cost else None)
+            st.dataframe(
+                valued.drop(columns=["ID"]).style.format({
+                    "Quantité": "{:,.8f}", "PRU USD": "{:,.4f}", "Cours USD": "{:,.4f}",
+                    "Valeur USD": "{:,.2f}", "P/L USD": "{:+,.2f}", "P/L %": "{:+.2f}",
+                }, na_rep="—"),
+                use_container_width=True, hide_index=True,
+            )
+            if vf_crypto_can_write():
+                labels = {f"{r['Symbole']} • {r['Plateforme']}": r["ID"] for r in rows}
+                delete_label = st.selectbox("Supprimer une position", list(labels), key="crypto_delete_position")
+                if st.button("Supprimer la position", key="crypto_delete_position_button"):
+                    SUPABASE.table("portfolio_positions").delete().eq("id", labels[delete_label]).execute()
+                    st.rerun()
+
+    with tab_alerts:
+        alerts = load_market_alerts(limit=300)
+        if not alerts.empty:
+            if "asset_class" in alerts:
+                alerts = alerts[alerts["asset_class"].fillna("").str.upper() == "CRYPTO"]
+            else:
+                alerts = alerts[alerts["symbol"].fillna("").str.endswith(("-USD", "-EUR"))]
+        if alerts.empty:
+            st.info("Aucune alerte crypto pour le moment. Le worker vérifie le marché toutes les 15 minutes.")
+        else:
+            cols = [c for c in ["created_at", "symbol", "alert_type", "score", "headline", "status"] if c in alerts]
+            st.dataframe(alerts[cols], use_container_width=True, hide_index=True)
+            st.caption("Les alertes de seuil et de position sont privées. Les signaux de marché sont partagés entre les profils autorisés.")
+
 # ==========================================================
 # SIDEBAR / ROUTING — V20
 # ==========================================================
@@ -6090,6 +6378,7 @@ with st.sidebar:
     st.markdown('<div class="vf-group-title">Portefeuille</div>', unsafe_allow_html=True)
     _nav_button("🏦 PEA", "nav_pea")
     _nav_button("💼 CTO", "nav_cto")
+    _nav_button("₿ Crypto", "nav_crypto")
     _nav_button("📈 Performance", "nav_perf")
     _nav_button("⚖️ Arbitrage", "nav_arb")
     _nav_button("💰 Transactions", "nav_tx")
@@ -7455,6 +7744,9 @@ elif mode=="💼 CTO":
         show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
     else:
         show_portfolio_page(acc,f"💼 CTO — {broker or 'Autre'}", broker=broker)
+
+elif mode=="₿ Crypto":
+    vf_crypto_page()
 
 elif mode=="💰 Transactions":
     show_transactions_page()
