@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V34.3 Agent Market Dedup Fix"
+APP_VERSION = "V35 Broker Access Gate"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2261,11 +2261,11 @@ def _fallback_universe():
 @st.cache_data(ttl=300, show_spinner=False)
 def load_broker_universe(brokers=None, markets=None):
     """
-    Universe scanner:
-    - Priorité à Supabase `broker_universe` si la table est renseignée.
-    - Sinon fallback global intégré.
-    La colonne broker permet de ne conserver que les instruments marqués
-    compatibles avec XTB / Trade Republic / les deux.
+    Operational universe of instruments verified as accessible at one or more
+    supported brokers: XTB, Trade Republic, Boursobank.
+
+    `broker_universe` remains the source of truth. Broker strings may contain
+    one broker or several (e.g. "XTB, Trade Republic").
     """
     if SUPABASE is not None:
         try:
@@ -2276,20 +2276,141 @@ def load_broker_universe(brokers=None, markets=None):
             data = _sb_data(res)
             if data:
                 df = pd.DataFrame(data)
+                df["symbol"] = df["symbol"].map(lambda x: _clean_text(x, upper=True))
+                df = df[df["symbol"].astype(bool)]
+
                 if brokers:
-                    wanted = {str(x).strip().lower() for x in brokers}
-                    df = df[df["broker"].fillna("").str.lower().isin(wanted)]
+                    wanted = {str(x).strip().lower() for x in brokers if str(x).strip()}
+
+                    def _broker_match(value):
+                        raw = _clean_text(value).lower()
+                        parts = {
+                            p.strip()
+                            for p in re.split(r"[,;/|+]+", raw)
+                            if p.strip()
+                        }
+                        return bool(parts & wanted) or any(w in raw for w in wanted)
+
+                    df = df[df["broker"].map(_broker_match)]
+
                 if markets:
                     df = df[df["market"].isin(markets)]
+
                 if not df.empty:
-                    return df.drop_duplicates(subset=["symbol","broker"])
+                    return df.drop_duplicates(subset=["symbol","broker"]).reset_index(drop=True)
         except Exception:
             pass
 
+    # Fallback exists only for general analysis, not verified broker access.
     df = _fallback_universe()
     if markets:
         df = df[df["market"].isin(markets)]
-    return df
+    return df.reset_index(drop=True)
+
+
+
+SUPPORTED_BROKERS = ["XTB", "Trade Republic", "Boursobank"]
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def vf_verified_access_universe():
+    """
+    Returns only rows explicitly present in Supabase broker_universe.
+    No Yahoo/fallback instrument is promoted to 'verified' automatically.
+    """
+    if SUPABASE is None:
+        return pd.DataFrame(columns=[
+            "symbol","name","isin","market","asset_type","broker","enabled"
+        ])
+    try:
+        res = (
+            SUPABASE.table("broker_universe")
+            .select("symbol,name,isin,market,asset_type,broker,enabled")
+            .eq("enabled", True)
+            .execute()
+        )
+        data = _sb_data(res)
+        if not data:
+            return pd.DataFrame(columns=[
+                "symbol","name","isin","market","asset_type","broker","enabled"
+            ])
+        df = pd.DataFrame(data)
+        df["symbol"] = df["symbol"].map(lambda x: _clean_text(x, upper=True))
+        df["broker"] = df["broker"].map(_clean_text)
+        df = df[df["symbol"].astype(bool)]
+        mask = df["broker"].str.lower().apply(
+            lambda x: any(b.lower() in x for b in SUPPORTED_BROKERS)
+        )
+        return df[mask].drop_duplicates(["symbol","broker"]).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=[
+            "symbol","name","isin","market","asset_type","broker","enabled"
+        ])
+
+
+def vf_accessible_symbols(brokers=None):
+    df = vf_verified_access_universe()
+    if df.empty:
+        return set()
+
+    wanted = {
+        str(x).strip().lower()
+        for x in (brokers or SUPPORTED_BROKERS)
+        if str(x).strip()
+    }
+
+    if wanted:
+        def _match(value):
+            raw = _clean_text(value).lower()
+            return any(w in raw for w in wanted)
+        df = df[df["broker"].map(_match)]
+
+    return set(df["symbol"].dropna().astype(str).str.upper().str.strip())
+
+
+def vf_broker_access_label(symbol):
+    symbol = _clean_text(symbol, upper=True)
+    if not symbol:
+        return "Non vérifié"
+
+    df = vf_verified_access_universe()
+    if df.empty:
+        return "Non vérifié"
+
+    hit = df[df["symbol"] == symbol]
+    if hit.empty:
+        return "Non vérifié"
+
+    brokers = []
+    for value in hit["broker"].dropna().tolist():
+        raw = _clean_text(value)
+        for broker in SUPPORTED_BROKERS:
+            if broker.lower() in raw.lower() and broker not in brokers:
+                brokers.append(broker)
+
+    return " • ".join(brokers) if brokers else "Non vérifié"
+
+
+def vf_filter_verified_access(df, symbol_col="symbol", brokers=None):
+    """
+    Hard operational filter: a row is retained only if its symbol is explicitly
+    verified in broker_universe for XTB / Trade Republic / Boursobank.
+    """
+    if df is None or df.empty or symbol_col not in df.columns:
+        return pd.DataFrame(columns=df.columns if isinstance(df, pd.DataFrame) else [])
+
+    allowed = vf_accessible_symbols(brokers=brokers)
+    if not allowed:
+        return df.iloc[0:0].copy()
+
+    out = df.copy()
+    out["_vf_access_symbol"] = (
+        out[symbol_col].fillna("").astype(str).str.upper().str.strip()
+    )
+    out = out[out["_vf_access_symbol"].isin(allowed)].copy()
+    out["Accès courtier"] = out["_vf_access_symbol"].map(vf_broker_access_label)
+    return out.drop(columns=["_vf_access_symbol"], errors="ignore").reset_index(drop=True)
+
 
 
 def compatible_scan_symbols(brokers, markets):
@@ -2504,6 +2625,24 @@ def show_market_agent_page():
     # recent decision per symbol, while preserving the full raw history below.
     alerts_raw = alerts.copy()
 
+    # V35 — operational broker-access gate.
+    # The Agent board only keeps values explicitly known as tradable at one
+    # of the supported brokers.
+    alerts = vf_filter_verified_access(
+        alerts,
+        symbol_col="symbol",
+        brokers=SUPPORTED_BROKERS
+    )
+
+    if alerts.empty:
+        st.info(
+            "L'agent possède des événements, mais aucune valeur n'est actuellement "
+            "vérifiée comme accessible chez XTB, Trade Republic ou Boursobank."
+        )
+        with st.expander("🕘 Voir les alertes non filtrées"):
+            st.dataframe(alerts_raw, use_container_width=True, hide_index=True)
+        return
+
     if "created_at" in alerts.columns:
         alerts["_vf_created_at"] = pd.to_datetime(alerts["created_at"], errors="coerce", utc=True)
         alerts = alerts.sort_values("_vf_created_at", ascending=False, na_position="last")
@@ -2552,6 +2691,7 @@ def show_market_agent_page():
                     row["Entrée"] = row.get("entry")
                     row["Stop"] = row.get("stop")
                     row["TP2"] = row.get("tp2")
+                    row["Courtier"] = row.get("Accès courtier") or vf_broker_access_label(row.get("symbol"))
                     vf_setup_card(row, key_prefix=f"agent_entry_{idx}")
 
         with st.expander("📋 Tableau des opportunités"):
@@ -2599,7 +2739,8 @@ def show_market_agent_page():
                 st.caption(analysis[:420])
 
             footer=[]
-            for item in [_clean_text(r.get("broker")),_clean_text(r.get("market")),f"news {_clean_text(r.get('news_risk'),upper=True)}" if _clean_text(r.get("news_risk")) else "",_clean_text(r.get("status"))]:
+            access_label = _clean_text(r.get("Accès courtier")) or vf_broker_access_label(symbol)
+            for item in [access_label,_clean_text(r.get("market")),f"news {_clean_text(r.get('news_risk'),upper=True)}" if _clean_text(r.get("news_risk")) else "",_clean_text(r.get("status"))]:
                 if item:
                     footer.append(item)
             if footer:
@@ -6061,7 +6202,13 @@ def vf_watchlist_from_alerts(limit=6):
     alerts = load_market_alerts(limit=100)
     if alerts is None or alerts.empty:
         return pd.DataFrame()
-    df = alerts.copy()
+    df = vf_filter_verified_access(
+        alerts.copy(),
+        symbol_col="symbol",
+        brokers=SUPPORTED_BROKERS
+    )
+    if df.empty:
+        return df
     for c in ["score","upside","rr"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -6626,13 +6773,32 @@ elif mode=="🔎 Scanner":
         "Discovery Board — découverte mondiale, scoring multi-timeframe, confirmation 1H et plan de risque."
     )
 
+    verified_access = vf_verified_access_universe()
+    if not verified_access.empty:
+        counts = {}
+        for broker in SUPPORTED_BROKERS:
+            counts[broker] = int(
+                verified_access["broker"].fillna("").str.contains(
+                    broker, case=False, regex=False
+                ).sum()
+            )
+        st.caption(
+            "Univers vérifié • "
+            + " • ".join(f"{b}: {counts[b]}" for b in SUPPORTED_BROKERS)
+        )
+    else:
+        st.warning(
+            "Le référentiel broker_universe ne contient encore aucune valeur vérifiée "
+            "pour XTB / Trade Republic / Boursobank."
+        )
+
     # Top visual controls
     f1,f2,f3,f4 = st.columns(4)
     brokers = f1.multiselect(
         "Courtiers vérifiés",
-        ["XTB","Trade Republic"],
-        default=["XTB","Trade Republic"],
-        help="Filtre uniquement le référentiel broker_universe."
+        ["XTB","Trade Republic","Boursobank"],
+        default=["XTB","Trade Republic","Boursobank"],
+        help="N'affiche que les instruments explicitement vérifiés dans broker_universe pour ces courtiers."
     )
     available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
     default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
@@ -6644,7 +6810,11 @@ elif mode=="🔎 Scanner":
     min_score = g1.slider("Score minimum", 50, 100, 72)
     top_n = g2.slider("Finalistes", 5, 50, 20)
     only_confirmed = g3.checkbox("Confirmés 1H seulement", False)
-    include_discovery = g4.toggle("Découverte mondiale", value=True)
+    include_discovery = g4.toggle(
+        "Découverte non vérifiée",
+        value=False,
+        help="Désactivé par défaut : les valeurs découvertes via Yahoo ne sont pas garanties disponibles chez tes courtiers."
+    )
 
     discovery_regions = []
     max_per_region = 20
@@ -6668,8 +6838,21 @@ elif mode=="🔎 Scanner":
             max_per_region=max_per_region,
         )
 
+    # Hard broker-access gate for the operational scanner.
+    # Discovery may still be explored, but only verified instruments feed the
+    # actionable scanner unless the user explicitly enables discovery.
+    if not include_discovery and not universe_df.empty:
+        universe_df = vf_filter_verified_access(
+            universe_df,
+            symbol_col="symbol",
+            brokers=brokers
+        )
+
     if universe_df.empty:
-        st.warning("Aucun instrument disponible pour les filtres sélectionnés.")
+        st.warning(
+            "Aucun instrument vérifié disponible pour les courtiers sélectionnés. "
+            "Ajoute/active les valeurs concernées dans broker_universe."
+        )
     else:
         verified_count = int((universe_df.get("source") == "Référentiel courtier").sum()) if "source" in universe_df else 0
         discovery_count = int((universe_df.get("source") == "Découverte Yahoo").sum()) if "source" in universe_df else 0
@@ -6683,8 +6866,9 @@ elif mode=="🔎 Scanner":
 
         if discovery_count:
             st.info(
-                "Les valeurs « Découverte Yahoo » élargissent la recherche mais leur disponibilité chez XTB "
-                "ou Trade Republic n'est pas garantie. Elles sont donc affichées « courtier à vérifier »."
+                "Les valeurs « Découverte Yahoo » élargissent la recherche, mais elles ne sont pas considérées "
+                "comme exécutables tant qu'elles ne sont pas vérifiées dans broker_universe pour XTB, "
+                "Trade Republic ou Boursobank."
             )
 
         with st.spinner("Analyse technique groupée puis confirmation 1H…"):
