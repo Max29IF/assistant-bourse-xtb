@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V35 Broker Access Gate"
+APP_VERSION = "V35.1 Hybrid Broker Access Filter"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2311,12 +2311,22 @@ def load_broker_universe(brokers=None, markets=None):
 
 SUPPORTED_BROKERS = ["XTB", "Trade Republic", "Boursobank"]
 
+# Broad markets where liquid listed equities / ETFs are commonly offered by
+# at least one of the supported brokers. This is used only for "probable"
+# access, never as a guarantee.
+VF_PROBABLE_MARKETS = {
+    "USA","France","Germany","Allemagne","Netherlands","Pays-Bas",
+    "Spain","Espagne","Italy","Italie","Belgium","Belgique",
+    "Portugal","Finland","Finlande","Sweden","Suède",
+    "Denmark","Danemark","UK","Royaume-Uni","Canada","Japan","Japon",
+    "Switzerland","Suisse","Austria","Autriche","Norway","Norvège"
+}
+
 
 @st.cache_data(ttl=300, show_spinner=False)
 def vf_verified_access_universe():
     """
-    Returns only rows explicitly present in Supabase broker_universe.
-    No Yahoo/fallback instrument is promoted to 'verified' automatically.
+    Exact broker_universe evidence only.
     """
     if SUPABASE is None:
         return pd.DataFrame(columns=[
@@ -2348,24 +2358,78 @@ def vf_verified_access_universe():
         ])
 
 
-def vf_accessible_symbols(brokers=None):
-    df = vf_verified_access_universe()
-    if df.empty:
-        return set()
+@st.cache_data(ttl=300, show_spinner=False)
+def vf_imported_broker_access_universe():
+    """
+    Positions imported from XTB / Trade Republic / Boursobank are strong
+    evidence that the instrument is actually accessible to the user.
+    """
+    if SUPABASE is None:
+        return pd.DataFrame(columns=["symbol","name","isin","broker"])
+    try:
+        res = (
+            SUPABASE.table("portfolio_positions")
+            .select("ticker,name,isin,broker")
+            .execute()
+        )
+        data = _sb_data(res)
+        rows = []
+        for r in data or []:
+            symbol = _clean_text(r.get("ticker"), upper=True)
+            broker = _clean_text(r.get("broker"))
+            if not symbol or not broker:
+                continue
+            if not any(b.lower() in broker.lower() for b in SUPPORTED_BROKERS):
+                continue
+            rows.append({
+                "symbol": symbol,
+                "name": _clean_text(r.get("name")),
+                "isin": _clean_text(r.get("isin"), upper=True),
+                "broker": broker,
+            })
+        return pd.DataFrame(rows).drop_duplicates(["symbol","broker"]) if rows else pd.DataFrame(
+            columns=["symbol","name","isin","broker"]
+        )
+    except Exception:
+        return pd.DataFrame(columns=["symbol","name","isin","broker"])
 
+
+def vf_accessible_symbols(brokers=None):
     wanted = {
         str(x).strip().lower()
         for x in (brokers or SUPPORTED_BROKERS)
         if str(x).strip()
     }
 
-    if wanted:
-        def _match(value):
-            raw = _clean_text(value).lower()
-            return any(w in raw for w in wanted)
-        df = df[df["broker"].map(_match)]
+    frames = []
 
-    return set(df["symbol"].dropna().astype(str).str.upper().str.strip())
+    verified = vf_verified_access_universe()
+    if not verified.empty:
+        if wanted:
+            verified = verified[
+                verified["broker"].fillna("").map(
+                    lambda x: any(w in _clean_text(x).lower() for w in wanted)
+                )
+            ]
+        frames.append(verified[["symbol"]])
+
+    imported = vf_imported_broker_access_universe()
+    if not imported.empty:
+        if wanted:
+            imported = imported[
+                imported["broker"].fillna("").map(
+                    lambda x: any(w in _clean_text(x).lower() for w in wanted)
+                )
+            ]
+        frames.append(imported[["symbol"]])
+
+    if not frames:
+        return set()
+
+    return set(
+        pd.concat(frames, ignore_index=True)["symbol"]
+        .dropna().astype(str).str.upper().str.strip()
+    )
 
 
 def vf_broker_access_label(symbol):
@@ -2373,43 +2437,151 @@ def vf_broker_access_label(symbol):
     if not symbol:
         return "Non vérifié"
 
-    df = vf_verified_access_universe()
-    if df.empty:
-        return "Non vérifié"
+    labels = []
 
-    hit = df[df["symbol"] == symbol]
-    if hit.empty:
-        return "Non vérifié"
+    verified = vf_verified_access_universe()
+    if not verified.empty:
+        hit = verified[verified["symbol"] == symbol]
+        for value in hit.get("broker", pd.Series(dtype=str)).dropna().tolist():
+            raw = _clean_text(value)
+            for broker in SUPPORTED_BROKERS:
+                if broker.lower() in raw.lower() and broker not in labels:
+                    labels.append(broker)
 
-    brokers = []
-    for value in hit["broker"].dropna().tolist():
-        raw = _clean_text(value)
-        for broker in SUPPORTED_BROKERS:
-            if broker.lower() in raw.lower() and broker not in brokers:
-                brokers.append(broker)
+    imported = vf_imported_broker_access_universe()
+    if not imported.empty:
+        hit = imported[imported["symbol"] == symbol]
+        for value in hit.get("broker", pd.Series(dtype=str)).dropna().tolist():
+            raw = _clean_text(value)
+            for broker in SUPPORTED_BROKERS:
+                if broker.lower() in raw.lower() and broker not in labels:
+                    labels.append(broker)
 
-    return " • ".join(brokers) if brokers else "Non vérifié"
+    return " • ".join(labels) if labels else "Non vérifié"
 
 
-def vf_filter_verified_access(df, symbol_col="symbol", brokers=None):
+def vf_probable_access(row):
     """
-    Hard operational filter: a row is retained only if its symbol is explicitly
-    verified in broker_universe for XTB / Trade Republic / Boursobank.
+    Conservative fallback for discovered stocks/ETFs.
+    It only says 'probable' for common listed equity/ETF markets.
+    """
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row or {})
+
+    market = _clean_text(row.get("market") or row.get("Marché"))
+    asset_type = _clean_text(
+        row.get("asset_type")
+        or row.get("quoteType")
+        or row.get("type"),
+        upper=True
+    )
+
+    # Most Yahoo discoveries in this app are equities.
+    if not asset_type:
+        asset_type = "EQUITY"
+
+    if asset_type not in {"EQUITY","ETF","STOCK"}:
+        return False
+
+    if market in VF_PROBABLE_MARKETS:
+        return True
+
+    # Ticker suffix fallback when discovery doesn't provide a normalized market.
+    sym = _clean_text(row.get("symbol") or row.get("Ticker"), upper=True)
+    if not sym:
+        return False
+
+    common_suffixes = (
+        ".PA",".DE",".AS",".MI",".MC",".BR",".LS",".ST",".HE",".CO",
+        ".OL",".SW",".VI",".L",".TO"
+    )
+    if sym.endswith(common_suffixes):
+        return True
+
+    # Plain US tickers are frequently available at XTB/TR, but still only
+    # classified as probable, not verified.
+    if "." not in sym and re.fullmatch(r"[A-Z0-9\-]{1,8}", sym):
+        return True
+
+    return False
+
+
+def vf_access_status_for_row(row):
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row or {})
+
+    symbol = _clean_text(row.get("symbol") or row.get("Ticker"), upper=True)
+    label = vf_broker_access_label(symbol)
+
+    if label != "Non vérifié":
+        return "Vérifié", label
+
+    if vf_probable_access(row):
+        return "Probable", "À confirmer chez le courtier"
+
+    return "Non vérifié", "Non vérifié"
+
+
+def vf_filter_broker_access(df, symbol_col="symbol", brokers=None, level="Vérifié + probable"):
+    """
+    Hybrid access filter:
+    - exact broker_universe or imported position => Vérifié
+    - common listed equity / ETF => Probable
+    - otherwise => Non vérifié
     """
     if df is None or df.empty or symbol_col not in df.columns:
         return pd.DataFrame(columns=df.columns if isinstance(df, pd.DataFrame) else [])
 
-    allowed = vf_accessible_symbols(brokers=brokers)
-    if not allowed:
-        return df.iloc[0:0].copy()
+    wanted = {str(x).strip().lower() for x in (brokers or SUPPORTED_BROKERS) if str(x).strip()}
+    exact_allowed = vf_accessible_symbols(brokers=brokers)
 
-    out = df.copy()
-    out["_vf_access_symbol"] = (
-        out[symbol_col].fillna("").astype(str).str.upper().str.strip()
+    rows = []
+    for _, rr in df.iterrows():
+        row = rr.to_dict()
+        sym = _clean_text(row.get(symbol_col), upper=True)
+        if not sym:
+            continue
+
+        exact = sym in exact_allowed
+        status, label = vf_access_status_for_row(row)
+
+        # If the symbol is exact for some broker but not among the selected ones,
+        # do not accidentally mark it verified for the selection.
+        if exact:
+            status = "Vérifié"
+            label = vf_broker_access_label(sym)
+        elif status == "Vérifié":
+            status = "Probable" if vf_probable_access(row) else "Non vérifié"
+            label = "À confirmer chez le courtier"
+
+        keep = False
+        if level == "Vérifié uniquement":
+            keep = status == "Vérifié"
+        elif level == "Vérifié + probable":
+            keep = status in {"Vérifié","Probable"}
+        else:
+            keep = True
+
+        if keep:
+            row["Accès statut"] = status
+            row["Accès courtier"] = label
+            rows.append(row)
+
+    return pd.DataFrame(rows).reset_index(drop=True) if rows else df.iloc[0:0].copy()
+
+
+def vf_filter_verified_access(df, symbol_col="symbol", brokers=None):
+    """
+    Backward-compatible strict wrapper.
+    """
+    return vf_filter_broker_access(
+        df,
+        symbol_col=symbol_col,
+        brokers=brokers,
+        level="Vérifié uniquement"
     )
-    out = out[out["_vf_access_symbol"].isin(allowed)].copy()
-    out["Accès courtier"] = out["_vf_access_symbol"].map(vf_broker_access_label)
-    return out.drop(columns=["_vf_access_symbol"], errors="ignore").reset_index(drop=True)
 
 
 
@@ -2628,16 +2800,17 @@ def show_market_agent_page():
     # V35 — operational broker-access gate.
     # The Agent board only keeps values explicitly known as tradable at one
     # of the supported brokers.
-    alerts = vf_filter_verified_access(
+    alerts = vf_filter_broker_access(
         alerts,
         symbol_col="symbol",
-        brokers=SUPPORTED_BROKERS
+        brokers=SUPPORTED_BROKERS,
+        level="Vérifié + probable"
     )
 
     if alerts.empty:
         st.info(
-            "L'agent possède des événements, mais aucune valeur n'est actuellement "
-            "vérifiée comme accessible chez XTB, Trade Republic ou Boursobank."
+            "L'agent possède des événements, mais aucune valeur ne passe actuellement "
+            "le filtre d'accès courtier Vérifié + probable."
         )
         with st.expander("🕘 Voir les alertes non filtrées"):
             st.dataframe(alerts_raw, use_container_width=True, hide_index=True)
@@ -2739,8 +2912,10 @@ def show_market_agent_page():
                 st.caption(analysis[:420])
 
             footer=[]
+            access_status = _clean_text(r.get("Accès statut"))
             access_label = _clean_text(r.get("Accès courtier")) or vf_broker_access_label(symbol)
-            for item in [access_label,_clean_text(r.get("market")),f"news {_clean_text(r.get('news_risk'),upper=True)}" if _clean_text(r.get("news_risk")) else "",_clean_text(r.get("status"))]:
+            access_text = f"{access_status} • {access_label}" if access_status else access_label
+            for item in [access_text,_clean_text(r.get("market")),f"news {_clean_text(r.get('news_risk'),upper=True)}" if _clean_text(r.get("news_risk")) else "",_clean_text(r.get("status"))]:
                 if item:
                     footer.append(item)
             if footer:
@@ -6202,10 +6377,11 @@ def vf_watchlist_from_alerts(limit=6):
     alerts = load_market_alerts(limit=100)
     if alerts is None or alerts.empty:
         return pd.DataFrame()
-    df = vf_filter_verified_access(
+    df = vf_filter_broker_access(
         alerts.copy(),
         symbol_col="symbol",
-        brokers=SUPPORTED_BROKERS
+        brokers=SUPPORTED_BROKERS,
+        level="Vérifié + probable"
     )
     if df.empty:
         return df
@@ -6811,9 +6987,20 @@ elif mode=="🔎 Scanner":
     top_n = g2.slider("Finalistes", 5, 50, 20)
     only_confirmed = g3.checkbox("Confirmés 1H seulement", False)
     include_discovery = g4.toggle(
-        "Découverte non vérifiée",
-        value=False,
-        help="Désactivé par défaut : les valeurs découvertes via Yahoo ne sont pas garanties disponibles chez tes courtiers."
+        "Découverte dynamique",
+        value=True,
+        help="Élargit le scanner au-delà du référentiel local. Chaque valeur est ensuite classée Vérifiée / Probable / Non vérifiée."
+    )
+
+    access_level = st.radio(
+        "Filtre accès courtier",
+        ["Vérifié + probable","Vérifié uniquement","Tout afficher"],
+        horizontal=True,
+        index=0,
+        help=(
+            "Vérifié = présent dans broker_universe ou déjà importé depuis un courtier. "
+            "Probable = action/ETF d'un marché couramment distribué, à confirmer avant ordre."
+        )
     )
 
     discovery_regions = []
@@ -6838,37 +7025,40 @@ elif mode=="🔎 Scanner":
             max_per_region=max_per_region,
         )
 
-    # Hard broker-access gate for the operational scanner.
-    # Discovery may still be explored, but only verified instruments feed the
-    # actionable scanner unless the user explicitly enables discovery.
-    if not include_discovery and not universe_df.empty:
-        universe_df = vf_filter_verified_access(
+    # V35.1 — Hybrid broker access filter.
+    # The previous strict gate could empty the scanner when broker_universe was
+    # incomplete. We now retain probable listed equities/ETFs while clearly
+    # distinguishing them from verified instruments.
+    if not universe_df.empty:
+        universe_df = vf_filter_broker_access(
             universe_df,
             symbol_col="symbol",
-            brokers=brokers
+            brokers=brokers,
+            level=access_level
         )
 
     if universe_df.empty:
         st.warning(
-            "Aucun instrument vérifié disponible pour les courtiers sélectionnés. "
-            "Ajoute/active les valeurs concernées dans broker_universe."
+            "Aucune valeur ne passe le filtre d'accès actuel. "
+            "Essaie « Vérifié + probable » ou enrichis broker_universe."
         )
     else:
-        verified_count = int((universe_df.get("source") == "Référentiel courtier").sum()) if "source" in universe_df else 0
+        verified_count = int((universe_df.get("Accès statut") == "Vérifié").sum()) if "Accès statut" in universe_df else 0
+        probable_count = int((universe_df.get("Accès statut") == "Probable").sum()) if "Accès statut" in universe_df else 0
         discovery_count = int((universe_df.get("source") == "Découverte Yahoo").sum()) if "source" in universe_df else 0
         symbols = universe_df["symbol"].dropna().astype(str).tolist()
 
         k1,k2,k3,k4 = st.columns(4)
         k1.metric("Univers analysé", len(symbols))
-        k2.metric("Courtier vérifié", verified_count)
-        k3.metric("Découverte", discovery_count)
+        k2.metric("Accès vérifié", verified_count)
+        k3.metric("Accès probable", probable_count)
         k4.metric("Seuil setup", f"{min_upside:.1f}% / R-R {min_rr:.1f}")
 
         if discovery_count:
             st.info(
-                "Les valeurs « Découverte Yahoo » élargissent la recherche, mais elles ne sont pas considérées "
-                "comme exécutables tant qu'elles ne sont pas vérifiées dans broker_universe pour XTB, "
-                "Trade Republic ou Boursobank."
+                "Les valeurs découvertes sont classées selon la qualité de la preuve d'accès. "
+                "« Vérifié » = référentiel/import courtier. « Probable » = action/ETF d'un marché couramment distribué ; "
+                "à confirmer dans XTB, Trade Republic ou Boursobank avant ordre."
             )
 
         with st.spinner("Analyse technique groupée puis confirmation 1H…"):
@@ -6884,7 +7074,7 @@ elif mode=="🔎 Scanner":
             st.warning("Aucune configuration ne passe les filtres actuels.")
         else:
             meta = universe_df.set_index("symbol")
-            names, isins, sources, broker_labels, market_labels = [], [], [], [], []
+            names, isins, sources, broker_labels, market_labels, access_statuses, access_labels = [], [], [], [], [], [], []
             for sym in out["Ticker"].tolist():
                 if sym in meta.index:
                     rr = meta.loc[sym]
@@ -6895,18 +7085,24 @@ elif mode=="🔎 Scanner":
                     sources.append(_clean_text(rr.get("source")))
                     broker_labels.append(_clean_text(rr.get("broker")))
                     market_labels.append(_clean_text(rr.get("market")))
+                    access_statuses.append(_clean_text(rr.get("Accès statut")) or "Non vérifié")
+                    access_labels.append(_clean_text(rr.get("Accès courtier")) or "Non vérifié")
                 else:
                     names.append(live_quote(sym).get("name", sym))
                     isins.append("")
                     sources.append("")
                     broker_labels.append("")
                     market_labels.append("")
+                    access_statuses.append("Non vérifié")
+                    access_labels.append("Non vérifié")
 
             out["Entreprise"] = names
             out["ISIN"] = isins
             out["Source"] = sources
             out["Courtier"] = broker_labels
             out["Marché"] = market_labels
+            out["Accès"] = access_statuses
+            out["Accès courtier"] = access_labels
             out = add_identity_columns(out, "Ticker")
 
             if only_confirmed:
@@ -6943,7 +7139,7 @@ elif mode=="🔎 Scanner":
 
                 with st.expander("📋 Voir le tableau complet"):
                     visible = [
-                        "Valeur","Ticker","Entreprise","ISIN","Marché","Courtier","Source",
+                        "Valeur","Ticker","Entreprise","ISIN","Marché","Courtier","Accès","Accès courtier","Source",
                         "Score combiné","Score","Confirmation 1h","Confirmé 1h",
                         "Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"
                     ]
