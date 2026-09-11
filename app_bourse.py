@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V34.2 Manual Trade Journal + Live Tracking Fix"
+APP_VERSION = "V34.3 Agent Market Dedup Fix"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2496,14 +2496,42 @@ def show_market_agent_page():
         if c in alerts.columns:
             alerts[c] = pd.to_numeric(alerts[c], errors="coerce")
 
+    # ------------------------------------------------------
+    # V34.3 — Deduplicate Agent Market display
+    # ------------------------------------------------------
+    # The agent can legitimately create several alerts for the same instrument
+    # over multiple cycles. For the live decision board we keep only the most
+    # recent decision per symbol, while preserving the full raw history below.
+    alerts_raw = alerts.copy()
+
+    if "created_at" in alerts.columns:
+        alerts["_vf_created_at"] = pd.to_datetime(alerts["created_at"], errors="coerce", utc=True)
+        alerts = alerts.sort_values("_vf_created_at", ascending=False, na_position="last")
+    elif "id" in alerts.columns:
+        alerts = alerts.sort_values("id", ascending=False, na_position="last")
+
+    if "symbol" in alerts.columns:
+        alerts["_vf_symbol"] = alerts["symbol"].fillna("").astype(str).str.upper().str.strip()
+        # Blank symbols are not deduplicated against one another.
+        with_symbol = alerts[alerts["_vf_symbol"] != ""].drop_duplicates(
+            subset=["_vf_symbol"], keep="first"
+        )
+        without_symbol = alerts[alerts["_vf_symbol"] == ""]
+        alerts = pd.concat([with_symbol, without_symbol], ignore_index=True, sort=False)
+
+        if "_vf_created_at" in alerts.columns:
+            alerts = alerts.sort_values("_vf_created_at", ascending=False, na_position="last")
+
     risk_types={"EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Alertes actionnables", len(alerts))
+    c1.metric("Valeurs actionnables uniques", len(alerts))
     c2.metric("Entrées", int((alerts["alert_type"]=="ENTRY").sum()) if "alert_type" in alerts else 0)
     c3.metric("Gestion / sorties", int(alerts["alert_type"].isin(risk_types).sum()) if "alert_type" in alerts else 0)
     c4.metric("Nouvelles", int((alerts["status"]=="NEW").sum()) if "status" in alerts else 0)
 
     entries = alerts[alerts["alert_type"]=="ENTRY"].copy() if "alert_type" in alerts else pd.DataFrame()
+    if not entries.empty and "symbol" in entries.columns:
+        entries = entries.drop_duplicates(subset=["symbol"], keep="first")
     if not entries.empty:
         vf_section("Opportunités d'entrée", "Les setups ENTRY classés par score et potentiel.")
         entries = entries.sort_values(["score","rr","upside"], ascending=False, na_position="last")
@@ -2534,7 +2562,10 @@ def show_market_agent_page():
             cols = [c for c in ["Valeur","isin","market","broker","score","upside","rr","entry","stop","tp1","tp2","news_risk","created_at"] if c in entries.columns]
             st.dataframe(entries[cols], use_container_width=True, hide_index=True)
 
-    vf_section("Flux de décisions", "Les derniers événements actionnables de l'agent.")
+    vf_section(
+        "Flux de décisions",
+        "Une seule décision active par valeur : la plus récente. Les anciens événements restent disponibles dans l'historique brut."
+    )
     for _, r in alerts.head(20).iterrows():
         typ=_clean_text(r.get("alert_type"),upper=True) or "ALERT"
         symbol,full_name,isin=instrument_identity(r.get("symbol"),r)
@@ -2583,6 +2614,29 @@ def show_market_agent_page():
                     if st.button("🔖 Marquer comme lu",key=f"ack_{r.get('id')}", use_container_width=True):
                         acknowledge_alert(r.get("id"))
                         st.rerun()
+
+    with st.expander("🕘 Historique brut des alertes"):
+        raw_view = alerts_raw.copy()
+        if "created_at" in raw_view.columns:
+            raw_view["_vf_created_at"] = pd.to_datetime(raw_view["created_at"], errors="coerce", utc=True)
+            raw_view = raw_view.sort_values("_vf_created_at", ascending=False, na_position="last")
+        raw_cols = [
+            c for c in [
+                "created_at","symbol","name","isin","alert_type","status",
+                "score","upside","rr","entry","stop","tp1","tp2",
+                "market","broker","news_risk"
+            ]
+            if c in raw_view.columns
+        ]
+        st.caption(
+            f"{len(alerts_raw)} événement(s) historiques • "
+            f"{len(alerts)} valeur(s) unique(s) sur le Decision Board."
+        )
+        st.dataframe(
+            raw_view[raw_cols] if raw_cols else raw_view,
+            use_container_width=True,
+            hide_index=True
+        )
 
     with st.expander("📊 Analyse agrégée des alertes"):
         left,right = st.columns(2)
