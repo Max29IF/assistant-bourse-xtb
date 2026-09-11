@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V35.1 Hybrid Broker Access Filter"
+APP_VERSION = "V36 Live Price Integrity"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2033,7 +2033,7 @@ def info(symbol):
     try: return yf.Ticker(symbol).info or {}
     except Exception: return {}
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def live_quote(symbol):
     try:
         t = yf.Ticker(symbol); fi = getattr(t,"fast_info",None); price=None; currency=""
@@ -2049,6 +2049,150 @@ def live_quote(symbol):
         return {"price": float(price) if price is not None else None, "currency":currency or inf.get("currency","") or "", "name":inf.get("longName") or inf.get("shortName") or symbol}
     except Exception:
         return {"price":None,"currency":"","name":symbol}
+
+
+
+
+def vf_quote_freshness(created_at, current_price, reference_price=None):
+    """
+    Compare the alert snapshot with the current quote.
+    Does not claim broker-tick equivalence: Yahoo/yfinance is an independent
+    market data source and may differ in timestamp/venue from the broker.
+    """
+    now = pd.Timestamp.now(tz="UTC")
+    created = pd.to_datetime(created_at, errors="coerce", utc=True)
+
+    age_min = np.nan
+    if pd.notna(created):
+        try:
+            age_min = max((now - created).total_seconds() / 60.0, 0.0)
+        except Exception:
+            pass
+
+    current = _vf_num(current_price)
+    ref = _vf_num(reference_price)
+    deviation = np.nan
+    if pd.notna(current) and pd.notna(ref) and ref != 0:
+        deviation = (current / ref - 1.0) * 100.0
+
+    # Freshness concerns the alert age; integrity concerns current divergence.
+    if pd.isna(current):
+        state, kind = "COURS INDISPONIBLE", "muted"
+    elif pd.notna(age_min) and age_min <= 2:
+        state, kind = "TRÈS FRAIS", "green"
+    elif pd.notna(age_min) and age_min <= 10:
+        state, kind = "À JOUR", "blue"
+    elif pd.notna(age_min) and age_min <= 30:
+        state, kind = "À REVÉRIFIER", "amber"
+    else:
+        state, kind = "ALERTE ANCIENNE", "amber"
+
+    return {
+        "age_min": age_min,
+        "deviation_pct": deviation,
+        "state": state,
+        "kind": kind,
+    }
+
+
+def vf_live_alert_validation(row):
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row or {})
+
+    symbol = _clean_text(row.get("symbol"), upper=True)
+    q = live_quote(symbol) if symbol else {"price": None}
+    current = _vf_num(q.get("price"))
+
+    # Prefer the alert's stored market/entry reference.
+    reference = _vf_num(row.get("price"))
+    if pd.isna(reference):
+        reference = _vf_num(row.get("entry"))
+
+    freshness = vf_quote_freshness(
+        row.get("created_at"),
+        current,
+        reference_price=reference
+    )
+
+    entry = _vf_num(row.get("entry"))
+    stop = _vf_num(row.get("stop"))
+    tp1 = _vf_num(row.get("tp1"))
+    tp2 = _vf_num(row.get("tp2"))
+
+    decision = "VALIDE À REVÉRIFIER"
+    decision_kind = "blue"
+    reason = "Le setup est comparé au dernier cours disponible."
+
+    if pd.isna(current):
+        decision = "DONNÉE LIVE INDISPONIBLE"
+        decision_kind = "muted"
+        reason = "Impossible de valider le setup sans cours récent."
+    elif pd.notna(stop) and current <= stop:
+        decision = "SETUP INVALIDÉ"
+        decision_kind = "red"
+        reason = "Le dernier cours disponible est au niveau ou sous le Stop."
+    elif pd.notna(tp2) and current >= tp2:
+        decision = "TP2 DÉJÀ DÉPASSÉ"
+        decision_kind = "green"
+        reason = "L'objectif TP2 a déjà été atteint/dépassé : l'ancienne entrée n'est plus actuelle."
+    elif pd.notna(tp1) and current >= tp1:
+        decision = "TP1 DÉJÀ DÉPASSÉ"
+        decision_kind = "amber"
+        reason = "TP1 a déjà été atteint/dépassé : revalider le R/R avant toute entrée."
+    elif pd.notna(entry):
+        dist_entry = abs(current - entry) / entry * 100 if entry else np.nan
+        if pd.notna(dist_entry) and dist_entry > 3.0:
+            decision = "PRIX TROP ÉLOIGNÉ"
+            decision_kind = "amber"
+            reason = f"Le cours s'est écarté de {dist_entry:.1f}% de l'entrée calculée."
+        elif pd.notna(dist_entry) and dist_entry <= 1.0:
+            decision = "ZONE D'ENTRÉE COHÉRENTE"
+            decision_kind = "green"
+            reason = "Le cours reste proche de la zone d'entrée calculée."
+        else:
+            decision = "REVALIDATION NÉCESSAIRE"
+            decision_kind = "blue"
+            reason = "Le cours a évolué depuis la création de l'alerte."
+
+    return {
+        **freshness,
+        "current_price": current,
+        "reference_price": reference,
+        "decision": decision,
+        "decision_kind": decision_kind,
+        "reason": reason,
+        "currency": _clean_text(q.get("currency")),
+    }
+
+
+def vf_alert_live_strip(row):
+    live = vf_live_alert_validation(row)
+
+    c1,c2,c3,c4 = st.columns(4)
+    current = live.get("current_price")
+    age = live.get("age_min")
+    dev = live.get("deviation_pct")
+
+    c1.metric("Cours actuel", f"{current:.2f}" if pd.notna(current) else "—")
+    c2.metric(
+        "Âge alerte",
+        f"{age:.0f} min" if pd.notna(age) else "—"
+    )
+    c3.metric(
+        "Écart alerte → live",
+        f"{dev:+.2f}%" if pd.notna(dev) else "—"
+    )
+    c4.markdown(
+        vf_board_badge(live.get("decision","À vérifier"), live.get("decision_kind","muted")),
+        unsafe_allow_html=True
+    )
+
+    reason = _clean_text(live.get("reason"))
+    if reason:
+        st.caption(reason)
+
+    return live
 
 
 
@@ -2757,7 +2901,31 @@ def parse_agent_details(text):
 def show_market_agent_page():
     vf_page_header(
         "🛰️ Agent marché",
-        "Decision Board — alertes actionnables, régime de marché et suivi automatique des positions."
+        "Decision Board — alertes actionnables, régime de marché et vérification continue des cours."
+    )
+
+    ar1,ar2,ar3 = st.columns([1.2,1.2,3.6])
+    live_refresh = ar1.toggle(
+        "Live refresh",
+        value=True,
+        key="agent_live_refresh",
+        help="Rafraîchit la page automatiquement tant qu'elle est ouverte."
+    )
+    refresh_seconds = ar2.selectbox(
+        "Fréquence",
+        [15,30,60,120],
+        index=1,
+        key="agent_live_refresh_seconds",
+        format_func=lambda x: f"{x} s"
+    )
+    if live_refresh:
+        st_autorefresh(
+            interval=int(refresh_seconds) * 1000,
+            key="agent_live_integrity_refresh"
+        )
+    ar3.caption(
+        "Le cours affiché est revalidé à chaque cycle d'interface. "
+        "Ce contrôle est indépendant du prix figé au moment où l'alerte a été créée."
     )
 
     runs = load_agent_runs(10)
@@ -2866,6 +3034,7 @@ def show_market_agent_page():
                     row["TP2"] = row.get("tp2")
                     row["Courtier"] = row.get("Accès courtier") or vf_broker_access_label(row.get("symbol"))
                     vf_setup_card(row, key_prefix=f"agent_entry_{idx}")
+                    vf_alert_live_strip(entries.iloc[idx].to_dict())
 
         with st.expander("📋 Tableau des opportunités"):
             entries["Valeur"] = entries.apply(
@@ -2877,7 +3046,7 @@ def show_market_agent_page():
 
     vf_section(
         "Flux de décisions",
-        "Une seule décision active par valeur : la plus récente. Les anciens événements restent disponibles dans l'historique brut."
+        "Une seule décision active par valeur. Le setup d'origine reste historique ; le cours et sa validité sont recalculés à chaque rafraîchissement."
     )
     for _, r in alerts.head(20).iterrows():
         typ=_clean_text(r.get("alert_type"),upper=True) or "ALERT"
@@ -2893,12 +3062,14 @@ def show_market_agent_page():
                 if pd.notna(score):
                     st.caption(f"Score {float(score):.0f}/100")
 
+            vf_alert_live_strip(r.to_dict())
+
             vals=st.columns(4)
             specs=[
-                ("Entrée",r.get("entry"),""),
+                ("Entrée alerte",r.get("entry"),""),
                 ("Stop",r.get("stop"),""),
-                ("Potentiel",r.get("upside"),"%"),
-                ("R/R",r.get("rr"),""),
+                ("Potentiel initial",r.get("upside"),"%"),
+                ("R/R initial",r.get("rr"),""),
             ]
             for col,(label,value,suffix) in zip(vals,specs):
                 num=pd.to_numeric(pd.Series([value]),errors="coerce").iloc[0]
