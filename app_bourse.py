@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V36 Live Price Integrity"
+APP_VERSION = "V37.1 Secure Multi-Profile"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -372,7 +372,7 @@ def vf_line(df: pd.DataFrame, date_col: str, series_cols: list[str], title: str)
     st.altair_chart(chart, use_container_width=True)
 
 # ==========================================================
-# AUTHENTICATION
+# AUTHENTICATION — V37.1 SUPABASE AUTH
 # ==========================================================
 def _secret(name, default=""):
     try:
@@ -381,58 +381,239 @@ def _secret(name, default=""):
         return os.getenv(name, default)
 
 
-def password_ok(password: str) -> bool:
-    expected = _secret("APP_PASSWORD")
-    expected_hash = _secret("APP_PASSWORD_HASH")
-    if expected_hash:
-        return hashlib.sha256(password.encode()).hexdigest() == expected_hash
-    return bool(expected) and password == expected
+def vf_password_policy(password: str):
+    password = password or ""
+    checks = {
+        "12 caractères minimum": len(password) >= 12,
+        "une minuscule": bool(re.search(r"[a-z]", password)),
+        "une majuscule": bool(re.search(r"[A-Z]", password)),
+        "un chiffre": bool(re.search(r"\d", password)),
+        "un caractère spécial": bool(re.search(r"[^A-Za-z0-9]", password)),
+    }
+    return all(checks.values()), checks
 
 
-def login_gate():
-    if st.session_state.get("authenticated", False):
-        return True
-    st.title(f"🔭 {APP_NAME}")
-    st.caption(APP_SUBTITLE)
-    with st.form("login_form"):
-        password = st.text_input("Code / mot de passe", type="password")
-        if st.form_submit_button("Se connecter", type="primary"):
-            if password_ok(password):
-                st.session_state["authenticated"] = True
-                st.rerun()
-            st.error("Code incorrect.")
-    return False
-
-
-if not login_gate():
-    st.stop()
-
-# ==========================================================
-# SUPABASE
-# ==========================================================
-def get_supabase():
+def vf_new_anon_client():
     url = _secret("SUPABASE_URL")
-    # Prefer a server-side service key in Streamlit secrets; fallback keeps compatibility.
-    key = _secret("SUPABASE_SERVICE_KEY") or _secret("SUPABASE_KEY")
-    if not url or not key or create_client is None:
+    anon_key = _secret("SUPABASE_ANON_KEY") or _secret("SUPABASE_KEY")
+    if not url or not anon_key or create_client is None:
         return None
     try:
-        return create_client(url, key)
+        return create_client(url, anon_key)
     except Exception:
         return None
 
 
-SUPABASE = get_supabase()
+def vf_store_auth_session(auth_response):
+    session = getattr(auth_response, "session", None)
+    user = getattr(auth_response, "user", None)
+
+    if session is None:
+        return False
+
+    st.session_state["vf_access_token"] = getattr(session, "access_token", "")
+    st.session_state["vf_refresh_token"] = getattr(session, "refresh_token", "")
+    if user is not None:
+        st.session_state["vf_user_id"] = str(getattr(user, "id", "") or "")
+        st.session_state["vf_user_email"] = str(getattr(user, "email", "") or "")
+    return True
 
 
+def vf_restore_auth_client():
+    client = vf_new_anon_client()
+    if client is None:
+        return None
+
+    access_token = st.session_state.get("vf_access_token", "")
+    refresh_token = st.session_state.get("vf_refresh_token", "")
+    if not access_token or not refresh_token:
+        return None
+
+    try:
+        res = client.auth.set_session(access_token, refresh_token)
+        vf_store_auth_session(res)
+        return client
+    except Exception:
+        try:
+            res = client.auth.refresh_session(refresh_token)
+            vf_store_auth_session(res)
+            return client
+        except Exception:
+            return None
+
+
+def vf_current_user_id():
+    return str(st.session_state.get("vf_user_id", "") or "")
+
+
+def vf_current_user_email():
+    return str(st.session_state.get("vf_user_email", "") or "")
+
+
+def vf_auth_logout(client=None):
+    try:
+        if client is not None:
+            client.auth.sign_out()
+    except Exception:
+        pass
+
+    for key in [
+        "vf_access_token","vf_refresh_token","vf_user_id","vf_user_email",
+        "vf_profile_name","vf_profile_role","vf_profile_active"
+    ]:
+        st.session_state.pop(key, None)
+
+    # Clear only app session data; never preserve an authenticated user's
+    # private navigation / watch state across logout.
+    for key in list(st.session_state.keys()):
+        if key.startswith("vf_watchlist") or key.startswith("instrument_"):
+            st.session_state.pop(key, None)
+
+
+def vf_fetch_my_profile(client):
+    uid = vf_current_user_id()
+    if not uid or client is None:
+        return None
+    try:
+        res = (
+            client.table("profiles")
+            .select("id,email,display_name,role,active,created_at")
+            .eq("id", uid)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
+def vf_login_gate():
+    restored = vf_restore_auth_client()
+    if restored is not None:
+        profile = vf_fetch_my_profile(restored)
+        if profile and bool(profile.get("active")):
+            st.session_state["vf_profile_name"] = profile.get("display_name") or vf_current_user_email()
+            st.session_state["vf_profile_role"] = profile.get("role") or "member"
+            st.session_state["vf_profile_active"] = True
+            return restored
+
+    st.title(f"🔭 {APP_NAME}")
+    st.caption("Secure access • Supabase Auth • Private portfolio data")
+
+    tab_login, tab_signup = st.tabs(["Connexion", "Créer un compte invité"])
+
+    with tab_login:
+        with st.form("vf_login_form"):
+            email = st.text_input("E-mail", key="vf_login_email").strip().lower()
+            password = st.text_input("Mot de passe", type="password", key="vf_login_password")
+            submit = st.form_submit_button("Se connecter", type="primary", use_container_width=True)
+
+        if submit:
+            client = vf_new_anon_client()
+            if client is None:
+                st.error("Supabase Auth n'est pas configuré. Vérifie SUPABASE_URL et SUPABASE_ANON_KEY.")
+            else:
+                try:
+                    res = client.auth.sign_in_with_password({"email": email, "password": password})
+                    if not vf_store_auth_session(res):
+                        raise RuntimeError("Session Supabase absente.")
+
+                    profile = vf_fetch_my_profile(client)
+                    if not profile or not bool(profile.get("active")):
+                        vf_auth_logout(client)
+                        st.error(
+                            "Ce compte n'est pas autorisé pour VISION FUTURE. "
+                            "L'adresse doit d'abord être invitée par le propriétaire."
+                        )
+                    else:
+                        st.session_state["vf_profile_name"] = profile.get("display_name") or email
+                        st.session_state["vf_profile_role"] = profile.get("role") or "member"
+                        st.session_state["vf_profile_active"] = True
+                        st.rerun()
+                except Exception:
+                    st.error("Connexion impossible. Vérifie l'e-mail, le mot de passe et la confirmation de l'adresse.")
+
+    with tab_signup:
+        st.caption(
+            "La création d'un compte ne donne accès à l'application que si cette adresse a été invitée au préalable."
+        )
+        with st.form("vf_signup_form"):
+            signup_name = st.text_input("Nom affiché", key="vf_signup_name").strip()
+            signup_email = st.text_input("E-mail invité", key="vf_signup_email").strip().lower()
+            signup_password = st.text_input("Mot de passe", type="password", key="vf_signup_password")
+            signup_password2 = st.text_input("Confirmer le mot de passe", type="password", key="vf_signup_password2")
+            signup = st.form_submit_button("Créer mon compte", use_container_width=True)
+
+        if signup:
+            ok, checks = vf_password_policy(signup_password)
+            if signup_password != signup_password2:
+                st.error("Les deux mots de passe ne correspondent pas.")
+            elif not ok:
+                missing = [label for label, valid in checks.items() if not valid]
+                st.error("Mot de passe insuffisant : " + ", ".join(missing) + ".")
+            else:
+                client = vf_new_anon_client()
+                if client is None:
+                    st.error("Supabase Auth n'est pas configuré.")
+                else:
+                    try:
+                        res = client.auth.sign_up({
+                            "email": signup_email,
+                            "password": signup_password,
+                            "options": {"data": {"display_name": signup_name}}
+                        })
+                        if getattr(res, "session", None):
+                            vf_store_auth_session(res)
+                            profile = vf_fetch_my_profile(client)
+                            if profile and bool(profile.get("active")):
+                                st.success("Compte créé et autorisé.")
+                                st.rerun()
+                            vf_auth_logout(client)
+                        st.success(
+                            "Compte créé. Si la confirmation e-mail est activée dans Supabase, "
+                            "confirme l'adresse puis reviens dans l'onglet Connexion."
+                        )
+                    except Exception:
+                        st.error(
+                            "Création impossible. Vérifie que cette adresse est invitée, "
+                            "qu'elle n'existe pas déjà et que le mot de passe respecte les règles."
+                        )
+
+    st.info(
+        "Pour ajouter une autre personne, le propriétaire doit d'abord l'inviter depuis "
+        "« Profil & sécurité ». Aucun profil Famille n'est créé dans cette version."
+    )
+    return None
+
+
+# Authentication must happen before any private database query.
+SUPABASE = vf_login_gate()
+if SUPABASE is None:
+    st.stop()
+
+# SUPABASE — user-scoped client only
+# ==========================================================
 def _sb_data(result):
     return getattr(result, "data", None) or []
+
+
+def vf_user_payload(payload=None):
+    data = dict(payload or {})
+    uid = vf_current_user_id()
+    if uid:
+        data["user_id"] = uid
+    return data
 
 
 def upsert_import_record(payload: dict):
     if SUPABASE is None:
         return False
-    SUPABASE.table("imports").upsert(payload, on_conflict="file_hash,account").execute()
+    payload = vf_user_payload(payload)
+    SUPABASE.table("imports").upsert(
+        payload,
+        on_conflict="user_id,file_hash,account"
+    ).execute()
     return True
 
 
@@ -528,6 +709,7 @@ def save_positions(account: str, broker: str, df: pd.DataFrame, source: str = "d
         mkt_value = float(mkt_value) if pd.notna(mkt_value) else None
 
         payload = {
+            "user_id": vf_current_user_id(),
             "account": account,
             "broker": broker,
             "instrument_key": instrument_key,
@@ -580,6 +762,7 @@ def save_transactions(account: str, broker: str, df: pd.DataFrame, source_import
         if not txid:
             txid = hashlib.sha256(json.dumps(r.fillna("").astype(str).to_dict(), sort_keys=True).encode()).hexdigest()
         rows.append({
+            "user_id": vf_current_user_id(),
             "transaction_id": txid,
             "account": account,
             "broker": broker,
@@ -603,7 +786,7 @@ def save_transactions(account: str, broker: str, df: pd.DataFrame, source_import
             "imported_at": datetime.utcnow().isoformat(),
         })
     if rows:
-        SUPABASE.table("transactions").upsert(rows, on_conflict="transaction_id").execute()
+        SUPABASE.table("transactions").upsert(rows, on_conflict="user_id,transaction_id").execute()
     return len(rows)
 
 
@@ -1299,12 +1482,12 @@ def portfolio_valuation(account: str, use_live=True, broker: str | None = None):
 
 def save_performance_snapshot(account: str, metrics: dict):
     if SUPABASE is None: return False
-    payload={"account":account,"snapshot_date":date.today().isoformat(),"assets_value":metrics.get("assets_value",0),
+    payload={"user_id":vf_current_user_id(),"account":account,"snapshot_date":date.today().isoformat(),"assets_value":metrics.get("assets_value",0),
              "cash_estimate":metrics.get("cash_estimate"),"equity_estimate":metrics.get("equity_estimate"),
              "net_contributions":metrics.get("net_contributions"),"pnl_estimate":metrics.get("pnl_estimate"),
              "return_pct":metrics.get("return_pct"),"updated_at":datetime.utcnow().isoformat()}
     try:
-        SUPABASE.table("performance_snapshots").upsert(payload,on_conflict="account,snapshot_date").execute(); return True
+        SUPABASE.table("performance_snapshots").upsert(payload,on_conflict="user_id,account,snapshot_date").execute(); return True
     except Exception:
         return False
 
@@ -1399,7 +1582,6 @@ def _norm_company_text(value):
     return " ".join(t for t in s.split() if t not in stop)
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
 def resolve_ticker_from_identity(name="", isin=""):
     """
     Best-effort resolver:
@@ -2502,7 +2684,6 @@ def vf_verified_access_universe():
         ])
 
 
-@st.cache_data(ttl=300, show_spinner=False)
 def vf_imported_broker_access_universe():
     """
     Positions imported from XTB / Trade Republic / Boursobank are strong
@@ -2738,7 +2919,6 @@ def compatible_scan_symbols(brokers, markets):
     })
 
 
-@st.cache_data(ttl=120, show_spinner=False)
 def load_instrument_directory():
     """Référentiel central ticker -> nom complet + ISIN + marché/courtier."""
     rows = []
@@ -2837,35 +3017,77 @@ def add_identity_columns(df, symbol_col="Ticker"):
     return out
 
 
-@st.cache_data(ttl=30, show_spinner=False)
 def load_market_alerts(limit=100, status=None):
     if SUPABASE is None:
         return pd.DataFrame()
     try:
         q = SUPABASE.table("market_alerts").select("*").order("created_at", desc=True).limit(limit)
-        if status:
-            q = q.eq("status", status)
         df = pd.DataFrame(_sb_data(q.execute()))
-        if not df.empty and "alert_type" in df.columns:
+        if df.empty:
+            return df
+
+        if "alert_type" in df.columns:
             actionable = {"ENTRY","EXIT","TAKE_PROFIT","PROTECT","RISK","NEWS_RISK","INVALIDATED"}
             df = df[df["alert_type"].isin(actionable)].copy()
+
+        # Per-user acknowledgement state. The shared market_alerts row is never modified.
+        try:
+            states = pd.DataFrame(_sb_data(
+                SUPABASE.table("user_alert_states")
+                .select("alert_id,status,acknowledged_at")
+                .execute()
+            ))
+        except Exception:
+            states = pd.DataFrame()
+
+        if "id" in df.columns:
+            df["_vf_alert_id"] = df["id"].astype(str)
+            if not states.empty:
+                states["_vf_alert_id"] = states["alert_id"].astype(str)
+                state_map = states.drop_duplicates("_vf_alert_id", keep="last").set_index("_vf_alert_id")
+                df["status"] = df.apply(
+                    lambda r: (
+                        state_map.loc[r["_vf_alert_id"], "status"]
+                        if r["_vf_alert_id"] in state_map.index
+                        else (r.get("status") or "NEW")
+                    ),
+                    axis=1
+                )
+                df["acknowledged_at"] = df["_vf_alert_id"].map(
+                    state_map["acknowledged_at"].to_dict()
+                )
+            else:
+                df["status"] = df.get("status", pd.Series(["NEW"] * len(df))).fillna("NEW")
+            df = df.drop(columns=["_vf_alert_id"], errors="ignore")
+
+        if status:
+            df = df[df["status"] == status].copy()
+
         return df
     except Exception:
         return pd.DataFrame()
 
 
 def acknowledge_alert(alert_id):
-    if SUPABASE is None:
+    if SUPABASE is None or alert_id is None:
         return
     try:
-        SUPABASE.table("market_alerts").update({
+        payload = {
+            "user_id": vf_current_user_id(),
+            "alert_id": str(alert_id),
             "status": "ACKNOWLEDGED",
-            "acknowledged_at": datetime.utcnow().isoformat()
-        }).eq("id", alert_id).execute()
-        st.cache_data.clear()
+            "acknowledged_at": datetime.utcnow().isoformat(),
+        }
+        SUPABASE.table("user_alert_states").upsert(
+            payload,
+            on_conflict="user_id,alert_id"
+        ).execute()
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
     except Exception:
         pass
-
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -4814,6 +5036,8 @@ def vf_save_trade_journal_record(payload):
             pass
         clean[k] = v
 
+    clean["user_id"] = vf_current_user_id()
+
     if vf_trade_journal_backend_ready():
         try:
             SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
@@ -5594,6 +5818,128 @@ def vf_xtb_zero_panel():
 
 
 
+
+def vf_profile_security_page():
+    vf_page_header(
+        "👤 Profil & sécurité",
+        "Compte personnel sécurisé. Les données portefeuille, imports, transactions et journal sont isolées par utilisateur."
+    )
+
+    profile = vf_fetch_my_profile(SUPABASE) or {}
+    display_name = _clean_text(profile.get("display_name")) or vf_current_user_email()
+    role = _clean_text(profile.get("role")) or "member"
+    active = bool(profile.get("active"))
+
+    p1,p2,p3 = st.columns(3)
+    p1.metric("Profil", display_name)
+    p2.metric("E-mail", vf_current_user_email() or "—")
+    p3.metric("Rôle", role.upper())
+
+    if not active:
+        st.error("Profil inactif.")
+        return
+
+    vf_section("Mon profil", "Modifier uniquement les informations non sensibles de ton compte.")
+
+    with st.form("vf_profile_name_form"):
+        new_name = st.text_input("Nom affiché", value=display_name)
+        save_name = st.form_submit_button("Enregistrer le nom", use_container_width=True)
+    if save_name:
+        try:
+            SUPABASE.rpc("vf_update_my_display_name", {
+                "new_display_name": new_name.strip()
+            }).execute()
+            st.session_state["vf_profile_name"] = new_name.strip()
+            st.success("Nom mis à jour.")
+            st.rerun()
+        except Exception:
+            st.error("Impossible de modifier le profil.")
+
+    vf_section(
+        "Sécurité de session",
+        "L'interface utilise un jeton Supabase Auth individuel. La Service Role n'est plus utilisée par l'interface V37.1."
+    )
+    st.caption(
+        "Le mot de passe est géré par Supabase Auth et n'est jamais stocké dans VISION FUTURE. "
+        "Les règles RLS de Supabase isolent les données privées de chaque utilisateur."
+    )
+
+    if role.lower() == "owner":
+        vf_section(
+            "Ajouter un autre profil",
+            "Pas de profil Famille dans cette version. Chaque personne obtient son propre compte privé."
+        )
+
+        with st.form("vf_invite_member_form"):
+            invite_email = st.text_input(
+                "E-mail à autoriser",
+                placeholder="personne@example.com"
+            ).strip().lower()
+            invite_role = st.selectbox(
+                "Rôle",
+                ["member","viewer"],
+                format_func=lambda x: {
+                    "member":"Member — lecture + modification de ses propres données",
+                    "viewer":"Viewer — consultation uniquement"
+                }[x]
+            )
+            invite_submit = st.form_submit_button("Autoriser cette adresse", type="primary", use_container_width=True)
+
+        if invite_submit:
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", invite_email):
+                st.error("Adresse e-mail invalide.")
+            else:
+                try:
+                    SUPABASE.rpc("vf_invite_member", {
+                        "invite_email": invite_email,
+                        "invite_role": invite_role
+                    }).execute()
+                    st.success(
+                        f"{invite_email} est maintenant autorisée. "
+                        "La personne peut utiliser « Créer un compte invité » sur l'écran de connexion."
+                    )
+                except Exception:
+                    st.error("Impossible d'ajouter cette invitation.")
+
+        try:
+            members = pd.DataFrame(_sb_data(
+                SUPABASE.table("profiles")
+                .select("id,email,display_name,role,active,created_at")
+                .order("created_at")
+                .execute()
+            ))
+        except Exception:
+            members = pd.DataFrame()
+
+        if not members.empty:
+            st.markdown("**Profils autorisés**")
+            st.dataframe(
+                members[["email","display_name","role","active","created_at"]],
+                use_container_width=True,
+                hide_index=True
+            )
+
+        try:
+            invites = pd.DataFrame(_sb_data(
+                SUPABASE.table("app_invites")
+                .select("email,role,created_at,used_at")
+                .order("created_at", desc=True)
+                .execute()
+            ))
+        except Exception:
+            invites = pd.DataFrame()
+
+        if not invites.empty:
+            with st.expander("Invitations"):
+                st.dataframe(invites, use_container_width=True, hide_index=True)
+
+    vf_section("Déconnexion", "Ferme la session sur cet appareil.")
+    if st.button("🔒 Se déconnecter maintenant", use_container_width=True, key="profile_logout"):
+        vf_auth_logout(SUPABASE)
+        st.rerun()
+
+
+
 def show_portfolio_page(account, title, broker: str | None = None):
     try:
         reconcile_orphan_portfolio_data()
@@ -5704,6 +6050,11 @@ with st.sidebar:
         '</div>',
         unsafe_allow_html=True
     )
+    st.caption(
+        f"Connecté : {st.session_state.get('vf_profile_name') or vf_current_user_email()} "
+        f"• {st.session_state.get('vf_profile_role','member')}"
+    )
+
     st.markdown(
         '<div style="padding:.15rem 0 .65rem">'
         '<div style="font-size:1.28rem;font-weight:950;letter-spacing:-.04em">🔭 VISION FUTURE</div>'
@@ -5761,6 +6112,7 @@ with st.sidebar:
     )
     st.markdown('<div class="vf-group-title">Gestion</div>', unsafe_allow_html=True)
     _nav_button("📥 Imports & documents", "nav_import")
+    _nav_button("👤 Profil & sécurité", "nav_profile_security")
 
     st.markdown("---")
     st.markdown('<div class="vf-group-title">Accès rapide</div>', unsafe_allow_html=True)
@@ -5789,7 +6141,7 @@ with st.sidebar:
         st.success("Supabase connecté")
 
     if st.button("🔒 Déconnexion", use_container_width=True):
-        st.session_state["authenticated"] = False
+        vf_auth_logout(SUPABASE)
         st.rerun()
 
 mode = st.session_state.get("nav_mode", "🏠 Dashboard")
@@ -6969,7 +7321,6 @@ def vf_dashboard_command_center():
     with b: vf_signed_bar(d,"Compte","P/L latent","P/L latent")
 
 
-@st.cache_data(ttl=900, show_spinner=False)
 def vf_analysis_universe():
     rows = []
 
@@ -7080,6 +7431,9 @@ elif mode=="⭐ Watchlist":
 
 elif mode=="📥 Imports & documents":
     show_import_page()
+
+elif mode=="👤 Profil & sécurité":
+    vf_profile_security_page()
 
 elif mode=="🏦 PEA":
     brokers = available_brokers("pea")
