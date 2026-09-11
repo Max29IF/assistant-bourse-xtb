@@ -25,6 +25,8 @@ MIN_UPSIDE = 3.0
 MIN_RR = 2.0
 MIN_ENTRY_SCORE = 76
 MIN_HOURLY_SCORE = 65
+CRYPTO_MIN_UPSIDE = 5.0
+CRYPTO_MIN_ENTRY_SCORE = 76
 ALERT_TYPES = {
     "ENTRY", "EXIT", "TAKE_PROFIT", "PROTECT", "RISK", "NEWS_RISK",
     "INVALIDATED", "PRICE_ABOVE", "PRICE_BELOW",
@@ -490,7 +492,7 @@ def create_alert(
         return False
     # Stable event key: never contains price or score.
     owner_key = str(user_id) if user_id else "GLOBAL"
-    fingerprint = f"V37.2:{owner_key}:{alert_type}:{symbol}:{event_key}"
+    fingerprint = f"V37.3:{owner_key}:{alert_type}:{symbol}:{event_key}"
     try:
         rows = sb_data(sb.table("market_alerts").select("id").eq("fingerprint", fingerprint).limit(1).execute())
         if rows:
@@ -776,10 +778,12 @@ def run():
             if not daily:
                 continue
 
+            required_upside = CRYPTO_MIN_UPSIDE if asset_class == "CRYPTO" else MIN_UPSIDE
+            required_score = CRYPTO_MIN_ENTRY_SCORE if asset_class == "CRYPTO" else MIN_ENTRY_SCORE
             qualifies_daily = (
-                daily["upside"] >= MIN_UPSIDE
+                daily["upside"] >= required_upside
                 and daily["rr"] >= MIN_RR
-                and daily["score"] >= MIN_ENTRY_SCORE
+                and daily["score"] >= required_score
             )
 
             if not qualifies_daily:
@@ -814,7 +818,19 @@ def run():
     )
 
     confirmed = []
-    for symbol, u, daily in preliminary[:18]:
+    equity_preliminary = [
+        x for x in preliminary
+        if str(x[1].get("asset_type") or "EQUITY").upper() != "CRYPTO"
+        and x[1].get("market") != "Crypto"
+    ]
+    crypto_preliminary = [
+        x for x in preliminary
+        if str(x[1].get("asset_type") or "").upper() == "CRYPTO"
+        or x[1].get("market") == "Crypto"
+    ]
+    # Reserve capacity for crypto so it cannot be crowded out by equity candidates.
+    finalists = equity_preliminary[:18] + crypto_preliminary[:8]
+    for symbol, u, daily in finalists:
         asset_class = str(u.get("asset_type") or "EQUITY").upper()
         if u.get("market") == "Crypto" or symbol.endswith(("-USD", "-EUR")):
             asset_class = "CRYPTO"
@@ -828,8 +844,19 @@ def run():
 
     confirmed.sort(key=lambda x: x[0], reverse=True)
 
-    # Only the strongest candidates receive a news/Gemini call.
-    for rank, symbol, u, daily, hourly in confirmed[:8]:
+    # Only the strongest candidates receive a news/Gemini call, with a crypto quota.
+    confirmed_equities = [
+        x for x in confirmed
+        if str(x[2].get("asset_type") or "EQUITY").upper() != "CRYPTO"
+        and x[2].get("market") != "Crypto"
+    ]
+    confirmed_crypto = [
+        x for x in confirmed
+        if str(x[2].get("asset_type") or "").upper() == "CRYPTO"
+        or x[2].get("market") == "Crypto"
+    ]
+    alert_finalists = confirmed_equities[:8] + confirmed_crypto[:4]
+    for rank, symbol, u, daily, hourly in alert_finalists:
         asset_class = str(u.get("asset_type") or "EQUITY").upper()
         if u.get("market") == "Crypto" or symbol.endswith(("-USD", "-EUR")):
             asset_class = "CRYPTO"
@@ -899,6 +926,8 @@ def run():
         f"POSITIONS={len(pos)}",
         f"PRELIMINARY={len(preliminary)}",
         f"CONFIRMED={len(confirmed)}",
+        f"CRYPTO_PRELIMINARY={len(crypto_preliminary)}",
+        f"CRYPTO_CONFIRMED={len(confirmed_crypto)}",
     ]
     if health:
         parts.append(health)
@@ -917,7 +946,7 @@ def run():
     }).execute()
 
     print(
-        f"VISION FUTURE V37.2: {created} actionable alert(s) | "
+        f"VISION FUTURE V37.3: {created} actionable alert(s) | "
         f"regime={regime['state']} | confirmed={len(confirmed)} | regions={','.join(discovery_regions)}"
     )
 

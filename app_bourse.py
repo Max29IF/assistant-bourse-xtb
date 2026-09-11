@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V37.2 Secure Crypto Monitoring"
+APP_VERSION = "V37.3 Crypto Trade Scanner"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -6049,7 +6049,7 @@ def show_transactions_page():
 
 
 # ==========================================================
-# CRYPTO MONITORING — V37.2
+# CRYPTO MONITORING & TRADE SCANNER — V37.3
 # ==========================================================
 def vf_crypto_symbol(value):
     symbol = _clean_text(value, upper=True).replace("/", "-")
@@ -6138,6 +6138,189 @@ def vf_crypto_snapshot(symbols):
     return pd.DataFrame(rows)
 
 
+def vf_crypto_trade_indication(confirmed, distance_pct):
+    if not confirmed:
+        return (
+            "ATTENDRE CONFIRMATION 1H", "amber",
+            "Le setup quotidien est solide, mais la tendance 1H n'est pas encore confirmée.",
+        )
+    if pd.notna(distance_pct) and distance_pct > 1.5:
+        return (
+            "ATTENDRE UN RETEST", "violet",
+            "Le cours est déjà au-dessus de l'entrée : éviter de poursuivre l'impulsion.",
+        )
+    if pd.notna(distance_pct) and distance_pct < -1.5:
+        return (
+            "SURVEILLER LE REBOND", "amber",
+            "Le cours est sous la zone calculée : attendre un retour de momentum.",
+        )
+    return (
+        "ZONE D'ENTRÉE À ÉTUDIER", "green",
+        "Qualité quotidienne et confirmation 1H conformes, cours proche de l'entrée.",
+    )
+
+
+def vf_crypto_position_size(capital, risk_pct, entry, stop):
+    capital, risk_pct = max(_vf_num(capital), 0.0), max(_vf_num(risk_pct), 0.0)
+    entry, stop = _vf_num(entry), _vf_num(stop)
+    risk_per_unit = entry - stop
+    if entry <= 0 or risk_per_unit <= 0:
+        return {"quantity": 0.0, "committed": 0.0, "max_loss": 0.0}
+    risk_amount = capital * risk_pct / 100
+    quantity = max(0.0, min(risk_amount / risk_per_unit, capital / entry))
+    return {
+        "quantity": quantity,
+        "committed": quantity * entry,
+        "max_loss": quantity * risk_per_unit,
+    }
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def vf_crypto_trade_scanner(symbols, top_n=8):
+    """Setups crypto tactiques avec les mêmes contrôles qualité que le scanner actions."""
+    clean_symbols = tuple(dict.fromkeys(
+        vf_crypto_symbol(symbol) for symbol in symbols if vf_crypto_symbol(symbol)
+    ))
+    if not clean_symbols:
+        return pd.DataFrame()
+
+    scan = fast_scan(
+        clean_symbols, min_upside=5.0, min_rr=2.0, min_score=76,
+        top_n=max(int(top_n) * 2, 12),
+    )
+    if scan is None or scan.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, candidate in scan.iterrows():
+        row = candidate.to_dict()
+        symbol = vf_crypto_symbol(row.get("Ticker"))
+        price = _vf_num(row.get("Prix"))
+        entry = _vf_num(row.get("Entrée"))
+        confirmed = _clean_text(row.get("Confirmé 1h")) == "✅"
+        distance_pct = ((price / entry) - 1) * 100 if pd.notna(price) and pd.notna(entry) and entry > 0 else np.nan
+        horizon = vf_trade_horizon_context(
+            symbol, entry, _vf_num(row.get("TP1")), _vf_num(row.get("TP2"))
+        )
+        tp2_horizon = (horizon or {}).get("tp2", {})
+        days = _vf_num(tp2_horizon.get("sessions"))
+        if pd.notna(days) and days > 20:
+            continue
+
+        indication, kind, rationale = vf_crypto_trade_indication(confirmed, distance_pct)
+
+        row.update({
+            "Crypto": CRYPTO_CATALOG.get(symbol, symbol.split("-")[0]),
+            "Indication": indication, "Indication kind": kind, "Lecture": rationale,
+            "Écart entrée %": distance_pct,
+            "Horizon TP2": tp2_horizon.get("label", "Indéterminé"),
+            "Jours TP2": days,
+        })
+        rows.append(row)
+
+    if not rows:
+        return pd.DataFrame()
+    return (pd.DataFrame(rows)
+            .sort_values(["Score combiné", "R/R", "Potentiel %"], ascending=False)
+            .head(max(int(top_n), 1)).reset_index(drop=True))
+
+
+def vf_crypto_scanner_panel(symbols):
+    vf_section(
+        "🎯 Scanner de trades crypto",
+        "Setups tactiques 1–20 jours : potentiel estimé ≥ 5 %, R/R ≥ 2 et score ≥ 76.",
+    )
+    f1, f2, f3 = st.columns(3)
+    capital = f1.number_input(
+        "Capital alloué par trade (USD)", min_value=0.0, value=700.0,
+        step=50.0, key="crypto_trade_capital",
+    )
+    risk_pct = f2.number_input(
+        "Risque maximal par trade (%)", min_value=0.1, max_value=1.5,
+        value=1.0, step=0.1, key="crypto_trade_risk",
+    )
+    top_n = f3.slider(
+        "Opportunités affichées", min_value=3, max_value=10,
+        value=6, key="crypto_trade_topn",
+    )
+    st.caption(
+        "Maximum conseillé : 2 à 4 positions simultanées. Conserver 20–30 % de liquidités. "
+        "Les niveaux sont indicatifs et n'incluent ni frais, ni slippage, ni fiscalité."
+    )
+
+    with st.spinner("Analyse quotidienne et confirmation 1H des cryptos…"):
+        candidates = vf_crypto_trade_scanner(tuple(symbols), top_n=top_n)
+    if candidates.empty:
+        st.info(
+            "Aucun setup crypto ne respecte actuellement tous les filtres. "
+            "L'indication correcte est d'attendre plutôt que de forcer un trade."
+        )
+        return
+
+    for idx, row in candidates.iterrows():
+        symbol = vf_crypto_symbol(row.get("Ticker"))
+        name = _clean_text(row.get("Crypto")) or symbol
+        price, entry = _vf_num(row.get("Prix")), _vf_num(row.get("Entrée"))
+        stop, tp1, tp2 = (_vf_num(row.get(k)) for k in ("Stop", "TP1", "TP2"))
+        score = _vf_num(row.get("Score combiné"))
+        rr, upside = _vf_num(row.get("R/R")), _vf_num(row.get("Potentiel %"))
+        sizing = vf_crypto_position_size(capital, risk_pct, entry, stop)
+        quantity = sizing["quantity"]
+        committed = sizing["committed"]
+        max_loss = sizing["max_loss"]
+
+        with st.container(border=True):
+            h1, h2 = st.columns([4.4, 1.6])
+            with h1:
+                st.markdown(vf_identity_html(symbol, name, ""), unsafe_allow_html=True)
+                st.markdown(vf_board_badge(row.get("Indication"), row.get("Indication kind", "muted")), unsafe_allow_html=True)
+                st.caption(row.get("Lecture", ""))
+            with h2:
+                st.metric("Score combiné", f"{score:.0f}/100" if pd.notna(score) else "—")
+
+            a, b, c, d, e, f = st.columns(6)
+            a.metric("Cours", f"{price:,.4f}" if pd.notna(price) else "—")
+            b.metric("Entrée", f"{entry:,.4f}" if pd.notna(entry) else "—")
+            c.metric("Stop", f"{stop:,.4f}" if pd.notna(stop) else "—")
+            d.metric("TP1", f"{tp1:,.4f}" if pd.notna(tp1) else "—")
+            e.metric("TP2", f"{tp2:,.4f}" if pd.notna(tp2) else "—")
+            f.metric("R/R", f"{rr:.2f}" if pd.notna(rr) else "—")
+
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Potentiel estimé", f"{upside:+.1f} %" if pd.notna(upside) else "—")
+            p2.metric("Quantité indicative", f"{quantity:.8f}")
+            p3.metric("Capital mobilisé", f"{committed:,.2f} $")
+            p4.metric("Perte max théorique", f"{max_loss:,.2f} $")
+            days = _vf_num(row.get("Jours TP2"))
+            st.caption(
+                f"Horizon TP2 : {row.get('Horizon TP2', 'Indéterminé')}"
+                + (f" (≈ {days:.0f} jours)" if pd.notna(days) else "")
+                + ". Une indication n'est jamais une garantie de performance."
+            )
+
+            b1, b2 = st.columns(2)
+            if vf_crypto_can_write() and b1.button(
+                "➕ Ajouter à ma surveillance", key=f"crypto_scan_watch_{idx}_{symbol}",
+                use_container_width=True,
+            ):
+                try:
+                    vf_crypto_watchlist_upsert(symbol, name)
+                    st.success(f"{symbol} ajouté à ta surveillance.")
+                    st.cache_data.clear()
+                except Exception as exc:
+                    st.error(f"Ajout impossible : {exc}")
+            if b2.button(
+                "📊 Voir le graphique", key=f"crypto_scan_chart_{idx}_{symbol}",
+                use_container_width=True,
+            ):
+                st.session_state["crypto_scan_open_chart"] = symbol
+
+    chart_symbol = st.session_state.get("crypto_scan_open_chart")
+    if chart_symbol:
+        vf_section("Graphique du setup", chart_symbol)
+        vf_candlestick_chart(chart_symbol, period="3mo", interval="1d")
+
+
 def vf_crypto_page():
     vf_page_header(
         "₿ Crypto Intelligence",
@@ -6148,9 +6331,13 @@ def vf_crypto_page():
     watched_symbols = watch.get("symbol", pd.Series(dtype=str)).dropna().astype(str).tolist() if not watch.empty else []
     display_symbols = tuple(dict.fromkeys(watched_symbols or list(CRYPTO_CATALOG)[:6]))
 
-    tab_market, tab_positions, tab_alerts = st.tabs([
-        "📡 Marché & watchlist", "💼 Mes positions", "🔔 Alertes crypto",
+    tab_scanner, tab_market, tab_positions, tab_alerts = st.tabs([
+        "🎯 Scanner crypto", "📡 Marché & watchlist", "💼 Mes positions", "🔔 Alertes crypto",
     ])
+
+    with tab_scanner:
+        scanner_symbols = tuple(dict.fromkeys(list(CRYPTO_CATALOG) + watched_symbols))
+        vf_crypto_scanner_panel(scanner_symbols)
 
     with tab_market:
         with st.spinner("Actualisation des cours crypto…"):
