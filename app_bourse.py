@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.3 Crypto Scanner Independent"
+APP_VERSION = "V38.4 Europe Market Reference"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -3114,6 +3114,50 @@ def _fallback_universe():
     return pd.DataFrame(rows)
 
 
+
+# ==========================================================
+# V38.4 — EUROPE MARKET GROUP
+# ==========================================================
+# "Europe" is a synthetic UI group. It expands to the concrete
+# market labels already stored in broker_universe.
+VF_EUROPE_MARKETS = {
+    "France",
+    "Germany", "Allemagne",
+    "Netherlands", "Pays-Bas",
+    "Spain", "Espagne",
+    "Italy", "Italie",
+    "Belgium", "Belgique",
+    "Portugal",
+    "Finland", "Finlande",
+    "Sweden", "Suède",
+    "Denmark", "Danemark",
+    "Austria", "Autriche",
+    "Switzerland", "Suisse",
+    "Norway", "Norvège",
+    "UK", "Royaume-Uni",
+    "Ireland", "Irlande",
+    "Poland", "Pologne",
+    "Greece", "Grèce",
+    "Czech Republic", "République tchèque",
+    "Luxembourg",
+}
+
+
+def vf_expand_market_filters(markets):
+    if not markets:
+        return []
+
+    expanded = []
+    for market in markets:
+        clean = _clean_text(market)
+        if clean.lower() == "europe":
+            expanded.extend(sorted(VF_EUROPE_MARKETS))
+        elif clean:
+            expanded.append(clean)
+
+    return list(dict.fromkeys(expanded))
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_broker_universe(brokers=None, markets=None):
     """
@@ -3122,7 +3166,12 @@ def load_broker_universe(brokers=None, markets=None):
 
     `broker_universe` remains the source of truth. Broker strings may contain
     one broker or several (e.g. "XTB, Trade Republic").
+
+    V38.4: "Europe" expands automatically to the concrete European markets
+    available in the reference universe.
     """
+    markets = vf_expand_market_filters(markets)
+
     if SUPABASE is not None:
         try:
             q = SUPABASE.table("broker_universe").select(
@@ -9989,9 +10038,31 @@ elif mode=="🔎 Scanner":
             default=["XTB","Trade Republic","Boursobank"],
             help="N'affiche que les instruments explicitement vérifiés dans broker_universe pour ces courtiers."
         )
-        available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
-        default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
-        markets = f2.multiselect("Marchés du référentiel", available_markets, default=default_markets)
+        raw_available_markets = sorted(
+            load_broker_universe()["market"].dropna().astype(str).unique().tolist()
+        )
+        available_markets = ["Europe"] + [
+            x for x in raw_available_markets
+            if _clean_text(x).lower() != "europe"
+        ]
+
+        default_markets = []
+        if any(m in VF_EUROPE_MARKETS for m in raw_available_markets):
+            default_markets.append("Europe")
+        if "USA" in raw_available_markets:
+            default_markets.append("USA")
+
+        markets = f2.multiselect(
+            "Marchés du référentiel",
+            available_markets,
+            default=default_markets,
+            help=(
+                "Europe regroupe automatiquement tous les marchés européens "
+                "présents dans le référentiel : France, Allemagne, Pays-Bas, "
+                "Espagne, Italie, Belgique, Portugal, pays nordiques, Suisse, "
+                "Royaume-Uni, etc."
+            )
+        )
         min_upside = f3.number_input("Potentiel min. (%)", 1.0, 30.0, 3.0, .5)
         min_rr = f4.number_input("R/R min.", 1.0, 5.0, 2.0, .1)
 
@@ -10004,6 +10075,22 @@ elif mode=="🔎 Scanner":
             value=True,
             help="Élargit le scanner au-delà du référentiel local. Chaque valeur est ensuite classée Vérifiée / Probable / Non vérifiée."
         )
+
+        if "Europe" in markets:
+            europe_available = sorted({
+                m for m in raw_available_markets
+                if m in VF_EUROPE_MARKETS
+            })
+            if europe_available:
+                st.caption(
+                    "🇪🇺 Europe actif — marchés du référentiel inclus : "
+                    + ", ".join(europe_available)
+                )
+            else:
+                st.caption(
+                    "🇪🇺 Europe actif — aucun marché européen n'est encore renseigné "
+                    "dans broker_universe."
+                )
 
         access_level = st.radio(
             "Filtre accès courtier",
