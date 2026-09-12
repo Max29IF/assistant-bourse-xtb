@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.1 PEA Dividend Intelligence"
+APP_VERSION = "V38.2 PEA Dividend Reality & Projection"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -7085,7 +7085,7 @@ def vf_real_estate_page():
 
 
 # ==========================================================
-# V38.1 — PEA DIVIDEND INTELLIGENCE
+# V38.2 — PEA DIVIDEND REALITY & PROJECTION
 # ==========================================================
 
 VF_MONTHS_FR = {
@@ -7095,463 +7095,782 @@ VF_MONTHS_FR = {
 }
 
 
-def vf_pea_dividend_transactions(broker=None):
+@st.cache_data(ttl=21600, show_spinner=False)
+def vf_dividend_market_data(symbol):
     """
-    Historical dividend cash flows from the imported PEA transaction ledger.
-    This intentionally uses the broker-imported amounts rather than estimating
-    future dividends from Yahoo.
+    Source factuelle principale:
+    - historique des dividendes réellement enregistrés par Yahoo Finance/yfinance
+    - calendrier d'événements disponible chez le fournisseur
+    - métriques forward publiées par le fournisseur lorsqu'elles existent
+
+    Les projections VISION FUTURE sont calculées séparément et toujours marquées
+    comme estimations.
     """
-    tx = load_transactions("pea")
-    if tx is None or tx.empty:
+    symbol = _clean_text(symbol, upper=True)
+    result = {
+        "symbol": symbol,
+        "dividends": pd.DataFrame(columns=["date","dividend_per_share"]),
+        "currency": "",
+        "dividend_rate": np.nan,
+        "dividend_yield": np.nan,
+        "ex_dividend_date": None,
+        "dividend_date": None,
+        "last_dividend_value": np.nan,
+        "last_dividend_date": None,
+        "source_status": "INDISPONIBLE",
+    }
+    if not symbol:
+        return result
+
+    try:
+        tk = yf.Ticker(symbol)
+
+        # Historical corporate-action dividends: factual past payments.
+        try:
+            s = tk.get_dividends(period="max")
+        except Exception:
+            try:
+                s = tk.dividends
+            except Exception:
+                s = pd.Series(dtype=float)
+
+        if s is not None and len(s):
+            idx = pd.to_datetime(s.index, errors="coerce", utc=True).tz_convert(None)
+            hist = pd.DataFrame({
+                "date": idx,
+                "dividend_per_share": pd.to_numeric(pd.Series(s.values), errors="coerce")
+            }).dropna(subset=["date","dividend_per_share"])
+            hist = hist[hist["dividend_per_share"] > 0].sort_values("date")
+            result["dividends"] = hist
+            result["source_status"] = "HISTORIQUE OK"
+
+        # Info fields may be absent for some European tickers.
+        try:
+            inf = tk.get_info() or {}
+        except Exception:
+            try:
+                inf = tk.info or {}
+            except Exception:
+                inf = {}
+
+        result["currency"] = _clean_text(
+            inf.get("currency") or inf.get("financialCurrency"),
+            upper=True
+        )
+        result["dividend_rate"] = pd.to_numeric(
+            pd.Series([inf.get("dividendRate")]), errors="coerce"
+        ).iloc[0]
+        result["dividend_yield"] = pd.to_numeric(
+            pd.Series([inf.get("dividendYield")]), errors="coerce"
+        ).iloc[0]
+        result["last_dividend_value"] = pd.to_numeric(
+            pd.Series([inf.get("lastDividendValue")]), errors="coerce"
+        ).iloc[0]
+
+        for src_key, dst_key in [
+            ("exDividendDate", "ex_dividend_date"),
+            ("lastDividendDate", "last_dividend_date"),
+        ]:
+            raw = inf.get(src_key)
+            if raw:
+                try:
+                    if isinstance(raw, (int, float, np.integer, np.floating)):
+                        result[dst_key] = pd.to_datetime(raw, unit="s", utc=True).tz_convert(None)
+                    else:
+                        result[dst_key] = pd.to_datetime(raw, errors="coerce")
+                except Exception:
+                    pass
+
+        # Calendar can expose future dividend / ex-dividend dates.
+        try:
+            cal = tk.get_calendar() or {}
+        except Exception:
+            try:
+                cal = tk.calendar or {}
+            except Exception:
+                cal = {}
+
+        if isinstance(cal, dict):
+            for k in ["Dividend Date", "DividendDate", "dividendDate"]:
+                if k in cal and cal.get(k):
+                    try:
+                        result["dividend_date"] = pd.to_datetime(cal.get(k), errors="coerce")
+                        break
+                    except Exception:
+                        pass
+            if result["ex_dividend_date"] is None:
+                for k in ["Ex-Dividend Date", "ExDividendDate", "exDividendDate"]:
+                    if k in cal and cal.get(k):
+                        try:
+                            result["ex_dividend_date"] = pd.to_datetime(cal.get(k), errors="coerce")
+                            break
+                        except Exception:
+                            pass
+
+        # History metadata is often more reliable for quote currency.
+        if not result["currency"]:
+            try:
+                meta = tk.get_history_metadata() or {}
+                result["currency"] = _clean_text(meta.get("currency"), upper=True)
+            except Exception:
+                pass
+
+        return result
+    except Exception:
+        return result
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def vf_fx_to_eur(currency):
+    """
+    Convertit 1 unité de devise en EUR à partir du dernier FX disponible.
+    GBp/GBX sont traités comme des pence britanniques.
+    """
+    cur = _clean_text(currency, upper=True)
+    if not cur or cur == "EUR":
+        return 1.0
+
+    scale = 1.0
+    if cur in {"GBP", "GBX", "GBPENCE", "GBP."}:
+        cur = "GBP"
+    elif cur == "GBP":
+        pass
+    elif cur == "GBp".upper():
+        cur = "GBP"
+        scale = 0.01
+
+    # Common Yahoo pence labels can arrive upper-cased as GBP; if the provider
+    # actually reports GBp we keep a conservative hook through explicit labels.
+    raw_cur = str(currency or "")
+    if raw_cur in {"GBp","GBX","GBp."}:
+        cur = "GBP"
+        scale = 0.01
+
+    try:
+        fx = yf.Ticker(f"{cur}EUR=X")
+        h = fx.history(period="5d", interval="1d", auto_adjust=False)
+        if h is not None and not h.empty:
+            close = pd.to_numeric(h["Close"], errors="coerce").dropna()
+            if len(close):
+                return float(close.iloc[-1]) * scale
+    except Exception:
+        pass
+    return np.nan
+
+
+def vf_pea_dividend_positions(broker=None):
+    """
+    Universe = positions currently held in the PEA.
+    The quantity comes from the imported broker position snapshot.
+    No dividend document is required.
+    """
+    pos = load_positions("pea", broker=broker)
+    if pos is None or pos.empty:
         return pd.DataFrame()
 
-    x = tx.copy()
+    x = pos.copy()
+    x["Ticker"] = x.get("Ticker", "").fillna("").astype(str).str.upper().str.strip()
+    x["ISIN"] = x.get("ISIN", "").fillna("").astype(str).str.upper().str.strip()
+    x["Nom"] = x.get("Nom", "").fillna("").astype(str).str.strip()
+    x["Quantité"] = pd.to_numeric(x.get("Quantité"), errors="coerce").fillna(0.0)
 
-    if broker and "broker" in x.columns:
-        wanted = _clean_text(broker).lower()
-        x = x[
-            x["broker"].fillna("").astype(str).str.lower().apply(
-                lambda v: wanted in v or v in wanted
+    # Resolve missing tickers where possible.
+    for idx, r in x[x["Ticker"] == ""].iterrows():
+        try:
+            resolved = resolve_ticker_from_identity(
+                _clean_text(r.get("Nom")),
+                _clean_text(r.get("ISIN"), upper=True)
             )
-        ].copy()
+            if resolved:
+                x.at[idx, "Ticker"] = _clean_text(resolved, upper=True)
+        except Exception:
+            pass
 
-    if x.empty:
-        return x
+    return x[x["Quantité"] > 0].copy()
 
-    type_s = x.get("type", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
-    cat_s = x.get("category", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
-    desc_s = x.get("description", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
 
-    # Keep the canonical imported dividend types first, then tolerate common
-    # broker wording so an older BoursoBank export is not silently ignored.
-    dividend_mask = (
-        type_s.isin(DIVIDEND_TYPES)
-        | type_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
-        | cat_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
-        | desc_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
-    )
-    x = x[dividend_mask].copy()
+def vf_dividend_company_metrics(symbol, quantity, position_currency=""):
+    data = vf_dividend_market_data(symbol)
+    hist = data.get("dividends")
+    if hist is None:
+        hist = pd.DataFrame(columns=["date","dividend_per_share"])
+    hist = hist.copy()
 
-    if x.empty:
-        return x
+    now = pd.Timestamp.today().normalize()
+    current_year = int(now.year)
+    ttm_start = now - pd.DateOffset(months=12)
+    five_year_start = now - pd.DateOffset(years=5)
 
-    trade_date = pd.to_datetime(
-        x.get("trade_date", pd.Series(pd.NaT, index=x.index)),
-        errors="coerce"
-    )
-    occurred_at = pd.to_datetime(
-        x.get("occurred_at", pd.Series(pd.NaT, index=x.index)),
-        errors="coerce",
-        utc=True
-    ).dt.tz_convert(None)
+    if not hist.empty:
+        hist["year"] = hist["date"].dt.year
+        hist["month"] = hist["date"].dt.month
+        annual = (
+            hist.groupby("year", as_index=False)["dividend_per_share"]
+            .sum()
+            .sort_values("year")
+        )
+        ttm_dps = float(
+            hist.loc[
+                (hist["date"] >= ttm_start) & (hist["date"] <= now),
+                "dividend_per_share"
+            ].sum()
+        )
+        current_year_dps = float(
+            hist.loc[hist["year"] == current_year, "dividend_per_share"].sum()
+        )
+        last_paid = float(hist.iloc[-1]["dividend_per_share"])
+        last_paid_date = hist.iloc[-1]["date"]
+        hist_5y = hist[hist["date"] >= five_year_start].copy()
+    else:
+        annual = pd.DataFrame(columns=["year","dividend_per_share"])
+        ttm_dps = 0.0
+        current_year_dps = 0.0
+        last_paid = np.nan
+        last_paid_date = None
+        hist_5y = hist.copy()
 
-    x["dividend_date"] = trade_date.fillna(occurred_at)
-    x = x.dropna(subset=["dividend_date"]).copy()
+    # Forward annual DPS: provider's current dividendRate when available,
+    # otherwise factual trailing-12-month DPS. The fallback is an estimate.
+    provider_rate = pd.to_numeric(
+        pd.Series([data.get("dividend_rate")]), errors="coerce"
+    ).iloc[0]
+    if pd.notna(provider_rate) and provider_rate > 0:
+        forward_dps = float(provider_rate)
+        forward_basis = "Taux forward fournisseur"
+    else:
+        forward_dps = float(ttm_dps)
+        forward_basis = "TTM reconduit"
 
-    x["amount_num"] = pd.to_numeric(x.get("amount"), errors="coerce").fillna(0.0)
-    x["fee_num"] = pd.to_numeric(x.get("fee"), errors="coerce").fillna(0.0)
-    x["tax_num"] = pd.to_numeric(x.get("tax"), errors="coerce").fillna(0.0)
+    currency = _clean_text(data.get("currency"), upper=True) or _clean_text(position_currency, upper=True) or "EUR"
+    fx = vf_fx_to_eur(currency)
+    if pd.isna(fx):
+        fx = 1.0 if currency == "EUR" else np.nan
 
-    # Main series = exact amount recorded by the broker import.
-    # We do NOT automatically add/subtract fee/tax because broker exports can
-    # encode the amount as gross or already-net depending on the source.
-    x["dividend_amount"] = x["amount_num"]
-    x["withholding_abs"] = x["tax_num"].abs() + x["fee_num"].abs()
+    def eur(v):
+        if pd.isna(fx):
+            return np.nan
+        return float(v) * float(fx)
 
-    x["year"] = x["dividend_date"].dt.year.astype(int)
-    x["month"] = x["dividend_date"].dt.month.astype(int)
-    x["month_name"] = x["month"].map(VF_MONTHS_FR)
-    x["quarter_num"] = x["dividend_date"].dt.quarter.astype(int)
-    x["quarter"] = "T" + x["quarter_num"].astype(str)
-    x["year_month"] = x["dividend_date"].dt.to_period("M").astype(str)
+    # Dividend growth facts from full-year historical DPS.
+    annual_full = annual[annual["year"] < current_year].copy()
+    yoy = np.nan
+    cagr3 = np.nan
+    trend = "Historique insuffisant"
+    cut_flag = False
+    if len(annual_full) >= 2:
+        a_last = float(annual_full.iloc[-1]["dividend_per_share"])
+        a_prev = float(annual_full.iloc[-2]["dividend_per_share"])
+        if a_prev > 0:
+            yoy = (a_last / a_prev - 1.0) * 100.0
+        cut_flag = bool(a_last < a_prev * 0.95)
+        if yoy >= 5:
+            trend = "Croissance"
+        elif yoy <= -5:
+            trend = "Baisse"
+        else:
+            trend = "Stable"
+    if len(annual_full) >= 4:
+        first = float(annual_full.iloc[-4]["dividend_per_share"])
+        last = float(annual_full.iloc[-1]["dividend_per_share"])
+        if first > 0 and last > 0:
+            cagr3 = ((last / first) ** (1/3) - 1) * 100
 
-    x["display_name"] = (
-        x.get("name", pd.Series("", index=x.index))
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
-    x["display_symbol"] = (
-        x.get("symbol", pd.Series("", index=x.index))
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .str.strip()
-    )
-    x["display_isin"] = (
-        x.get("isin", pd.Series("", index=x.index))
-        .fillna("")
-        .astype(str)
-        .str.upper()
-        .str.strip()
-    )
+    # Typical payment months from the last 5 years.
+    typical_months = []
+    month_weights = {}
+    if not hist_5y.empty:
+        counts = hist_5y.groupby("month").size().sort_values(ascending=False)
+        # Keep months recurring in at least 2 observations where possible.
+        recurring = counts[counts >= 2].index.tolist()
+        typical_months = sorted(recurring if recurring else counts.index.tolist())
+        typical_months = typical_months[:12]
 
-    def _label(r):
-        name = _clean_text(r.get("display_name"))
-        sym = _clean_text(r.get("display_symbol"), upper=True)
-        isin = _clean_text(r.get("display_isin"), upper=True)
-        if name and sym:
-            return f"{name} • {sym}"
-        return name or sym or isin or "Instrument non renseigné"
+        avg_by_month = hist_5y.groupby("month")["dividend_per_share"].mean()
+        total_avg = float(avg_by_month.loc[typical_months].sum()) if typical_months else 0.0
+        if total_avg > 0:
+            month_weights = {
+                int(m): float(avg_by_month.loc[m] / total_avg)
+                for m in typical_months
+            }
+        elif typical_months:
+            month_weights = {int(m): 1.0 / len(typical_months) for m in typical_months}
 
-    x["instrument_label"] = x.apply(_label, axis=1)
-    return x.sort_values("dividend_date")
+    # If no recognizable cadence, annual rate stays annual only.
+    projected_monthly_eur = {m: 0.0 for m in range(1,13)}
+    if typical_months and forward_dps > 0 and pd.notna(fx):
+        for m, w in month_weights.items():
+            projected_monthly_eur[int(m)] += eur(forward_dps * float(quantity) * float(w))
+
+    ex_date = data.get("ex_dividend_date")
+    pay_date = data.get("dividend_date")
+
+    # Avoid presenting stale provider dates as future.
+    if ex_date is not None and pd.notna(ex_date):
+        try:
+            ex_date = pd.Timestamp(ex_date).tz_localize(None) if pd.Timestamp(ex_date).tzinfo else pd.Timestamp(ex_date)
+            if ex_date < now - pd.Timedelta(days=30):
+                ex_date = None
+        except Exception:
+            ex_date = None
+    if pay_date is not None and pd.notna(pay_date):
+        try:
+            pay_date = pd.Timestamp(pay_date).tz_localize(None) if pd.Timestamp(pay_date).tzinfo else pd.Timestamp(pay_date)
+            if pay_date < now - pd.Timedelta(days=30):
+                pay_date = None
+        except Exception:
+            pay_date = None
+
+    return {
+        "symbol": symbol,
+        "quantity": float(quantity),
+        "currency": currency,
+        "fx_to_eur": fx,
+        "history": hist,
+        "annual_history": annual,
+        "ttm_dps": ttm_dps,
+        "current_year_dps": current_year_dps,
+        "last_paid_dps": last_paid,
+        "last_paid_date": last_paid_date,
+        "forward_dps": forward_dps,
+        "forward_basis": forward_basis,
+        "ttm_income_eur_current_qty": eur(ttm_dps * float(quantity)),
+        "forward_income_eur": eur(forward_dps * float(quantity)),
+        "yoy_growth_pct": yoy,
+        "cagr3_pct": cagr3,
+        "trend": trend,
+        "cut_flag": cut_flag,
+        "typical_months": typical_months,
+        "projected_monthly_eur": projected_monthly_eur,
+        "provider_yield": data.get("dividend_yield"),
+        "ex_dividend_date": ex_date,
+        "dividend_date": pay_date,
+        "source_status": data.get("source_status"),
+    }
+
+
+def vf_dividend_projection_label(row):
+    if row.get("forward_basis") == "Taux forward fournisseur":
+        return "Projection basée sur le taux forward disponible"
+    return "Projection par reconduction des 12 derniers mois"
 
 
 def vf_pea_dividend_panel(broker=None):
     vf_section(
-        "💶 Dividendes PEA",
-        "Vision mensuelle, trimestrielle et annuelle à partir des dividendes réellement enregistrés dans l'historique importé."
+        "💶 Dividendes PEA — Réalité & projection",
+        "Les entreprises sont analysées automatiquement à partir de leur historique réel de dividendes. Aucun relevé de dividendes n'est requis."
     )
 
-    d = vf_pea_dividend_transactions(broker=broker)
+    positions = vf_pea_dividend_positions(broker=broker)
+    if positions is None or positions.empty:
+        st.info("Aucune position PEA exploitable n'est disponible pour calculer les dividendes.")
+        return
 
-    if d is None or d.empty:
-        st.info(
-            "Aucun dividende n'est actuellement identifié dans l'historique de transactions du PEA. "
-            "Pour alimenter ce tableau, importe un relevé de transactions contenant les versements de dividendes."
+    topbar1, topbar2 = st.columns([4,1])
+    with topbar1:
+        st.caption(
+            "FACTUEL = dividendes historiques réellement enregistrés par le fournisseur de données. "
+            "PROJECTION = estimation calculée à partir du taux forward disponible ou, à défaut, des 12 derniers mois."
+        )
+    with topbar2:
+        if st.button("↻ Actualiser dividendes", key="pea_div_reality_refresh", use_container_width=True):
+            vf_safe_cache_clear()
+            st.rerun()
+
+    rows = []
+    company_details = {}
+    progress = st.progress(0, text="Analyse des dividendes des positions PEA…")
+    total = max(len(positions), 1)
+
+    for n, (_, p) in enumerate(positions.iterrows(), start=1):
+        symbol = _clean_text(p.get("Ticker"), upper=True)
+        qty = vf_re_num(p.get("Quantité")) if "vf_re_num" in globals() else float(pd.to_numeric(pd.Series([p.get("Quantité")]), errors="coerce").fillna(0).iloc[0])
+        if not symbol or qty <= 0:
+            progress.progress(n / total)
+            continue
+
+        pos_cur = _clean_text(p.get("Devise"), upper=True)
+        metrics = vf_dividend_company_metrics(symbol, qty, pos_cur)
+        company_details[symbol] = metrics
+
+        name = _clean_text(p.get("Nom")) or symbol
+        isin = _clean_text(p.get("ISIN"), upper=True)
+        projected = metrics.get("forward_income_eur")
+        ttm_income = metrics.get("ttm_income_eur_current_qty")
+
+        rows.append({
+            "Ticker": symbol,
+            "Entreprise": name,
+            "ISIN": isin,
+            "Quantité": qty,
+            "Devise dividende": metrics.get("currency"),
+            "DPS 12m": metrics.get("ttm_dps"),
+            "DPS forward": metrics.get("forward_dps"),
+            "Revenu TTM théorique €": ttm_income,
+            "Projection annuelle €": projected,
+            "Tendance": metrics.get("trend"),
+            "Croissance N/N %": metrics.get("yoy_growth_pct"),
+            "CAGR 3 ans %": metrics.get("cagr3_pct"),
+            "Base projection": metrics.get("forward_basis"),
+            "Prochaine ex-date": metrics.get("ex_dividend_date"),
+            "Prochain paiement": metrics.get("dividend_date"),
+            "Mois habituels": ", ".join(VF_MONTHS_FR[m] for m in metrics.get("typical_months", [])),
+            "Source": metrics.get("source_status"),
+        })
+        progress.progress(n / total)
+    progress.empty()
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        st.warning(
+            "Les positions sont présentes, mais aucune donnée de dividende exploitable n'a pu être récupérée pour leurs tickers."
         )
         return
 
-    now = pd.Timestamp.today().normalize()
-    current_year = int(now.year)
-    current_month = int(now.month)
-    current_quarter = int(now.quarter)
-    ttm_start = now - pd.DateOffset(months=12)
+    # Totals only where EUR conversion is available.
+    projected_total = float(pd.to_numeric(df["Projection annuelle €"], errors="coerce").fillna(0).sum())
+    ttm_total = float(pd.to_numeric(df["Revenu TTM théorique €"], errors="coerce").fillna(0).sum())
+    monthly_avg = projected_total / 12 if projected_total else 0.0
 
-    amount = pd.to_numeric(d["dividend_amount"], errors="coerce").fillna(0.0)
+    # Projected calendar from factual historical cadence.
+    calendar_rows = []
+    for symbol, m in company_details.items():
+        src = df[df["Ticker"] == symbol]
+        if src.empty:
+            continue
+        name = src.iloc[0]["Entreprise"]
+        for month, amount in m.get("projected_monthly_eur", {}).items():
+            if amount and amount > 0:
+                calendar_rows.append({
+                    "MoisNum": int(month),
+                    "Mois": VF_MONTHS_FR[int(month)],
+                    "Ticker": symbol,
+                    "Entreprise": name,
+                    "Projection €": float(amount),
+                })
 
-    month_total = float(
-        d.loc[
-            (d["year"] == current_year) & (d["month"] == current_month),
-            "dividend_amount"
-        ].sum()
+    proj_calendar = pd.DataFrame(calendar_rows)
+    monthly_projection = pd.DataFrame({
+        "MoisNum": range(1,13),
+        "Mois": [VF_MONTHS_FR[m] for m in range(1,13)]
+    })
+    if not proj_calendar.empty:
+        msum = proj_calendar.groupby("MoisNum", as_index=False)["Projection €"].sum()
+        monthly_projection = monthly_projection.merge(msum, on="MoisNum", how="left")
+    else:
+        monthly_projection["Projection €"] = 0.0
+    monthly_projection["Projection €"] = monthly_projection["Projection €"].fillna(0.0)
+    monthly_projection["Trimestre"] = "T" + (((monthly_projection["MoisNum"] - 1) // 3) + 1).astype(str)
+
+    quarterly_projection = (
+        monthly_projection.groupby("Trimestre", as_index=False)["Projection €"]
+        .sum()
+        .set_index("Trimestre")
+        .reindex(["T1","T2","T3","T4"])
+        .fillna(0)
+        .reset_index()
     )
-    quarter_total = float(
-        d.loc[
-            (d["year"] == current_year) & (d["quarter_num"] == current_quarter),
-            "dividend_amount"
-        ].sum()
-    )
-    year_total = float(d.loc[d["year"] == current_year, "dividend_amount"].sum())
-    ttm_total = float(
-        d.loc[
-            (d["dividend_date"] >= ttm_start) & (d["dividend_date"] <= now),
-            "dividend_amount"
-        ].sum()
-    )
 
-    # Portfolio denominator for trailing dividend yield.
-    try:
-        totals, _ = portfolio_valuation("pea", use_live=False, broker=broker)
-        portfolio_value = float(totals.get("value") or 0)
-        portfolio_cost = float(totals.get("cost") or 0)
-    except Exception:
-        portfolio_value = 0.0
-        portfolio_cost = 0.0
-
-    ttm_yield_value = (ttm_total / portfolio_value * 100) if portfolio_value > 0 else np.nan
-    ttm_yield_cost = (ttm_total / portfolio_cost * 100) if portfolio_cost > 0 else np.nan
+    current_month = pd.Timestamp.today().month
+    current_quarter = (current_month - 1) // 3 + 1
+    current_month_projection = float(
+        monthly_projection.loc[monthly_projection["MoisNum"] == current_month, "Projection €"].sum()
+    )
+    current_quarter_projection = float(
+        quarterly_projection.loc[quarterly_projection["Trimestre"] == f"T{current_quarter}", "Projection €"].sum()
+    )
 
     k1,k2,k3,k4 = st.columns(4)
-    k1.metric(VF_MONTHS_FR[current_month], f"{month_total:,.2f} €")
-    k2.metric(f"T{current_quarter} {current_year}", f"{quarter_total:,.2f} €")
-    k3.metric(f"Année {current_year}", f"{year_total:,.2f} €")
-    k4.metric("12 derniers mois", f"{ttm_total:,.2f} €")
+    k1.metric("Projection annuelle", f"{projected_total:,.2f} €")
+    k2.metric("Moyenne mensuelle", f"{monthly_avg:,.2f} €")
+    k3.metric(f"{VF_MONTHS_FR[current_month]} estimé", f"{current_month_projection:,.2f} €")
+    k4.metric(f"T{current_quarter} estimé", f"{current_quarter_projection:,.2f} €")
 
     k5,k6,k7,k8 = st.columns(4)
-    k5.metric(
-        "Rendement dividendes TTM / valeur",
-        f"{ttm_yield_value:.2f}%" if pd.notna(ttm_yield_value) else "—"
-    )
-    k6.metric(
-        "Rendement TTM / coût",
-        f"{ttm_yield_cost:.2f}%" if pd.notna(ttm_yield_cost) else "—"
-    )
-    k7.metric("Versements identifiés", f"{len(d)}")
-    k8.metric(
-        "Retenues / frais importés",
-        f"{float(d['withholding_abs'].sum()):,.2f} €"
+    k5.metric("TTM théorique*", f"{ttm_total:,.2f} €")
+    k6.metric("Sociétés distributrices", int((pd.to_numeric(df["DPS 12m"], errors="coerce") > 0).sum()))
+    k7.metric("Dividende en hausse", int((df["Tendance"] == "Croissance").sum()))
+    k8.metric("Baisse détectée", int((df["Tendance"] == "Baisse").sum()))
+
+    st.caption(
+        "*TTM théorique = dividendes par action réellement versés sur les 12 derniers mois × quantité détenue aujourd'hui. "
+        "Ce n'est pas une affirmation de ce que tu as réellement encaissé si ta quantité a changé durant la période."
     )
 
-    years = sorted(d["year"].dropna().astype(int).unique().tolist(), reverse=True)
-    if current_year not in years:
-        years = [current_year] + years
-
-    selected_year = st.selectbox(
-        "Année analysée",
-        years,
-        index=0,
-        key="pea_dividend_year"
-    )
-
-    dy = d[d["year"] == selected_year].copy()
-    selected_year_total = float(dy["dividend_amount"].sum())
-
-    # Average over elapsed months for current year, otherwise 12 months.
-    denominator_months = current_month if selected_year == current_year else 12
-    average_month = selected_year_total / max(denominator_months, 1)
-
-    y1,y2,y3 = st.columns(3)
-    y1.metric("Total année sélectionnée", f"{selected_year_total:,.2f} €")
-    y2.metric("Moyenne mensuelle", f"{average_month:,.2f} €")
-    y3.metric(
-        "Valeurs distributrices",
-        int(dy["instrument_label"].nunique()) if not dy.empty else 0
-    )
-
-    tab_month, tab_quarter, tab_year, tab_stock, tab_history = st.tabs([
-        "📅 Mois",
-        "🧭 Trimestres",
-        "🗓️ Années",
-        "🏢 Par valeur",
-        "📋 Historique",
+    tab_calendar, tab_companies, tab_history, tab_conclusion = st.tabs([
+        "📅 Projection mois / trimestres",
+        "🏢 Entreprises",
+        "🧾 Historique factuel",
+        "🧠 Conclusion",
     ])
 
     # ------------------------------------------------------
-    # Monthly
+    # Calendar projections
     # ------------------------------------------------------
-    with tab_month:
-        monthly = (
-            dy.groupby("month", as_index=False)["dividend_amount"]
-            .sum()
-            if not dy.empty
-            else pd.DataFrame(columns=["month","dividend_amount"])
-        )
-        calendar = pd.DataFrame({"month": range(1,13)})
-        monthly = calendar.merge(monthly, on="month", how="left")
-        monthly["dividend_amount"] = monthly["dividend_amount"].fillna(0.0)
-        monthly["Mois"] = monthly["month"].map(VF_MONTHS_FR)
-        monthly["Ordre"] = monthly["month"]
-
+    with tab_calendar:
+        st.markdown("#### Projection mensuelle")
         chart = (
-            alt.Chart(monthly)
+            alt.Chart(monthly_projection)
             .mark_bar()
             .encode(
-                x=alt.X("Mois:N", sort=list(VF_MONTHS_FR.values()), title=None),
-                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
+                x=alt.X(
+                    "Mois:N",
+                    sort=[VF_MONTHS_FR[m] for m in range(1,13)],
+                    title=None
+                ),
+                y=alt.Y("Projection €:Q", title="Dividendes projetés (€)"),
                 tooltip=[
-                    alt.Tooltip("Mois:N"),
-                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
+                    "Mois:N",
+                    alt.Tooltip("Projection €:Q", format=",.2f")
                 ]
             )
-            .properties(height=320, title=f"Dividendes mensuels — {selected_year}")
+            .properties(height=320)
         )
         st.altair_chart(chart, use_container_width=True)
 
-        monthly_view = monthly[["Mois","dividend_amount"]].rename(
-            columns={"dividend_amount":"Dividendes"}
+        c1,c2 = st.columns(2)
+        with c1:
+            st.dataframe(
+                monthly_projection[["Mois","Projection €"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Projection €": st.column_config.NumberColumn(format="%.2f €")
+                }
+            )
+        with c2:
+            st.markdown("**Par trimestre**")
+            st.dataframe(
+                quarterly_projection,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Projection €": st.column_config.NumberColumn(format="%.2f €")
+                }
+            )
+
+        if not proj_calendar.empty:
+            with st.expander("Détail des sociétés par mois"):
+                det = proj_calendar.sort_values(["MoisNum","Projection €"], ascending=[True,False])
+                st.dataframe(
+                    det[["Mois","Entreprise","Ticker","Projection €"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Projection €": st.column_config.NumberColumn(format="%.2f €")
+                    }
+                )
+
+        st.info(
+            "Les mois projetés proviennent de la cadence réellement observée dans l'historique de chaque entreprise. "
+            "Une société peut modifier, décaler, réduire ou supprimer son dividende : ces montants ne sont donc pas garantis."
         )
-        monthly_view["Part annuelle %"] = np.where(
-            selected_year_total != 0,
-            monthly_view["Dividendes"] / selected_year_total * 100,
-            0.0
-        )
+
+    # ------------------------------------------------------
+    # Company dashboard
+    # ------------------------------------------------------
+    with tab_companies:
+        display = df.sort_values("Projection annuelle €", ascending=False).copy()
         st.dataframe(
-            monthly_view,
+            display[[
+                "Entreprise","Ticker","ISIN","Quantité","Devise dividende",
+                "DPS 12m","DPS forward","Revenu TTM théorique €","Projection annuelle €",
+                "Tendance","Croissance N/N %","CAGR 3 ans %","Mois habituels",
+                "Prochaine ex-date","Prochain paiement","Base projection","Source"
+            ]],
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Dividendes": st.column_config.NumberColumn(format="%.2f €"),
-                "Part annuelle %": st.column_config.NumberColumn(format="%.1f %%"),
+                "DPS 12m": st.column_config.NumberColumn(format="%.4f"),
+                "DPS forward": st.column_config.NumberColumn(format="%.4f"),
+                "Revenu TTM théorique €": st.column_config.NumberColumn(format="%.2f €"),
+                "Projection annuelle €": st.column_config.NumberColumn(format="%.2f €"),
+                "Croissance N/N %": st.column_config.NumberColumn(format="%.1f %%"),
+                "CAGR 3 ans %": st.column_config.NumberColumn(format="%.1f %%"),
+                "Prochaine ex-date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Prochain paiement": st.column_config.DateColumn(format="DD/MM/YYYY"),
             }
         )
 
-    # ------------------------------------------------------
-    # Quarterly
-    # ------------------------------------------------------
-    with tab_quarter:
-        quarterly = (
-            dy.groupby("quarter_num", as_index=False)["dividend_amount"]
-            .sum()
-            if not dy.empty
-            else pd.DataFrame(columns=["quarter_num","dividend_amount"])
-        )
-        qbase = pd.DataFrame({"quarter_num":[1,2,3,4]})
-        quarterly = qbase.merge(quarterly, on="quarter_num", how="left")
-        quarterly["dividend_amount"] = quarterly["dividend_amount"].fillna(0.0)
-        quarterly["Trimestre"] = "T" + quarterly["quarter_num"].astype(str)
-
-        qchart = (
-            alt.Chart(quarterly)
-            .mark_bar()
-            .encode(
-                x=alt.X("Trimestre:N", sort=["T1","T2","T3","T4"], title=None),
-                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
-                tooltip=[
-                    "Trimestre:N",
-                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
-                ]
-            )
-            .properties(height=300, title=f"Dividendes trimestriels — {selected_year}")
-        )
-        st.altair_chart(qchart, use_container_width=True)
-
-        all_q = (
-            d.groupby(["year","quarter"], as_index=False)["dividend_amount"]
-            .sum()
-        )
-        q_pivot = (
-            all_q.pivot(index="year", columns="quarter", values="dividend_amount")
-            .reindex(columns=["T1","T2","T3","T4"])
-            .fillna(0.0)
-            .sort_index(ascending=False)
-        )
-        q_pivot["Total"] = q_pivot.sum(axis=1)
-        q_pivot = q_pivot.reset_index().rename(columns={"year":"Année"})
-
-        st.markdown("**Comparaison trimestrielle par année**")
-        st.dataframe(
-            q_pivot,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                c: st.column_config.NumberColumn(format="%.2f €")
-                for c in ["T1","T2","T3","T4","Total"]
-            }
-        )
-
-    # ------------------------------------------------------
-    # Annual
-    # ------------------------------------------------------
-    with tab_year:
-        annual = (
-            d.groupby("year", as_index=False)["dividend_amount"]
-            .sum()
-            .sort_values("year")
-        )
-        annual["Année"] = annual["year"].astype(str)
-
-        achart = (
-            alt.Chart(annual)
-            .mark_bar()
-            .encode(
-                x=alt.X("Année:N", title=None),
-                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
-                tooltip=[
-                    "Année:N",
-                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
-                ]
-            )
-            .properties(height=320, title="Évolution annuelle des dividendes")
-        )
-        st.altair_chart(achart, use_container_width=True)
-
-        annual_view = annual[["year","dividend_amount"]].copy()
-        annual_view["Croissance %"] = annual_view["dividend_amount"].pct_change() * 100
-        annual_view = annual_view.sort_values("year", ascending=False).rename(
-            columns={"year":"Année","dividend_amount":"Dividendes"}
-        )
-        st.dataframe(
-            annual_view,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Dividendes": st.column_config.NumberColumn(format="%.2f €"),
-                "Croissance %": st.column_config.NumberColumn(format="%.1f %%"),
-            }
-        )
-
-    # ------------------------------------------------------
-    # By holding / issuer
-    # ------------------------------------------------------
-    with tab_stock:
-        stock = (
-            d.groupby(
-                ["instrument_label","display_symbol","display_isin"],
-                dropna=False,
-                as_index=False
-            )
-            .agg(
-                Total=("dividend_amount","sum"),
-                Versements=("dividend_amount","size"),
-                Dernier_versement=("dividend_date","max")
-            )
-        )
-
-        cy = (
-            d[d["year"] == current_year]
-            .groupby("instrument_label")["dividend_amount"]
-            .sum()
-        )
-        ttm = (
-            d[(d["dividend_date"] >= ttm_start) & (d["dividend_date"] <= now)]
-            .groupby("instrument_label")["dividend_amount"]
-            .sum()
-        )
-        stock["Année en cours"] = stock["instrument_label"].map(cy).fillna(0.0)
-        stock["12 derniers mois"] = stock["instrument_label"].map(ttm).fillna(0.0)
-        stock = stock.sort_values("12 derniers mois", ascending=False)
-
-        stock_view = stock.rename(columns={
-            "instrument_label":"Valeur",
-            "display_symbol":"Ticker",
-            "display_isin":"ISIN",
-            "Dernier_versement":"Dernier versement",
-        })
-
-        st.dataframe(
-            stock_view[
-                ["Valeur","Ticker","ISIN","Année en cours","12 derniers mois","Total","Versements","Dernier versement"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Année en cours": st.column_config.NumberColumn(format="%.2f €"),
-                "12 derniers mois": st.column_config.NumberColumn(format="%.2f €"),
-                "Total": st.column_config.NumberColumn(format="%.2f €"),
-                "Dernier versement": st.column_config.DateColumn(format="DD/MM/YYYY"),
-            }
-        )
-
-        if not stock.empty:
-            top = stock.head(12).copy()
-            schart = (
+        top = display.dropna(subset=["Projection annuelle €"]).head(12)
+        if not top.empty:
+            chart = (
                 alt.Chart(top)
                 .mark_bar()
                 .encode(
-                    x=alt.X("12 derniers mois:Q", title="Dividendes TTM (€)"),
-                    y=alt.Y("instrument_label:N", sort="-x", title=None),
+                    x=alt.X("Projection annuelle €:Q", title="Projection annuelle (€)"),
+                    y=alt.Y("Entreprise:N", sort="-x", title=None),
                     tooltip=[
-                        alt.Tooltip("instrument_label:N", title="Valeur"),
-                        alt.Tooltip("12 derniers mois:Q", title="TTM", format=",.2f")
+                        "Entreprise:N","Ticker:N",
+                        alt.Tooltip("Projection annuelle €:Q", format=",.2f")
                     ]
                 )
-                .properties(height=max(260, 30 * len(top)), title="Principaux contributeurs — 12 derniers mois")
+                .properties(height=max(280, 30 * len(top)), title="Contributeurs projetés")
             )
-            st.altair_chart(schart, use_container_width=True)
+            st.altair_chart(chart, use_container_width=True)
 
     # ------------------------------------------------------
-    # Raw dividend ledger
+    # Factual histories
     # ------------------------------------------------------
     with tab_history:
-        hist = d.sort_values("dividend_date", ascending=False).copy()
-        hist_view = pd.DataFrame({
-            "Date": hist["dividend_date"],
-            "Valeur": hist["instrument_label"],
-            "Ticker": hist["display_symbol"],
-            "ISIN": hist["display_isin"],
-            "Montant enregistré": hist["dividend_amount"],
-            "Retenues / frais importés": hist["withholding_abs"],
-            "Courtier": hist.get("broker", ""),
-            "Description": hist.get("description", ""),
-        })
+        selectable = [
+            f"{r['Entreprise']} • {r['Ticker']}"
+            for _, r in df.iterrows()
+            if r["Ticker"] in company_details
+        ]
+        if selectable:
+            choice = st.selectbox("Entreprise", selectable, key="pea_div_fact_company")
+            chosen_symbol = choice.rsplit(" • ", 1)[-1]
+            m = company_details.get(chosen_symbol, {})
+            hist = m.get("history", pd.DataFrame()).copy()
 
-        st.dataframe(
-            hist_view,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
-                "Montant enregistré": st.column_config.NumberColumn(format="%.2f €"),
-                "Retenues / frais importés": st.column_config.NumberColumn(format="%.2f €"),
-            }
+            if hist is not None and not hist.empty:
+                hist["Année"] = hist["date"].dt.year
+                annual = (
+                    hist.groupby("Année", as_index=False)["dividend_per_share"]
+                    .sum()
+                    .rename(columns={"dividend_per_share":"Dividende / action"})
+                )
+
+                a1,a2,a3,a4 = st.columns(4)
+                a1.metric("Dernier dividende / action", f"{m.get('last_paid_dps', 0):.4f}")
+                a2.metric(
+                    "Dernier paiement",
+                    pd.Timestamp(m["last_paid_date"]).strftime("%d/%m/%Y")
+                    if m.get("last_paid_date") is not None else "—"
+                )
+                a3.metric("DPS 12 derniers mois", f"{m.get('ttm_dps', 0):.4f}")
+                a4.metric("Tendance", m.get("trend") or "—")
+
+                achart = (
+                    alt.Chart(annual)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("Année:O", title=None),
+                        y=alt.Y("Dividende / action:Q", title="Dividende par action"),
+                        tooltip=[
+                            "Année:O",
+                            alt.Tooltip("Dividende / action:Q", format=".4f")
+                        ]
+                    )
+                    .properties(height=300, title=f"Historique annuel réel — {chosen_symbol}")
+                )
+                st.altair_chart(achart, use_container_width=True)
+
+                hist_view = hist.rename(columns={
+                    "date":"Date",
+                    "dividend_per_share":"Dividende / action"
+                }).sort_values("Date", ascending=False)
+
+                st.dataframe(
+                    hist_view[["Date","Dividende / action"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                        "Dividende / action": st.column_config.NumberColumn(format="%.4f"),
+                    }
+                )
+            else:
+                st.info("Aucun historique de dividendes n'a été retourné pour cette valeur.")
+
+    # ------------------------------------------------------
+    # Conclusions
+    # ------------------------------------------------------
+    with tab_conclusion:
+        st.markdown("#### Lecture automatique du portefeuille de dividendes")
+
+        distributive = df[pd.to_numeric(df["DPS 12m"], errors="coerce") > 0].copy()
+        non_distributive = df[pd.to_numeric(df["DPS 12m"], errors="coerce") <= 0].copy()
+
+        if projected_total > 0:
+            st.success(
+                f"Sur la base des données actuellement disponibles, le PEA représente environ "
+                f"**{projected_total:,.0f} € de dividendes annualisés projetés**, soit "
+                f"**{monthly_avg:,.0f} € par mois en moyenne théorique**."
+            )
+        else:
+            st.info("Aucun revenu de dividende annualisé exploitable n'a pu être calculé.")
+
+        if not distributive.empty:
+            leader = distributive.sort_values("Projection annuelle €", ascending=False).iloc[0]
+            leader_amt = pd.to_numeric(
+                pd.Series([leader["Projection annuelle €"]]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(leader_amt):
+                share = (float(leader_amt) / projected_total * 100) if projected_total > 0 else 0
+                st.markdown(
+                    f"**Premier contributeur :** {leader['Entreprise']} ({leader['Ticker']}) "
+                    f"avec environ **{float(leader_amt):,.0f} € / an**, soit **{share:.1f}%** de la projection."
+                )
+
+        growing = df[df["Tendance"] == "Croissance"]
+        falling = df[df["Tendance"] == "Baisse"]
+        stable = df[df["Tendance"] == "Stable"]
+
+        st.markdown(
+            f"**Tendance historique :** {len(growing)} valeur(s) en croissance, "
+            f"{len(stable)} stable(s), {len(falling)} en baisse sur la dernière comparaison annuelle disponible."
         )
 
+        if not falling.empty:
+            names = ", ".join(
+                f"{r['Entreprise']} ({r['Ticker']})"
+                for _, r in falling.head(5).iterrows()
+            )
+            st.warning(
+                "Une baisse de dividende a été détectée dans l'historique récent pour : "
+                f"{names}. Cela mérite une vérification avant de considérer leur dividende comme récurrent."
+            )
+
+        # Concentration of projected income.
+        proj = pd.to_numeric(df["Projection annuelle €"], errors="coerce").fillna(0)
+        if projected_total > 0 and len(df):
+            top3 = float(proj.nlargest(3).sum())
+            concentration = top3 / projected_total * 100
+            if concentration >= 70:
+                st.warning(
+                    f"Les 3 premiers contributeurs représentent environ **{concentration:.1f}%** "
+                    "des dividendes projetés : le revenu est concentré."
+                )
+            else:
+                st.info(
+                    f"Les 3 premiers contributeurs représentent environ **{concentration:.1f}%** "
+                    "des dividendes projetés."
+                )
+
+        if not non_distributive.empty:
+            nd = ", ".join(non_distributive["Ticker"].astype(str).head(8).tolist())
+            st.caption(
+                f"Valeurs sans dividende TTM détecté : {nd}. "
+                "Elles peuvent rester pertinentes pour la croissance du capital mais ne contribuent pas au revenu courant."
+            )
+
+        st.markdown("#### Niveau de confiance")
+        confidence_rows = []
+        for _, r in df.iterrows():
+            m = company_details.get(r["Ticker"], {})
+            hist = m.get("history", pd.DataFrame())
+            years_hist = 0
+            if hist is not None and not hist.empty:
+                years_hist = int(hist["date"].dt.year.nunique())
+            if r["Base projection"] == "Taux forward fournisseur" and years_hist >= 3:
+                confidence = "Élevé"
+            elif years_hist >= 3:
+                confidence = "Moyen"
+            else:
+                confidence = "Faible"
+            confidence_rows.append({
+                "Entreprise": r["Entreprise"],
+                "Ticker": r["Ticker"],
+                "Historique (années)": years_hist,
+                "Base": r["Base projection"],
+                "Confiance": confidence,
+            })
+        st.dataframe(pd.DataFrame(confidence_rows), use_container_width=True, hide_index=True)
+
     st.caption(
-        "Source : historique de transactions importé dans VISION FUTURE. "
-        "Le montant affiché correspond au montant enregistré par le courtier ; selon le format d'export, "
-        "il peut être brut ou déjà net de certaines retenues. Les dividendes futurs ne sont pas projetés dans cette vue."
+        "Sources de marché : historique de dividendes et calendrier récupérés automatiquement via yfinance/Yahoo Finance. "
+        "VISION FUTURE sépare les faits passés des projections. Une projection n'est jamais une garantie de versement."
     )
 
 def show_portfolio_page(account, title, broker: str | None = None):
