@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.2 PEA Dividend Reality & Projection"
+APP_VERSION = "V38.3 Crypto Scanner Independent"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -2466,6 +2466,536 @@ def fast_scan(symbols, min_upside=3.0, min_rr=2.0, min_score=72, top_n=20):
     if not out.empty:
         out = out.sort_values(["Score combiné","R/R","Potentiel %"], ascending=False)
     return out
+
+
+
+# ==========================================================
+# V38.3 — CRYPTO SCANNER (INDEPENDENT FROM R/R)
+# ==========================================================
+
+VF_CRYPTO_UNIVERSE = {
+    "Bitcoin": "BTC-USD",
+    "Ethereum": "ETH-USD",
+    "Solana": "SOL-USD",
+    "XRP": "XRP-USD",
+    "BNB": "BNB-USD",
+    "Cardano": "ADA-USD",
+    "Dogecoin": "DOGE-USD",
+    "Chainlink": "LINK-USD",
+    "Avalanche": "AVAX-USD",
+    "Polkadot": "DOT-USD",
+    "Litecoin": "LTC-USD",
+    "Bitcoin Cash": "BCH-USD",
+    "Stellar": "XLM-USD",
+    "TRON": "TRX-USD",
+    "Sui": "SUI-USD",
+    "Toncoin": "TON-USD",
+    "Hedera": "HBAR-USD",
+    "Aptos": "APT-USD",
+    "Uniswap": "UNI-USD",
+    "NEAR Protocol": "NEAR-USD",
+}
+
+
+def vf_crypto_setup(df):
+    """
+    Crypto-specific scoring engine.
+
+    IMPORTANT:
+    - no R/R criterion is used;
+    - no minimum upside criterion is used;
+    - score is based on trend, momentum, RSI, MACD, volatility and volume;
+    - invalidation/objective levels are informational volatility bands, not
+      filters and not guaranteed execution levels.
+    """
+    if df is None or len(df) < 60:
+        return None
+
+    try:
+        x = indicators(df)
+    except Exception:
+        return None
+
+    if x is None or len(x) < 40:
+        return None
+
+    r = x.iloc[-1]
+    price = float(r.Close)
+    atr = float(r.ATR)
+    atr_pct = float(r.ATR_PCT)
+    sma20 = float(r.SMA20)
+    sma50 = float(r.SMA50)
+    sma200 = float(r.SMA200) if pd.notna(r.SMA200) else np.nan
+    rsi = float(r.RSI)
+    roc20 = float(r.ROC20)
+    macd = float(r.MACD)
+    macd_signal = float(r.MACD_SIGNAL)
+
+    closes = pd.to_numeric(x["Close"], errors="coerce")
+    volumes = pd.to_numeric(x["Volume"], errors="coerce")
+
+    mom_1 = (
+        (float(closes.iloc[-1]) / float(closes.iloc[-2]) - 1) * 100
+        if len(closes) >= 2 and closes.iloc[-2] > 0 else np.nan
+    )
+    mom_7 = (
+        (float(closes.iloc[-1]) / float(closes.iloc[-8]) - 1) * 100
+        if len(closes) >= 8 and closes.iloc[-8] > 0 else np.nan
+    )
+    mom_30 = (
+        (float(closes.iloc[-1]) / float(closes.iloc[-31]) - 1) * 100
+        if len(closes) >= 31 and closes.iloc[-31] > 0 else np.nan
+    )
+
+    vol20 = float(pd.to_numeric(x["VOL20"], errors="coerce").iloc[-1]) if "VOL20" in x else np.nan
+    current_volume = float(volumes.iloc[-1]) if len(volumes) else np.nan
+    volume_ratio = (
+        current_volume / vol20
+        if pd.notna(current_volume) and pd.notna(vol20) and vol20 > 0
+        else np.nan
+    )
+
+    distance_sma20 = ((price / sma20) - 1) * 100 if sma20 > 0 else np.nan
+
+    recent_30 = x.tail(min(30, len(x)))
+    high_30 = float(pd.to_numeric(recent_30["High"], errors="coerce").max())
+    drawdown_30 = (price / high_30 - 1) * 100 if high_30 > 0 else np.nan
+
+    score = 50
+    reasons = []
+    risks = []
+
+    # Trend
+    if price > sma20:
+        score += 10
+        reasons.append("prix > SMA20")
+    else:
+        score -= 10
+        risks.append("prix sous SMA20")
+
+    if sma20 > sma50:
+        score += 12
+        reasons.append("SMA20 > SMA50")
+    else:
+        score -= 10
+        risks.append("tendance courte sous SMA50")
+
+    if pd.notna(sma200):
+        if price > sma200:
+            score += 6
+            reasons.append("prix > SMA200")
+        else:
+            score -= 6
+            risks.append("prix sous SMA200")
+
+    # Momentum
+    if pd.notna(mom_7):
+        if mom_7 >= 5:
+            score += 10
+            reasons.append("momentum 7j fort")
+        elif mom_7 > 0:
+            score += 5
+            reasons.append("momentum 7j positif")
+        elif mom_7 <= -8:
+            score -= 10
+            risks.append("momentum 7j négatif")
+
+    if roc20 > 0:
+        score += 8
+        reasons.append("ROC20 positif")
+    else:
+        score -= 6
+        risks.append("ROC20 négatif")
+
+    # RSI adapted to a more volatile asset class.
+    if 48 <= rsi <= 70:
+        score += 8
+        reasons.append("RSI constructif")
+    elif 40 <= rsi < 48:
+        score += 2
+    elif rsi > 78:
+        score -= 10
+        risks.append("RSI très tendu")
+    elif rsi < 35:
+        score -= 8
+        risks.append("RSI faible")
+
+    # MACD
+    if macd > macd_signal:
+        score += 9
+        reasons.append("MACD haussier")
+    else:
+        score -= 7
+        risks.append("MACD baissier")
+
+    # Volatility: crypto needs volatility, but extreme volatility lowers quality.
+    if 2 <= atr_pct <= 10:
+        score += 6
+        reasons.append("volatilité exploitable")
+    elif atr_pct > 15:
+        score -= 8
+        risks.append("volatilité extrême")
+    elif atr_pct < 1:
+        score -= 3
+
+    # Volume confirmation
+    if pd.notna(volume_ratio):
+        if volume_ratio >= 1.35:
+            score += 7
+            reasons.append("volume renforcé")
+        elif volume_ratio < 0.65:
+            score -= 4
+            risks.append("volume faible")
+
+    # Over-extension control: not a R/R filter.
+    if pd.notna(distance_sma20) and distance_sma20 > 15:
+        score -= 7
+        risks.append("extension forte au-dessus SMA20")
+    if pd.notna(drawdown_30) and drawdown_30 > -3 and rsi > 72:
+        score -= 5
+        risks.append("proche plus haut 30j + RSI élevé")
+
+    score = int(np.clip(score, 0, 100))
+
+    if score >= 82:
+        signal = "ACCÉLÉRATION"
+        quality = "A"
+    elif score >= 72:
+        signal = "HAUSSIER"
+        quality = "B"
+    elif score >= 62:
+        signal = "SURVEILLANCE"
+        quality = "C"
+    else:
+        signal = "FAIBLE"
+        quality = "D"
+
+    # Volatility-based reference levels only. They are intentionally not used
+    # to calculate or filter any reward/risk ratio.
+    invalidation = max(price - 1.8 * atr, price * 0.70)
+    objective_1 = price + 1.5 * atr
+    objective_2 = price + 3.0 * atr
+
+    return {
+        "price": price,
+        "score": score,
+        "signal": signal,
+        "quality": quality,
+        "rsi": rsi,
+        "atr_pct": atr_pct,
+        "mom_1": mom_1,
+        "mom_7": mom_7,
+        "mom_30": mom_30,
+        "roc20": roc20,
+        "volume_ratio": volume_ratio,
+        "distance_sma20": distance_sma20,
+        "drawdown_30": drawdown_30,
+        "invalidation": invalidation,
+        "objective_1": objective_1,
+        "objective_2": objective_2,
+        "reasons": reasons,
+        "risks": risks,
+    }
+
+
+def vf_crypto_scan(symbols, min_score=68, top_n=20, only_1h_confirmed=False):
+    """
+    Independent crypto scanner. No R/R and no upside threshold anywhere.
+    Daily ranking + 1H momentum confirmation.
+    """
+    symbols = list(dict.fromkeys([
+        _clean_text(s, upper=True) for s in symbols
+        if _clean_text(s, upper=True)
+    ]))
+    if not symbols:
+        return pd.DataFrame()
+
+    daily = batch_history(symbols, period="1y", interval="1d")
+    candidates = []
+
+    for sym in symbols:
+        setup = vf_crypto_setup(daily.get(sym))
+        if not setup:
+            continue
+        if setup["score"] >= int(min_score):
+            candidates.append({"Ticker": sym, **setup})
+
+    candidates = sorted(
+        candidates,
+        key=lambda r: (
+            r.get("score", 0),
+            r.get("mom_7", -999) if pd.notna(r.get("mom_7")) else -999,
+            r.get("volume_ratio", 0) if pd.notna(r.get("volume_ratio")) else 0,
+        ),
+        reverse=True
+    )[:max(int(top_n), 1)]
+
+    if not candidates:
+        return pd.DataFrame()
+
+    finalists = [r["Ticker"] for r in candidates]
+    hourly = batch_history(finalists, period="3mo", interval="1h")
+    rows = []
+
+    for r in candidates:
+        sym = r["Ticker"]
+        conf = vf_crypto_setup(hourly.get(sym)) if sym in hourly else None
+        conf_score = conf.get("score") if conf else np.nan
+
+        # Crypto 1H confirmation is score/momentum based, never R/R based.
+        confirmed = bool(
+            conf
+            and conf.get("score", 0) >= 62
+            and (
+                pd.isna(conf.get("mom_7"))
+                or conf.get("mom_7", 0) > -2
+            )
+        )
+
+        if only_1h_confirmed and not confirmed:
+            continue
+
+        combined = (
+            round(0.70 * r["score"] + 0.30 * float(conf_score), 1)
+            if conf and pd.notna(conf_score)
+            else float(r["score"])
+        )
+
+        rows.append({
+            "Ticker": sym,
+            "Score Crypto": r["score"],
+            "Score 1H": conf_score,
+            "Score combiné": combined,
+            "Signal": r["signal"],
+            "Qualité": r["quality"],
+            "Confirmé 1H": "✅" if confirmed else "⚠️",
+            "Prix": r["price"],
+            "Momentum 1j %": r["mom_1"],
+            "Momentum 7j %": r["mom_7"],
+            "Momentum 30j %": r["mom_30"],
+            "RSI": r["rsi"],
+            "ATR %": r["atr_pct"],
+            "Volume x20": r["volume_ratio"],
+            "Distance SMA20 %": r["distance_sma20"],
+            "Drawdown 30j %": r["drawdown_30"],
+            "Invalidation indicative": r["invalidation"],
+            "Objectif dynamique 1": r["objective_1"],
+            "Objectif dynamique 2": r["objective_2"],
+            "Raisons": " • ".join(r.get("reasons", [])),
+            "Risques": " • ".join(r.get("risks", [])),
+        })
+
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out = out.sort_values(
+            ["Score combiné", "Momentum 7j %", "Volume x20"],
+            ascending=[False, False, False],
+            na_position="last"
+        )
+    return out
+
+
+def vf_crypto_scanner_panel():
+    st.markdown(
+        """
+        <div class="vf-future-strip">
+          <div class="vf-future-strip-title">Crypto Scanner — moteur indépendant</div>
+          <div class="vf-future-strip-text">
+            Les cryptos ne sont pas filtrées par R/R. Le classement repose sur tendance,
+            momentum, RSI, MACD, volatilité, volume et confirmation 1H.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    c1,c2,c3,c4 = st.columns(4)
+    min_score = c1.slider(
+        "Score Crypto minimum",
+        min_value=50,
+        max_value=95,
+        value=68,
+        step=1,
+        key="crypto_scan_min_score"
+    )
+    top_n = c2.slider(
+        "Cryptos affichées",
+        min_value=5,
+        max_value=30,
+        value=15,
+        step=1,
+        key="crypto_scan_top_n"
+    )
+    only_confirmed = c3.toggle(
+        "Confirmées 1H uniquement",
+        value=False,
+        key="crypto_scan_only_confirmed"
+    )
+    universe_mode = c4.selectbox(
+        "Univers",
+        ["Sélection VISION FUTURE", "Personnalisé"],
+        key="crypto_scan_universe_mode"
+    )
+
+    if universe_mode == "Sélection VISION FUTURE":
+        selected_names = st.multiselect(
+            "Cryptos analysées",
+            list(VF_CRYPTO_UNIVERSE.keys()),
+            default=list(VF_CRYPTO_UNIVERSE.keys())[:14],
+            key="crypto_scan_selection"
+        )
+        symbols = [VF_CRYPTO_UNIVERSE[n] for n in selected_names]
+    else:
+        custom = st.text_area(
+            "Tickers Yahoo Crypto",
+            value="BTC-USD, ETH-USD, SOL-USD, XRP-USD",
+            help="Sépare les tickers par virgule. Exemple : BTC-USD, ETH-USD, LINK-USD.",
+            key="crypto_scan_custom"
+        )
+        symbols = [
+            _clean_text(x, upper=True)
+            for x in re.split(r"[,;\n ]+", custom)
+            if _clean_text(x, upper=True)
+        ]
+
+    st.caption(
+        "Aucun seuil R/R n'est utilisé dans ce mode. Les niveaux d'invalidation et d'objectif "
+        "restent de simples repères techniques basés sur l'ATR."
+    )
+
+    if not symbols:
+        st.warning("Sélectionne au moins une crypto.")
+        return
+
+    with st.spinner("Analyse crypto 24/7 : tendance, momentum, volatilité, volume et confirmation 1H…"):
+        out = vf_crypto_scan(
+            symbols,
+            min_score=min_score,
+            top_n=top_n,
+            only_1h_confirmed=only_confirmed
+        )
+
+    if out is None or out.empty:
+        st.warning("Aucune crypto ne passe actuellement le score minimum sélectionné.")
+        return
+
+    reverse_names = {v: k for k, v in VF_CRYPTO_UNIVERSE.items()}
+    out = out.copy()
+    out["Crypto"] = out["Ticker"].map(reverse_names).fillna(out["Ticker"])
+
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric("Univers analysé", len(symbols))
+    k2.metric("Finalistes", len(out))
+    k3.metric("Accélération", int((out["Signal"] == "ACCÉLÉRATION").sum()))
+    k4.metric("Confirmées 1H", int((out["Confirmé 1H"] == "✅").sum()))
+
+    # Visual ranking
+    ca,cb = st.columns(2)
+    with ca:
+        vf_bar(
+            out.head(min(12, len(out))),
+            "Crypto",
+            "Score combiné",
+            "Score Crypto"
+        )
+    with cb:
+        momentum_chart = out.dropna(subset=["Momentum 7j %"]).head(min(12, len(out)))
+        if not momentum_chart.empty:
+            vf_bar(
+                momentum_chart,
+                "Crypto",
+                "Momentum 7j %",
+                "Momentum 7 jours"
+            )
+
+    vf_section(
+        "Sélection Crypto",
+        "Classement indépendant du R/R. Les niveaux techniques servent à contrôler le risque, pas à exclure une crypto."
+    )
+
+    top_cards = out.head(10).reset_index(drop=True)
+    for i in range(0, len(top_cards), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            idx = i + j
+            if idx >= len(top_cards):
+                break
+            r = top_cards.iloc[idx]
+            with col:
+                with st.container(border=True):
+                    symbol = _clean_text(r.get("Ticker"), upper=True)
+                    name = _clean_text(r.get("Crypto")) or symbol
+                    st.markdown(f"### {name}")
+                    st.caption(f"{symbol} • Crypto • marché 24/7")
+
+                    a,b,c = st.columns(3)
+                    a.metric("Score", f"{float(r['Score combiné']):.0f}/100")
+                    b.metric("Signal", _clean_text(r.get("Signal")) or "—")
+                    c.metric("1H", _clean_text(r.get("Confirmé 1H")) or "—")
+
+                    d,e,f = st.columns(3)
+                    d.metric("Prix", f"{float(r['Prix']):,.4f}" if pd.notna(r.get("Prix")) else "—")
+                    e.metric("Momentum 7j", f"{float(r['Momentum 7j %']):+.1f}%" if pd.notna(r.get("Momentum 7j %")) else "—")
+                    f.metric("ATR", f"{float(r['ATR %']):.1f}%" if pd.notna(r.get("ATR %")) else "—")
+
+                    g,h = st.columns(2)
+                    g.metric(
+                        "Invalidation indicative",
+                        f"{float(r['Invalidation indicative']):,.4f}"
+                        if pd.notna(r.get("Invalidation indicative")) else "—"
+                    )
+                    h.metric(
+                        "Objectif dynamique",
+                        f"{float(r['Objectif dynamique 1']):,.4f}"
+                        if pd.notna(r.get("Objectif dynamique 1")) else "—"
+                    )
+
+                    reasons = _clean_text(r.get("Raisons"))
+                    risks = _clean_text(r.get("Risques"))
+                    if reasons:
+                        st.caption("✅ " + reasons)
+                    if risks:
+                        st.caption("⚠️ " + risks)
+
+                    if st.button(
+                        "📊 Ouvrir la fiche",
+                        key=f"crypto_open_{idx}_{symbol}",
+                        use_container_width=True
+                    ):
+                        open_instrument_identity(
+                            symbol,
+                            name,
+                            "",
+                            setup_row={
+                                "Ticker": symbol,
+                                "Entreprise": name,
+                                "Prix": r.get("Prix"),
+                                "Score combiné": r.get("Score combiné"),
+                                "Confirmé 1h": r.get("Confirmé 1H"),
+                                "Source": "Scanner Crypto",
+                            }
+                        )
+
+    with st.expander("📋 Tableau Crypto complet"):
+        visible = [
+            "Crypto","Ticker","Signal","Qualité",
+            "Score combiné","Score Crypto","Score 1H","Confirmé 1H",
+            "Prix","Momentum 1j %","Momentum 7j %","Momentum 30j %",
+            "RSI","ATR %","Volume x20","Distance SMA20 %","Drawdown 30j %",
+            "Invalidation indicative","Objectif dynamique 1","Objectif dynamique 2",
+            "Raisons","Risques"
+        ]
+        st.dataframe(
+            out[[c for c in visible if c in out.columns]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+    st.info(
+        "Crypto = moteur séparé : le R/R n'entre ni dans le filtre, ni dans la confirmation 1H, "
+        "ni dans le classement. La forte volatilité implique néanmoins de conserver une invalidation "
+        "et un dimensionnement de position prudents."
+    )
 
 
 
@@ -9408,209 +9938,229 @@ elif mode=="⚖️ Arbitrage":
 
 elif mode=="🔎 Scanner":
     vf_page_header(
-        "⚡ Scanner mondial",
-        "Discovery Board — découverte mondiale, scoring multi-timeframe, confirmation 1H et plan de risque."
+        "⚡ Scanner multi-actifs",
+        "Deux moteurs distincts : Actions/ETF avec R/R, Crypto sans filtre R/R."
     )
 
-    verified_access = vf_verified_access_universe()
-    if not verified_access.empty:
-        counts = {}
-        for broker in SUPPORTED_BROKERS:
-            counts[broker] = int(
-                verified_access["broker"].fillna("").str.contains(
-                    broker, case=False, regex=False
-                ).sum()
-            )
-        st.caption(
-            "Univers vérifié • "
-            + " • ".join(f"{b}: {counts[b]}" for b in SUPPORTED_BROKERS)
-        )
-    else:
-        st.warning(
-            "Le référentiel broker_universe ne contient encore aucune valeur vérifiée "
-            "pour XTB / Trade Republic / Boursobank."
-        )
-
-    # Top visual controls
-    f1,f2,f3,f4 = st.columns(4)
-    brokers = f1.multiselect(
-        "Courtiers vérifiés",
-        ["XTB","Trade Republic","Boursobank"],
-        default=["XTB","Trade Republic","Boursobank"],
-        help="N'affiche que les instruments explicitement vérifiés dans broker_universe pour ces courtiers."
-    )
-    available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
-    default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
-    markets = f2.multiselect("Marchés du référentiel", available_markets, default=default_markets)
-    min_upside = f3.number_input("Potentiel min. (%)", 1.0, 30.0, 3.0, .5)
-    min_rr = f4.number_input("R/R min.", 1.0, 5.0, 2.0, .1)
-
-    g1,g2,g3,g4 = st.columns(4)
-    min_score = g1.slider("Score minimum", 50, 100, 72)
-    top_n = g2.slider("Finalistes", 5, 50, 20)
-    only_confirmed = g3.checkbox("Confirmés 1H seulement", False)
-    include_discovery = g4.toggle(
-        "Découverte dynamique",
-        value=True,
-        help="Élargit le scanner au-delà du référentiel local. Chaque valeur est ensuite classée Vérifiée / Probable / Non vérifiée."
-    )
-
-    access_level = st.radio(
-        "Filtre accès courtier",
-        ["Vérifié + probable","Vérifié uniquement","Tout afficher"],
+    scanner_mode = st.radio(
+        "Moteur du scanner",
+        ["📈 Actions / ETF", "🪙 Crypto"],
         horizontal=True,
         index=0,
+        key="vf_scanner_asset_mode",
         help=(
-            "Vérifié = présent dans broker_universe ou déjà importé depuis un courtier. "
-            "Probable = action/ETF d'un marché couramment distribué, à confirmer avant ordre."
+            "Actions/ETF conserve la logique Potentiel + R/R + Score. "
+            "Crypto utilise un moteur indépendant basé sur momentum, tendance, volatilité et volume."
         )
     )
 
-    discovery_regions = []
-    max_per_region = 20
-    if include_discovery:
-        r1,r2 = st.columns([4,1])
-        with r1:
-            discovery_regions = st.multiselect(
-                "Zones de découverte",
-                list(YF_DISCOVERY_REGIONS.keys()),
-                default=["USA","France","Allemagne","Royaume-Uni","Canada","Japon"],
-            )
-        with r2:
-            max_per_region = st.selectbox("Titres / zone", [10,15,20,25,30], index=2)
-
-    with st.spinner("Construction de l'univers mondial…"):
-        universe_df = scanner_universe_frame(
-            brokers=brokers,
-            markets=markets,
-            include_discovery=include_discovery,
-            discovery_regions=discovery_regions,
-            max_per_region=max_per_region,
-        )
-
-    # V35.1 — Hybrid broker access filter.
-    # The previous strict gate could empty the scanner when broker_universe was
-    # incomplete. We now retain probable listed equities/ETFs while clearly
-    # distinguishing them from verified instruments.
-    if not universe_df.empty:
-        universe_df = vf_filter_broker_access(
-            universe_df,
-            symbol_col="symbol",
-            brokers=brokers,
-            level=access_level
-        )
-
-    if universe_df.empty:
-        st.warning(
-            "Aucune valeur ne passe le filtre d'accès actuel. "
-            "Essaie « Vérifié + probable » ou enrichis broker_universe."
-        )
+    if scanner_mode == "🪙 Crypto":
+        vf_crypto_scanner_panel()
     else:
-        verified_count = int((universe_df.get("Accès statut") == "Vérifié").sum()) if "Accès statut" in universe_df else 0
-        probable_count = int((universe_df.get("Accès statut") == "Probable").sum()) if "Accès statut" in universe_df else 0
-        discovery_count = int((universe_df.get("source") == "Découverte Yahoo").sum()) if "source" in universe_df else 0
-        symbols = universe_df["symbol"].dropna().astype(str).tolist()
 
-        k1,k2,k3,k4 = st.columns(4)
-        k1.metric("Univers analysé", len(symbols))
-        k2.metric("Accès vérifié", verified_count)
-        k3.metric("Accès probable", probable_count)
-        k4.metric("Seuil setup", f"{min_upside:.1f}% / R-R {min_rr:.1f}")
+        st.caption(
+            "Moteur Actions/ETF : potentiel, score, confirmation 1H et R/R restent les critères du scanner traditionnel."
+        )
 
-        if discovery_count:
-            st.info(
-                "Les valeurs découvertes sont classées selon la qualité de la preuve d'accès. "
-                "« Vérifié » = référentiel/import courtier. « Probable » = action/ETF d'un marché couramment distribué ; "
-                "à confirmer dans XTB, Trade Republic ou Boursobank avant ordre."
+        verified_access = vf_verified_access_universe()
+        if not verified_access.empty:
+            counts = {}
+            for broker in SUPPORTED_BROKERS:
+                counts[broker] = int(
+                    verified_access["broker"].fillna("").str.contains(
+                        broker, case=False, regex=False
+                    ).sum()
+                )
+            st.caption(
+                "Univers vérifié • "
+                + " • ".join(f"{b}: {counts[b]}" for b in SUPPORTED_BROKERS)
             )
-
-        with st.spinner("Analyse technique groupée puis confirmation 1H…"):
-            out = fast_scan(
-                symbols,
-                min_upside=min_upside,
-                min_rr=min_rr,
-                min_score=min_score,
-                top_n=top_n
-            )
-
-        if out.empty:
-            st.warning("Aucune configuration ne passe les filtres actuels.")
         else:
-            meta = universe_df.set_index("symbol")
-            names, isins, sources, broker_labels, market_labels, access_statuses, access_labels = [], [], [], [], [], [], []
-            for sym in out["Ticker"].tolist():
-                if sym in meta.index:
-                    rr = meta.loc[sym]
-                    if isinstance(rr, pd.DataFrame):
-                        rr = rr.iloc[0]
-                    names.append(_clean_text(rr.get("name")) or live_quote(sym).get("name", sym))
-                    isins.append(_clean_text(rr.get("isin"), upper=True))
-                    sources.append(_clean_text(rr.get("source")))
-                    broker_labels.append(_clean_text(rr.get("broker")))
-                    market_labels.append(_clean_text(rr.get("market")))
-                    access_statuses.append(_clean_text(rr.get("Accès statut")) or "Non vérifié")
-                    access_labels.append(_clean_text(rr.get("Accès courtier")) or "Non vérifié")
-                else:
-                    names.append(live_quote(sym).get("name", sym))
-                    isins.append("")
-                    sources.append("")
-                    broker_labels.append("")
-                    market_labels.append("")
-                    access_statuses.append("Non vérifié")
-                    access_labels.append("Non vérifié")
+            st.warning(
+                "Le référentiel broker_universe ne contient encore aucune valeur vérifiée "
+                "pour XTB / Trade Republic / Boursobank."
+            )
 
-            out["Entreprise"] = names
-            out["ISIN"] = isins
-            out["Source"] = sources
-            out["Courtier"] = broker_labels
-            out["Marché"] = market_labels
-            out["Accès"] = access_statuses
-            out["Accès courtier"] = access_labels
-            out = add_identity_columns(out, "Ticker")
+        # Top visual controls
+        f1,f2,f3,f4 = st.columns(4)
+        brokers = f1.multiselect(
+            "Courtiers vérifiés",
+            ["XTB","Trade Republic","Boursobank"],
+            default=["XTB","Trade Republic","Boursobank"],
+            help="N'affiche que les instruments explicitement vérifiés dans broker_universe pour ces courtiers."
+        )
+        available_markets = sorted(load_broker_universe()["market"].dropna().unique().tolist())
+        default_markets = [x for x in ["USA","France","Germany","Netherlands","UK"] if x in available_markets]
+        markets = f2.multiselect("Marchés du référentiel", available_markets, default=default_markets)
+        min_upside = f3.number_input("Potentiel min. (%)", 1.0, 30.0, 3.0, .5)
+        min_rr = f4.number_input("R/R min.", 1.0, 5.0, 2.0, .1)
 
-            if only_confirmed:
-                out = out[out["Confirmé 1h"]=="✅"]
+        g1,g2,g3,g4 = st.columns(4)
+        min_score = g1.slider("Score minimum", 50, 100, 72)
+        top_n = g2.slider("Finalistes", 5, 50, 20)
+        only_confirmed = g3.checkbox("Confirmés 1H seulement", False)
+        include_discovery = g4.toggle(
+            "Découverte dynamique",
+            value=True,
+            help="Élargit le scanner au-delà du référentiel local. Chaque valeur est ensuite classée Vérifiée / Probable / Non vérifiée."
+        )
+
+        access_level = st.radio(
+            "Filtre accès courtier",
+            ["Vérifié + probable","Vérifié uniquement","Tout afficher"],
+            horizontal=True,
+            index=0,
+            help=(
+                "Vérifié = présent dans broker_universe ou déjà importé depuis un courtier. "
+                "Probable = action/ETF d'un marché couramment distribué, à confirmer avant ordre."
+            )
+        )
+
+        discovery_regions = []
+        max_per_region = 20
+        if include_discovery:
+            r1,r2 = st.columns([4,1])
+            with r1:
+                discovery_regions = st.multiselect(
+                    "Zones de découverte",
+                    list(YF_DISCOVERY_REGIONS.keys()),
+                    default=["USA","France","Allemagne","Royaume-Uni","Canada","Japon"],
+                )
+            with r2:
+                max_per_region = st.selectbox("Titres / zone", [10,15,20,25,30], index=2)
+
+        with st.spinner("Construction de l'univers mondial…"):
+            universe_df = scanner_universe_frame(
+                brokers=brokers,
+                markets=markets,
+                include_discovery=include_discovery,
+                discovery_regions=discovery_regions,
+                max_per_region=max_per_region,
+            )
+
+        # V35.1 — Hybrid broker access filter.
+        # The previous strict gate could empty the scanner when broker_universe was
+        # incomplete. We now retain probable listed equities/ETFs while clearly
+        # distinguishing them from verified instruments.
+        if not universe_df.empty:
+            universe_df = vf_filter_broker_access(
+                universe_df,
+                symbol_col="symbol",
+                brokers=brokers,
+                level=access_level
+            )
+
+        if universe_df.empty:
+            st.warning(
+                "Aucune valeur ne passe le filtre d'accès actuel. "
+                "Essaie « Vérifié + probable » ou enrichis broker_universe."
+            )
+        else:
+            verified_count = int((universe_df.get("Accès statut") == "Vérifié").sum()) if "Accès statut" in universe_df else 0
+            probable_count = int((universe_df.get("Accès statut") == "Probable").sum()) if "Accès statut" in universe_df else 0
+            discovery_count = int((universe_df.get("source") == "Découverte Yahoo").sum()) if "source" in universe_df else 0
+            symbols = universe_df["symbol"].dropna().astype(str).tolist()
+
+            k1,k2,k3,k4 = st.columns(4)
+            k1.metric("Univers analysé", len(symbols))
+            k2.metric("Accès vérifié", verified_count)
+            k3.metric("Accès probable", probable_count)
+            k4.metric("Seuil setup", f"{min_upside:.1f}% / R-R {min_rr:.1f}")
+
+            if discovery_count:
+                st.info(
+                    "Les valeurs découvertes sont classées selon la qualité de la preuve d'accès. "
+                    "« Vérifié » = référentiel/import courtier. « Probable » = action/ETF d'un marché couramment distribué ; "
+                    "à confirmer dans XTB, Trade Republic ou Boursobank avant ordre."
+                )
+
+            with st.spinner("Analyse technique groupée puis confirmation 1H…"):
+                out = fast_scan(
+                    symbols,
+                    min_upside=min_upside,
+                    min_rr=min_rr,
+                    min_score=min_score,
+                    top_n=top_n
+                )
 
             if out.empty:
-                st.warning("Aucun finaliste n'est confirmé en 1H.")
+                st.warning("Aucune configuration ne passe les filtres actuels.")
             else:
-                st.success(f"{len(out)} configuration(s) retenue(s).")
+                meta = universe_df.set_index("symbol")
+                names, isins, sources, broker_labels, market_labels, access_statuses, access_labels = [], [], [], [], [], [], []
+                for sym in out["Ticker"].tolist():
+                    if sym in meta.index:
+                        rr = meta.loc[sym]
+                        if isinstance(rr, pd.DataFrame):
+                            rr = rr.iloc[0]
+                        names.append(_clean_text(rr.get("name")) or live_quote(sym).get("name", sym))
+                        isins.append(_clean_text(rr.get("isin"), upper=True))
+                        sources.append(_clean_text(rr.get("source")))
+                        broker_labels.append(_clean_text(rr.get("broker")))
+                        market_labels.append(_clean_text(rr.get("market")))
+                        access_statuses.append(_clean_text(rr.get("Accès statut")) or "Non vérifié")
+                        access_labels.append(_clean_text(rr.get("Accès courtier")) or "Non vérifié")
+                    else:
+                        names.append(live_quote(sym).get("name", sym))
+                        isins.append("")
+                        sources.append("")
+                        broker_labels.append("")
+                        market_labels.append("")
+                        access_statuses.append("Non vérifié")
+                        access_labels.append("Non vérifié")
 
-                # DA: charts before dense table
-                ca,cb = st.columns(2)
-                with ca:
-                    vf_bar(
-                        out.nlargest(min(12,len(out)), "Score combiné"),
-                        "Valeur","Score combiné","Meilleurs scores"
-                    )
-                with cb:
-                    vf_bar(
-                        out.nlargest(min(12,len(out)), "Potentiel %"),
-                        "Valeur","Potentiel %","Potentiel des finalistes"
-                    )
+                out["Entreprise"] = names
+                out["ISIN"] = isins
+                out["Source"] = sources
+                out["Courtier"] = broker_labels
+                out["Marché"] = market_labels
+                out["Accès"] = access_statuses
+                out["Accès courtier"] = access_labels
+                out = add_identity_columns(out, "Ticker")
 
-                vf_section("Sélection prioritaire", "Les meilleurs setups du scanner présentés comme un board opérationnel.")
-                top_cards = out.head(8).reset_index(drop=True)
-                for i in range(0, len(top_cards), 2):
-                    cols = st.columns(2)
-                    for j,col in enumerate(cols):
-                        idx=i+j
-                        if idx >= len(top_cards):
-                            break
-                        with col:
-                            vf_setup_card(top_cards.iloc[idx], key_prefix=f"scanner_card_{idx}", show_expand=True)
+                if only_confirmed:
+                    out = out[out["Confirmé 1h"]=="✅"]
 
-                with st.expander("📋 Voir le tableau complet"):
-                    visible = [
-                        "Valeur","Ticker","Entreprise","ISIN","Marché","Courtier","Accès","Accès courtier","Source",
-                        "Score combiné","Score","Confirmation 1h","Confirmé 1h",
-                        "Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"
-                    ]
-                    st.dataframe(
-                        out[[c for c in visible if c in out.columns]],
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                if out.empty:
+                    st.warning("Aucun finaliste n'est confirmé en 1H.")
+                else:
+                    st.success(f"{len(out)} configuration(s) retenue(s).")
+
+                    # DA: charts before dense table
+                    ca,cb = st.columns(2)
+                    with ca:
+                        vf_bar(
+                            out.nlargest(min(12,len(out)), "Score combiné"),
+                            "Valeur","Score combiné","Meilleurs scores"
+                        )
+                    with cb:
+                        vf_bar(
+                            out.nlargest(min(12,len(out)), "Potentiel %"),
+                            "Valeur","Potentiel %","Potentiel des finalistes"
+                        )
+
+                    vf_section("Sélection prioritaire", "Les meilleurs setups du scanner présentés comme un board opérationnel.")
+                    top_cards = out.head(8).reset_index(drop=True)
+                    for i in range(0, len(top_cards), 2):
+                        cols = st.columns(2)
+                        for j,col in enumerate(cols):
+                            idx=i+j
+                            if idx >= len(top_cards):
+                                break
+                            with col:
+                                vf_setup_card(top_cards.iloc[idx], key_prefix=f"scanner_card_{idx}", show_expand=True)
+
+                    with st.expander("📋 Voir le tableau complet"):
+                        visible = [
+                            "Valeur","Ticker","Entreprise","ISIN","Marché","Courtier","Accès","Accès courtier","Source",
+                            "Score combiné","Score","Confirmation 1h","Confirmé 1h",
+                            "Prix","Entrée","Stop","TP1","TP2","Potentiel %","R/R","Qualité"
+                        ]
+                        st.dataframe(
+                            out[[c for c in visible if c in out.columns]],
+                            use_container_width=True,
+                            hide_index=True
+                        )
 
 
 elif mode=="📊 Instrument":
