@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.0 Patrimoine Immobilier Pro"
+APP_VERSION = "V38.1 PEA Dividend Intelligence"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -7083,6 +7083,477 @@ def vf_real_estate_page():
                 "la déclaration fiscale, une expertise immobilière ou les données officielles du prêteur."
             )
 
+
+# ==========================================================
+# V38.1 — PEA DIVIDEND INTELLIGENCE
+# ==========================================================
+
+VF_MONTHS_FR = {
+    1:"Janvier", 2:"Février", 3:"Mars", 4:"Avril",
+    5:"Mai", 6:"Juin", 7:"Juillet", 8:"Août",
+    9:"Septembre", 10:"Octobre", 11:"Novembre", 12:"Décembre"
+}
+
+
+def vf_pea_dividend_transactions(broker=None):
+    """
+    Historical dividend cash flows from the imported PEA transaction ledger.
+    This intentionally uses the broker-imported amounts rather than estimating
+    future dividends from Yahoo.
+    """
+    tx = load_transactions("pea")
+    if tx is None or tx.empty:
+        return pd.DataFrame()
+
+    x = tx.copy()
+
+    if broker and "broker" in x.columns:
+        wanted = _clean_text(broker).lower()
+        x = x[
+            x["broker"].fillna("").astype(str).str.lower().apply(
+                lambda v: wanted in v or v in wanted
+            )
+        ].copy()
+
+    if x.empty:
+        return x
+
+    type_s = x.get("type", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
+    cat_s = x.get("category", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
+    desc_s = x.get("description", pd.Series("", index=x.index)).fillna("").astype(str).str.upper().str.strip()
+
+    # Keep the canonical imported dividend types first, then tolerate common
+    # broker wording so an older BoursoBank export is not silently ignored.
+    dividend_mask = (
+        type_s.isin(DIVIDEND_TYPES)
+        | type_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
+        | cat_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
+        | desc_s.str.contains(r"DIVIDEND|DIVIDENDE", regex=True, na=False)
+    )
+    x = x[dividend_mask].copy()
+
+    if x.empty:
+        return x
+
+    trade_date = pd.to_datetime(
+        x.get("trade_date", pd.Series(pd.NaT, index=x.index)),
+        errors="coerce"
+    )
+    occurred_at = pd.to_datetime(
+        x.get("occurred_at", pd.Series(pd.NaT, index=x.index)),
+        errors="coerce",
+        utc=True
+    ).dt.tz_convert(None)
+
+    x["dividend_date"] = trade_date.fillna(occurred_at)
+    x = x.dropna(subset=["dividend_date"]).copy()
+
+    x["amount_num"] = pd.to_numeric(x.get("amount"), errors="coerce").fillna(0.0)
+    x["fee_num"] = pd.to_numeric(x.get("fee"), errors="coerce").fillna(0.0)
+    x["tax_num"] = pd.to_numeric(x.get("tax"), errors="coerce").fillna(0.0)
+
+    # Main series = exact amount recorded by the broker import.
+    # We do NOT automatically add/subtract fee/tax because broker exports can
+    # encode the amount as gross or already-net depending on the source.
+    x["dividend_amount"] = x["amount_num"]
+    x["withholding_abs"] = x["tax_num"].abs() + x["fee_num"].abs()
+
+    x["year"] = x["dividend_date"].dt.year.astype(int)
+    x["month"] = x["dividend_date"].dt.month.astype(int)
+    x["month_name"] = x["month"].map(VF_MONTHS_FR)
+    x["quarter_num"] = x["dividend_date"].dt.quarter.astype(int)
+    x["quarter"] = "T" + x["quarter_num"].astype(str)
+    x["year_month"] = x["dividend_date"].dt.to_period("M").astype(str)
+
+    x["display_name"] = (
+        x.get("name", pd.Series("", index=x.index))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    x["display_symbol"] = (
+        x.get("symbol", pd.Series("", index=x.index))
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+    x["display_isin"] = (
+        x.get("isin", pd.Series("", index=x.index))
+        .fillna("")
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    def _label(r):
+        name = _clean_text(r.get("display_name"))
+        sym = _clean_text(r.get("display_symbol"), upper=True)
+        isin = _clean_text(r.get("display_isin"), upper=True)
+        if name and sym:
+            return f"{name} • {sym}"
+        return name or sym or isin or "Instrument non renseigné"
+
+    x["instrument_label"] = x.apply(_label, axis=1)
+    return x.sort_values("dividend_date")
+
+
+def vf_pea_dividend_panel(broker=None):
+    vf_section(
+        "💶 Dividendes PEA",
+        "Vision mensuelle, trimestrielle et annuelle à partir des dividendes réellement enregistrés dans l'historique importé."
+    )
+
+    d = vf_pea_dividend_transactions(broker=broker)
+
+    if d is None or d.empty:
+        st.info(
+            "Aucun dividende n'est actuellement identifié dans l'historique de transactions du PEA. "
+            "Pour alimenter ce tableau, importe un relevé de transactions contenant les versements de dividendes."
+        )
+        return
+
+    now = pd.Timestamp.today().normalize()
+    current_year = int(now.year)
+    current_month = int(now.month)
+    current_quarter = int(now.quarter)
+    ttm_start = now - pd.DateOffset(months=12)
+
+    amount = pd.to_numeric(d["dividend_amount"], errors="coerce").fillna(0.0)
+
+    month_total = float(
+        d.loc[
+            (d["year"] == current_year) & (d["month"] == current_month),
+            "dividend_amount"
+        ].sum()
+    )
+    quarter_total = float(
+        d.loc[
+            (d["year"] == current_year) & (d["quarter_num"] == current_quarter),
+            "dividend_amount"
+        ].sum()
+    )
+    year_total = float(d.loc[d["year"] == current_year, "dividend_amount"].sum())
+    ttm_total = float(
+        d.loc[
+            (d["dividend_date"] >= ttm_start) & (d["dividend_date"] <= now),
+            "dividend_amount"
+        ].sum()
+    )
+
+    # Portfolio denominator for trailing dividend yield.
+    try:
+        totals, _ = portfolio_valuation("pea", use_live=False, broker=broker)
+        portfolio_value = float(totals.get("value") or 0)
+        portfolio_cost = float(totals.get("cost") or 0)
+    except Exception:
+        portfolio_value = 0.0
+        portfolio_cost = 0.0
+
+    ttm_yield_value = (ttm_total / portfolio_value * 100) if portfolio_value > 0 else np.nan
+    ttm_yield_cost = (ttm_total / portfolio_cost * 100) if portfolio_cost > 0 else np.nan
+
+    k1,k2,k3,k4 = st.columns(4)
+    k1.metric(VF_MONTHS_FR[current_month], f"{month_total:,.2f} €")
+    k2.metric(f"T{current_quarter} {current_year}", f"{quarter_total:,.2f} €")
+    k3.metric(f"Année {current_year}", f"{year_total:,.2f} €")
+    k4.metric("12 derniers mois", f"{ttm_total:,.2f} €")
+
+    k5,k6,k7,k8 = st.columns(4)
+    k5.metric(
+        "Rendement dividendes TTM / valeur",
+        f"{ttm_yield_value:.2f}%" if pd.notna(ttm_yield_value) else "—"
+    )
+    k6.metric(
+        "Rendement TTM / coût",
+        f"{ttm_yield_cost:.2f}%" if pd.notna(ttm_yield_cost) else "—"
+    )
+    k7.metric("Versements identifiés", f"{len(d)}")
+    k8.metric(
+        "Retenues / frais importés",
+        f"{float(d['withholding_abs'].sum()):,.2f} €"
+    )
+
+    years = sorted(d["year"].dropna().astype(int).unique().tolist(), reverse=True)
+    if current_year not in years:
+        years = [current_year] + years
+
+    selected_year = st.selectbox(
+        "Année analysée",
+        years,
+        index=0,
+        key="pea_dividend_year"
+    )
+
+    dy = d[d["year"] == selected_year].copy()
+    selected_year_total = float(dy["dividend_amount"].sum())
+
+    # Average over elapsed months for current year, otherwise 12 months.
+    denominator_months = current_month if selected_year == current_year else 12
+    average_month = selected_year_total / max(denominator_months, 1)
+
+    y1,y2,y3 = st.columns(3)
+    y1.metric("Total année sélectionnée", f"{selected_year_total:,.2f} €")
+    y2.metric("Moyenne mensuelle", f"{average_month:,.2f} €")
+    y3.metric(
+        "Valeurs distributrices",
+        int(dy["instrument_label"].nunique()) if not dy.empty else 0
+    )
+
+    tab_month, tab_quarter, tab_year, tab_stock, tab_history = st.tabs([
+        "📅 Mois",
+        "🧭 Trimestres",
+        "🗓️ Années",
+        "🏢 Par valeur",
+        "📋 Historique",
+    ])
+
+    # ------------------------------------------------------
+    # Monthly
+    # ------------------------------------------------------
+    with tab_month:
+        monthly = (
+            dy.groupby("month", as_index=False)["dividend_amount"]
+            .sum()
+            if not dy.empty
+            else pd.DataFrame(columns=["month","dividend_amount"])
+        )
+        calendar = pd.DataFrame({"month": range(1,13)})
+        monthly = calendar.merge(monthly, on="month", how="left")
+        monthly["dividend_amount"] = monthly["dividend_amount"].fillna(0.0)
+        monthly["Mois"] = monthly["month"].map(VF_MONTHS_FR)
+        monthly["Ordre"] = monthly["month"]
+
+        chart = (
+            alt.Chart(monthly)
+            .mark_bar()
+            .encode(
+                x=alt.X("Mois:N", sort=list(VF_MONTHS_FR.values()), title=None),
+                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
+                tooltip=[
+                    alt.Tooltip("Mois:N"),
+                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
+                ]
+            )
+            .properties(height=320, title=f"Dividendes mensuels — {selected_year}")
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        monthly_view = monthly[["Mois","dividend_amount"]].rename(
+            columns={"dividend_amount":"Dividendes"}
+        )
+        monthly_view["Part annuelle %"] = np.where(
+            selected_year_total != 0,
+            monthly_view["Dividendes"] / selected_year_total * 100,
+            0.0
+        )
+        st.dataframe(
+            monthly_view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Dividendes": st.column_config.NumberColumn(format="%.2f €"),
+                "Part annuelle %": st.column_config.NumberColumn(format="%.1f %%"),
+            }
+        )
+
+    # ------------------------------------------------------
+    # Quarterly
+    # ------------------------------------------------------
+    with tab_quarter:
+        quarterly = (
+            dy.groupby("quarter_num", as_index=False)["dividend_amount"]
+            .sum()
+            if not dy.empty
+            else pd.DataFrame(columns=["quarter_num","dividend_amount"])
+        )
+        qbase = pd.DataFrame({"quarter_num":[1,2,3,4]})
+        quarterly = qbase.merge(quarterly, on="quarter_num", how="left")
+        quarterly["dividend_amount"] = quarterly["dividend_amount"].fillna(0.0)
+        quarterly["Trimestre"] = "T" + quarterly["quarter_num"].astype(str)
+
+        qchart = (
+            alt.Chart(quarterly)
+            .mark_bar()
+            .encode(
+                x=alt.X("Trimestre:N", sort=["T1","T2","T3","T4"], title=None),
+                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
+                tooltip=[
+                    "Trimestre:N",
+                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
+                ]
+            )
+            .properties(height=300, title=f"Dividendes trimestriels — {selected_year}")
+        )
+        st.altair_chart(qchart, use_container_width=True)
+
+        all_q = (
+            d.groupby(["year","quarter"], as_index=False)["dividend_amount"]
+            .sum()
+        )
+        q_pivot = (
+            all_q.pivot(index="year", columns="quarter", values="dividend_amount")
+            .reindex(columns=["T1","T2","T3","T4"])
+            .fillna(0.0)
+            .sort_index(ascending=False)
+        )
+        q_pivot["Total"] = q_pivot.sum(axis=1)
+        q_pivot = q_pivot.reset_index().rename(columns={"year":"Année"})
+
+        st.markdown("**Comparaison trimestrielle par année**")
+        st.dataframe(
+            q_pivot,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                c: st.column_config.NumberColumn(format="%.2f €")
+                for c in ["T1","T2","T3","T4","Total"]
+            }
+        )
+
+    # ------------------------------------------------------
+    # Annual
+    # ------------------------------------------------------
+    with tab_year:
+        annual = (
+            d.groupby("year", as_index=False)["dividend_amount"]
+            .sum()
+            .sort_values("year")
+        )
+        annual["Année"] = annual["year"].astype(str)
+
+        achart = (
+            alt.Chart(annual)
+            .mark_bar()
+            .encode(
+                x=alt.X("Année:N", title=None),
+                y=alt.Y("dividend_amount:Q", title="Dividendes (€)"),
+                tooltip=[
+                    "Année:N",
+                    alt.Tooltip("dividend_amount:Q", title="Dividendes", format=",.2f")
+                ]
+            )
+            .properties(height=320, title="Évolution annuelle des dividendes")
+        )
+        st.altair_chart(achart, use_container_width=True)
+
+        annual_view = annual[["year","dividend_amount"]].copy()
+        annual_view["Croissance %"] = annual_view["dividend_amount"].pct_change() * 100
+        annual_view = annual_view.sort_values("year", ascending=False).rename(
+            columns={"year":"Année","dividend_amount":"Dividendes"}
+        )
+        st.dataframe(
+            annual_view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Dividendes": st.column_config.NumberColumn(format="%.2f €"),
+                "Croissance %": st.column_config.NumberColumn(format="%.1f %%"),
+            }
+        )
+
+    # ------------------------------------------------------
+    # By holding / issuer
+    # ------------------------------------------------------
+    with tab_stock:
+        stock = (
+            d.groupby(
+                ["instrument_label","display_symbol","display_isin"],
+                dropna=False,
+                as_index=False
+            )
+            .agg(
+                Total=("dividend_amount","sum"),
+                Versements=("dividend_amount","size"),
+                Dernier_versement=("dividend_date","max")
+            )
+        )
+
+        cy = (
+            d[d["year"] == current_year]
+            .groupby("instrument_label")["dividend_amount"]
+            .sum()
+        )
+        ttm = (
+            d[(d["dividend_date"] >= ttm_start) & (d["dividend_date"] <= now)]
+            .groupby("instrument_label")["dividend_amount"]
+            .sum()
+        )
+        stock["Année en cours"] = stock["instrument_label"].map(cy).fillna(0.0)
+        stock["12 derniers mois"] = stock["instrument_label"].map(ttm).fillna(0.0)
+        stock = stock.sort_values("12 derniers mois", ascending=False)
+
+        stock_view = stock.rename(columns={
+            "instrument_label":"Valeur",
+            "display_symbol":"Ticker",
+            "display_isin":"ISIN",
+            "Dernier_versement":"Dernier versement",
+        })
+
+        st.dataframe(
+            stock_view[
+                ["Valeur","Ticker","ISIN","Année en cours","12 derniers mois","Total","Versements","Dernier versement"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Année en cours": st.column_config.NumberColumn(format="%.2f €"),
+                "12 derniers mois": st.column_config.NumberColumn(format="%.2f €"),
+                "Total": st.column_config.NumberColumn(format="%.2f €"),
+                "Dernier versement": st.column_config.DateColumn(format="DD/MM/YYYY"),
+            }
+        )
+
+        if not stock.empty:
+            top = stock.head(12).copy()
+            schart = (
+                alt.Chart(top)
+                .mark_bar()
+                .encode(
+                    x=alt.X("12 derniers mois:Q", title="Dividendes TTM (€)"),
+                    y=alt.Y("instrument_label:N", sort="-x", title=None),
+                    tooltip=[
+                        alt.Tooltip("instrument_label:N", title="Valeur"),
+                        alt.Tooltip("12 derniers mois:Q", title="TTM", format=",.2f")
+                    ]
+                )
+                .properties(height=max(260, 30 * len(top)), title="Principaux contributeurs — 12 derniers mois")
+            )
+            st.altair_chart(schart, use_container_width=True)
+
+    # ------------------------------------------------------
+    # Raw dividend ledger
+    # ------------------------------------------------------
+    with tab_history:
+        hist = d.sort_values("dividend_date", ascending=False).copy()
+        hist_view = pd.DataFrame({
+            "Date": hist["dividend_date"],
+            "Valeur": hist["instrument_label"],
+            "Ticker": hist["display_symbol"],
+            "ISIN": hist["display_isin"],
+            "Montant enregistré": hist["dividend_amount"],
+            "Retenues / frais importés": hist["withholding_abs"],
+            "Courtier": hist.get("broker", ""),
+            "Description": hist.get("description", ""),
+        })
+
+        st.dataframe(
+            hist_view,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Date": st.column_config.DateColumn(format="DD/MM/YYYY"),
+                "Montant enregistré": st.column_config.NumberColumn(format="%.2f €"),
+                "Retenues / frais importés": st.column_config.NumberColumn(format="%.2f €"),
+            }
+        )
+
+    st.caption(
+        "Source : historique de transactions importé dans VISION FUTURE. "
+        "Le montant affiché correspond au montant enregistré par le courtier ; selon le format d'export, "
+        "il peut être brut ou déjà net de certaines retenues. Les dividendes futurs ne sont pas projetés dans cette vue."
+    )
+
 def show_portfolio_page(account, title, broker: str | None = None):
     try:
         reconcile_orphan_portfolio_data()
@@ -8583,6 +9054,7 @@ elif mode=="🏦 PEA":
     brokers = available_brokers("pea")
     broker = st.selectbox("Courtier PEA", brokers if brokers else ["BoursoBank"], key="pea_broker")
     show_portfolio_page("pea","🏦 PEA", broker=broker)
+    vf_pea_dividend_panel(broker=broker)
     vf_capital_recovery_panel(broker=broker)
 
 elif mode=="💼 CTO":
