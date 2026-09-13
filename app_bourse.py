@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.5 Immersive Minimal UI"
+APP_VERSION = "V38.6 Immersive Horizon UI"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -270,15 +270,12 @@ st.markdown('\n<style>\nsection[data-testid="stSidebar"]{\n  background:linear-g
 
 
 # ==========================================================
-# V38.5 — IMMERSIVE MINIMAL UI
+# V38.6 — IMMERSIVE HORIZON UI
 # ==========================================================
-# Final visual layer: intentionally flat/readable. Motion is concentrated
-# in page/tab entry rather than permanent decorative effects.
+# No orb / no floating object. The 3D feeling comes from architectural
+# planes, perspective and a brief entrance movement only.
 st.markdown("""
 <style>
-/* ----------------------------------------------------------
-   TOKENS — quiet, high-contrast, editorial
-   ---------------------------------------------------------- */
 :root{
   --vf-bg:#F7F7F5;
   --vf-surface:#FFFFFF;
@@ -292,12 +289,9 @@ st.markdown("""
   --vf-green:#087A56;
   --vf-red:#B42318;
   --vf-amber:#B54708;
-  --vf-radius:12px;
 }
 
-/* ----------------------------------------------------------
-   GLOBAL — remove visual noise
-   ---------------------------------------------------------- */
+/* Global */
 html,body,.stApp,[data-testid="stAppViewContainer"]{
   background:var(--vf-bg)!important;
   color:var(--vf-text)!important;
@@ -317,7 +311,6 @@ div[data-testid="stMetricValue"],
 }
 hr{border-color:var(--vf-line)!important}
 
-/* Remove accumulated ornamental gradients/shadows */
 .vf-page-shell,.vf-hero,.vf-command-card,.vf-cardline,.vf-alert-row,
 .vf-future-strip,.vf-brand-quote,.vf-topbar,
 div[data-testid="stMetric"],
@@ -328,9 +321,7 @@ div[data-testid="stForm"]{
   box-shadow:none!important;
 }
 
-/* ----------------------------------------------------------
-   SIDEBAR — quieter navigation
-   ---------------------------------------------------------- */
+/* Sidebar */
 section[data-testid="stSidebar"]{
   background:#FCFCFB!important;
   border-right:1px solid var(--vf-line)!important;
@@ -350,9 +341,7 @@ section[data-testid="stSidebar"] button:hover{
   background:#F5F7FB!important;
 }
 
-/* ----------------------------------------------------------
-   TOP BAR — less branding clutter
-   ---------------------------------------------------------- */
+/* Top bar */
 .vf-topbar{
   background:transparent!important;
   border:0!important;
@@ -369,29 +358,25 @@ section[data-testid="stSidebar"] button:hover{
   letter-spacing:.05em!important;
   color:#98A2B3!important;
 }
-.vf-topbar-right{
-  display:none!important;
-}
+.vf-topbar-right{display:none!important}
 
-/* ----------------------------------------------------------
-   PAGE ENTRY — restrained immersive 3D
-   ---------------------------------------------------------- */
+/* Page entrance */
 .vf-page-shell{
   position:relative;
   overflow:hidden;
-  min-height:128px;
+  min-height:126px;
   margin:0 0 18px 0!important;
   border:1px solid var(--vf-line)!important;
   border-radius:14px!important;
   background:
-    linear-gradient(120deg,#FFFFFF 0%,#FBFCFF 72%,#F5F7FF 100%)!important;
-  perspective:1000px;
-  animation:vfPageEnter .54s cubic-bezier(.2,.75,.25,1) both;
+    linear-gradient(115deg,#FFFFFF 0%,#FCFCFD 66%,#F7F9FC 100%)!important;
+  perspective:1200px;
+  animation:vfPageEnter .48s cubic-bezier(.2,.78,.25,1) both;
 }
 .vf-hero{
   position:relative;
-  z-index:4;
-  width:min(72%,920px);
+  z-index:5;
+  width:min(74%,930px);
   margin:0!important;
   padding:25px 28px!important;
   border:0!important;
@@ -399,7 +384,7 @@ section[data-testid="stSidebar"] button:hover{
   background:transparent!important;
 }
 .vf-hero-title{
-  font-size:1.55rem!important;
+  font-size:1.54rem!important;
   line-height:1.14!important;
   font-weight:750!important;
   color:var(--vf-text)!important;
@@ -411,102 +396,112 @@ section[data-testid="stSidebar"] button:hover{
   font-size:.91rem!important;
   line-height:1.5!important;
 }
-.vf-premium-divider{
-  display:none!important;
-}
+.vf-premium-divider{display:none!important}
 
+/* Architectural perspective scene */
 .vf-3d-stage{
   position:absolute;
   z-index:1;
   inset:0 0 0 auto;
-  width:34%;
-  min-width:260px;
+  width:36%;
+  min-width:280px;
   overflow:hidden;
   pointer-events:none;
   transform-style:preserve-3d;
-  opacity:.94;
 }
-.vf-3d-grid{
-  position:absolute;
-  width:230px;
-  height:150px;
-  right:28px;
-  top:25px;
-  border:1px solid rgba(37,99,235,.14);
-  background:
-    linear-gradient(rgba(37,99,235,.07) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(37,99,235,.07) 1px,transparent 1px);
-  background-size:22px 22px;
-  transform:rotateX(64deg) rotateZ(-18deg) translateZ(-14px);
-  transform-origin:center;
-  animation:vfGridFloat 6.5s ease-in-out infinite;
-  border-radius:10px;
-}
-.vf-3d-orb{
-  position:absolute;
-  width:64px;
-  height:64px;
-  right:93px;
-  top:29px;
-  border-radius:50%;
-  background:
-    radial-gradient(circle at 33% 28%,#FFFFFF 0 7%,#AFC5FF 23%,#5A82E8 53%,#244AAB 82%,#16306F 100%);
-  box-shadow:
-    0 17px 34px rgba(37,99,235,.16),
-    inset -8px -10px 18px rgba(11,31,75,.22);
-  animation:vfOrbFloat 5.8s ease-in-out infinite;
-}
-.vf-3d-ring{
-  position:absolute;
-  width:112px;
-  height:42px;
-  right:69px;
-  top:78px;
-  border:1px solid rgba(37,99,235,.27);
-  border-radius:50%;
-  transform:rotateX(68deg) rotateZ(-12deg);
-  animation:vfRingDrift 7s ease-in-out infinite;
-}
-.vf-3d-line{
+.vf-plane{
   position:absolute;
   right:18px;
+  border:1px solid rgba(37,99,235,.13);
+  background:rgba(255,255,255,.55);
+  border-radius:7px;
+  transform-origin:center;
+  backdrop-filter:blur(1px);
+}
+.vf-plane-a{
+  width:230px;height:78px;top:17px;
+  transform:perspective(800px) rotateY(-22deg) rotateX(6deg) translateZ(10px);
+  animation:vfPlaneA .62s cubic-bezier(.2,.8,.2,1) both;
+}
+.vf-plane-b{
+  width:190px;height:64px;top:48px;right:46px;
+  border-color:rgba(139,92,246,.11);
+  transform:perspective(800px) rotateY(-18deg) rotateX(5deg) translateZ(28px);
+  animation:vfPlaneB .68s .04s cubic-bezier(.2,.8,.2,1) both;
+}
+.vf-plane-c{
+  width:145px;height:50px;top:77px;right:78px;
+  border-color:rgba(212,179,106,.16);
+  transform:perspective(800px) rotateY(-14deg) rotateX(4deg) translateZ(44px);
+  animation:vfPlaneC .72s .07s cubic-bezier(.2,.8,.2,1) both;
+}
+.vf-horizon{
+  position:absolute;
+  right:20px;
+  bottom:25px;
+  width:245px;
+  height:1px;
+  background:linear-gradient(90deg,transparent,rgba(37,99,235,.28),rgba(139,92,246,.18),transparent);
+  transform:skewX(-22deg);
+  animation:vfHorizon .62s .08s ease-out both;
+}
+.vf-horizon::after{
+  content:"";
+  position:absolute;
+  right:34px;
+  top:-18px;
+  width:96px;
+  height:36px;
+  border-top:1px solid rgba(37,99,235,.12);
+  border-right:1px solid rgba(37,99,235,.09);
+  transform:skewX(-25deg);
+}
+.vf-scanline{
+  position:absolute;
   top:0;
-  width:1px;
+  right:0;
+  width:34%;
   height:100%;
-  background:linear-gradient(transparent,rgba(37,99,235,.16),transparent);
-  transform:rotate(14deg);
+  background:linear-gradient(90deg,transparent,rgba(37,99,235,.025),transparent);
+  transform:translateX(110%);
+  animation:vfScan .72s .10s ease-out both;
 }
 
 @keyframes vfPageEnter{
-  0%{opacity:0;transform:translateY(13px) rotateX(2.5deg) scale(.992)}
-  65%{opacity:1;transform:translateY(-1px) rotateX(0) scale(1)}
-  100%{opacity:1;transform:none}
+  from{opacity:0;transform:translateY(10px) scale(.995)}
+  to{opacity:1;transform:none}
 }
-@keyframes vfGridFloat{
-  0%,100%{transform:rotateX(64deg) rotateZ(-18deg) translate3d(0,0,-14px)}
-  50%{transform:rotateX(61deg) rotateZ(-15deg) translate3d(-7px,-4px,7px)}
+@keyframes vfPlaneA{
+  from{opacity:0;transform:translate3d(38px,-4px,-25px) rotateY(-31deg) rotateX(9deg)}
+  to{opacity:.82;transform:perspective(800px) rotateY(-22deg) rotateX(6deg) translateZ(10px)}
 }
-@keyframes vfOrbFloat{
-  0%,100%{transform:translate3d(0,0,26px) scale(1)}
-  50%{transform:translate3d(-8px,7px,42px) scale(1.035)}
+@keyframes vfPlaneB{
+  from{opacity:0;transform:translate3d(48px,2px,-12px) rotateY(-27deg) rotateX(8deg)}
+  to{opacity:.72;transform:perspective(800px) rotateY(-18deg) rotateX(5deg) translateZ(28px)}
 }
-@keyframes vfRingDrift{
-  0%,100%{transform:rotateX(68deg) rotateZ(-12deg) translate3d(0,0,12px)}
-  50%{transform:rotateX(71deg) rotateZ(-8deg) translate3d(5px,-4px,22px)}
+@keyframes vfPlaneC{
+  from{opacity:0;transform:translate3d(55px,6px,0) rotateY(-23deg) rotateX(7deg)}
+  to{opacity:.62;transform:perspective(800px) rotateY(-14deg) rotateX(4deg) translateZ(44px)}
+}
+@keyframes vfHorizon{
+  from{opacity:0;transform:translateX(55px) skewX(-22deg)}
+  to{opacity:1;transform:translateX(0) skewX(-22deg)}
+}
+@keyframes vfScan{
+  from{opacity:.6;transform:translateX(110%)}
+  to{opacity:0;transform:translateX(-20%)}
 }
 
-/* Tabs also enter smoothly, without permanent motion. */
+/* Tab entrance */
 div[data-testid="stTabs"] [role="tabpanel"]{
-  animation:vfTabEnter .32s ease-out both;
+  animation:vfTabEnter .27s ease-out both;
 }
 @keyframes vfTabEnter{
-  from{opacity:0;transform:translateY(7px)}
+  from{opacity:0;transform:translateY(6px)}
   to{opacity:1;transform:none}
 }
 
-/* ----------------------------------------------------------
-   CONTENT — flatter hierarchy, denser information
-   ---------------------------------------------------------- */
+/* Sections */
 .vf-section-title{
   position:relative!important;
   margin:20px 0 3px!important;
@@ -515,9 +510,7 @@ div[data-testid="stTabs"] [role="tabpanel"]{
   font-weight:740!important;
   color:var(--vf-text)!important;
 }
-.vf-section-title::before{
-  display:none!important;
-}
+.vf-section-title::before{display:none!important}
 .vf-section-sub{
   margin-bottom:10px!important;
   color:var(--vf-muted)!important;
@@ -525,6 +518,7 @@ div[data-testid="stTabs"] [role="tabpanel"]{
   line-height:1.45!important;
 }
 
+/* Metrics */
 div[data-testid="stMetric"]{
   background:var(--vf-surface)!important;
   border:1px solid var(--vf-line)!important;
@@ -541,10 +535,9 @@ div[data-testid="stMetricValue"]{
   font-size:1.48rem!important;
   font-weight:720!important;
 }
-div[data-testid="stMetricDelta"]{
-  font-size:.72rem!important;
-}
+div[data-testid="stMetricDelta"]{font-size:.72rem!important}
 
+/* Surfaces */
 div[data-testid="stVerticalBlockBorderWrapper"],
 div[data-testid="stExpander"],
 div[data-testid="stForm"],
@@ -553,19 +546,10 @@ div[data-testid="stDataFrame"]{
   border:1px solid var(--vf-line)!important;
   border-radius:10px!important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]{
-  padding:2px!important;
-}
-div[data-testid="stExpander"]{
-  overflow:hidden!important;
-}
+div[data-testid="stVerticalBlockBorderWrapper"]{padding:2px!important}
+div[data-testid="stExpander"],div[data-testid="stDataFrame"]{overflow:hidden!important}
 
-/* Tables: cleaner frame */
-div[data-testid="stDataFrame"]{
-  overflow:hidden!important;
-}
-
-/* Tabs: simple underline instead of pill-heavy navigation */
+/* Tabs */
 div[data-testid="stTabs"] [data-baseweb="tab-list"]{
   gap:4px!important;
   padding:0!important;
@@ -588,7 +572,7 @@ div[data-testid="stTabs"] button[aria-selected="true"]{
   border-bottom:2px solid var(--vf-blue)!important;
 }
 
-/* Inputs/buttons — consistent and compact */
+/* Inputs / buttons */
 button[kind="primary"]{
   background:var(--vf-blue)!important;
   border:1px solid var(--vf-blue)!important;
@@ -602,19 +586,14 @@ button[kind="secondary"]{
   border-radius:8px!important;
   box-shadow:none!important;
 }
-button[kind="primary"]:hover,
-button[kind="secondary"]:hover{
-  filter:brightness(.985);
-}
-div[data-baseweb="select"]>div,
-input,textarea{
+div[data-baseweb="select"]>div,input,textarea{
   background:#FFFFFF!important;
   border-color:var(--vf-line-strong)!important;
   border-radius:8px!important;
   box-shadow:none!important;
 }
 
-/* Callouts — keep meaning, lose ornament */
+/* Callouts */
 .vf-future-strip{
   background:#FFFFFF!important;
   border:1px solid var(--vf-line)!important;
@@ -642,20 +621,11 @@ input,textarea{
   border-radius:10px!important;
   padding:13px 14px!important;
 }
-.vf-command-title,.vf-alert-meta,.vf-command-note{
-  color:#667085!important;
-}
-.vf-command-value{
-  font-size:1.28rem!important;
-  font-weight:730!important;
-}
-.vf-badge,.vf-chip{
-  border-radius:6px!important;
-  font-size:.69rem!important;
-  font-weight:700!important;
-}
+.vf-command-title,.vf-alert-meta,.vf-command-note{color:#667085!important}
+.vf-command-value{font-size:1.28rem!important;font-weight:730!important}
+.vf-badge,.vf-chip{border-radius:6px!important;font-size:.69rem!important;font-weight:700!important}
 
-/* Decorative items are intentionally toned down. */
+/* Tone down decorative legacy elements */
 .vf-brand-line,.vf-goldline{
   height:1px!important;
   background:#D0D5DD!important;
@@ -669,30 +639,26 @@ input,textarea{
   font-size:.94rem!important;
 }
 .vf-brand-panorama{
-  min-height:108px!important;
+  min-height:104px!important;
   border-radius:10px!important;
   border-color:var(--vf-line)!important;
-  filter:saturate(.65) contrast(.94)!important;
+  filter:saturate(.58) contrast(.94)!important;
 }
 
-/* Mobile / narrow screens */
 @media (max-width:900px){
-  .vf-page-shell{min-height:118px}
+  .vf-page-shell{min-height:116px}
   .vf-hero{width:100%;padding:21px 20px 22px!important}
   .vf-hero-title{font-size:1.34rem!important}
   .vf-hero-sub{max-width:78%}
-  .vf-3d-stage{width:38%;min-width:190px;opacity:.62}
-  .vf-3d-grid{right:-20px}
-  .vf-3d-orb{right:24px;width:50px;height:50px}
-  .vf-3d-ring{right:7px}
+  .vf-3d-stage{width:40%;min-width:190px;opacity:.54}
+  .vf-plane-a{right:-22px}
+  .vf-plane-b{right:0}
+  .vf-plane-c{right:28px}
+  .vf-horizon{right:-18px}
 }
 
-/* Accessibility: honor reduced-motion preferences */
 @media (prefers-reduced-motion: reduce){
-  .vf-page-shell,
-  .vf-3d-grid,
-  .vf-3d-orb,
-  .vf-3d-ring,
+  .vf-page-shell,.vf-plane-a,.vf-plane-b,.vf-plane-c,.vf-horizon,.vf-scanline,
   div[data-testid="stTabs"] [role="tabpanel"]{
     animation:none!important;
     transition:none!important;
@@ -707,10 +673,11 @@ def vf_page_header(title: str, subtitle: str = ""):
     st.markdown(
         '<div class="vf-page-shell">'
         '<div class="vf-3d-stage" aria-hidden="true">'
-        '<div class="vf-3d-grid"></div>'
-        '<div class="vf-3d-ring"></div>'
-        '<div class="vf-3d-orb"></div>'
-        '<div class="vf-3d-line"></div>'
+        '<div class="vf-plane vf-plane-a"></div>'
+        '<div class="vf-plane vf-plane-b"></div>'
+        '<div class="vf-plane vf-plane-c"></div>'
+        '<div class="vf-horizon"></div>'
+        '<div class="vf-scanline"></div>'
         '</div>'
         f'<div class="vf-hero"><div class="vf-hero-title">{title}</div>{sub}</div>'
         '</div>',
