@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.8 Property Management"
+APP_VERSION = "V39.0 XTB Project 0 Linked Journal"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -6555,6 +6555,11 @@ def vf_xtb_microtrade_desk():
 # ==========================================================
 TRADE_JOURNAL_TABLE = "trade_journal"
 
+# V39.0 — budget opérationnel du projet XTB.
+XTB_PROJECT_ZERO_INITIAL_CAPITAL = 1000.0
+XTB_PROJECT_ZERO_ACCOUNT = "cto_xtb"
+XTB_PROJECT_ZERO_BROKER = "XTB"
+
 
 def vf_trade_id(symbol):
     raw = f"{_clean_text(symbol, upper=True)}|{datetime.utcnow().isoformat()}|{np.random.random()}"
@@ -6693,6 +6698,13 @@ def vf_register_trade_plan(
     if pd.isna(actual):
         actual = entry
 
+    can_commit, available_cash = vf_xtb_project_zero_can_commit(capital_committed)
+    if not can_commit:
+        return False, (
+            f"Capital Project 0 insuffisant : {float(capital_committed or 0):.2f} € requis "
+            f"pour {available_cash:.2f} € disponibles"
+        )
+
     payload = {
         "trade_id": vf_trade_id(symbol),
         "account": "cto_xtb",
@@ -6757,6 +6769,14 @@ def vf_register_manual_open_trade(
         risk_amount = abs(float(actual_entry) - float(stop)) * qty
 
     capital_committed = float(actual_entry) * qty
+
+    can_commit, available_cash = vf_xtb_project_zero_can_commit(capital_committed)
+    if account == XTB_PROJECT_ZERO_ACCOUNT and not can_commit:
+        return False, (
+            f"Capital Project 0 insuffisant : {capital_committed:.2f} € requis "
+            f"pour {available_cash:.2f} € disponibles"
+        )
+
     rr = np.nan
     upside = np.nan
 
@@ -6909,6 +6929,191 @@ def vf_trade_journal_stats(df):
     }
 
 
+def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
+    """
+    Project 0 is driven by the XTB Trade Journal.
+
+    Accounting:
+    - initial stake = 1,000 EUR
+    - OPEN trades reserve their committed capital
+    - CLOSED trades release principal and add/subtract realized P/L
+    - OPEN live P/L changes the project equity, not the available cash
+    - no synthetic rows are written to the broker transaction ledger, avoiding
+      double counting if a real XTB export is imported later.
+    """
+    initial = float(XTB_PROJECT_ZERO_INITIAL_CAPITAL)
+
+    if journal_df is None:
+        journal_df = vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT)
+
+    if journal_df is None or journal_df.empty:
+        return {
+            "initial_capital": initial,
+            "available_cash": initial,
+            "capital_committed": 0.0,
+            "open_market_value": 0.0,
+            "open_unrealized_pnl": 0.0,
+            "realized_pnl": 0.0,
+            "project_equity": initial,
+            "project_pnl": 0.0,
+            "return_pct": 0.0,
+            "risk_open": 0.0,
+            "open_count": 0,
+            "closed_count": 0,
+            "exposure_pct": 0.0,
+            "open_detail": pd.DataFrame(),
+        }
+
+    df = journal_df.copy()
+    df["status_norm"] = df["status"].fillna("").astype(str).str.upper().str.strip()
+
+    opened = df[df["status_norm"] == "OPEN"].copy()
+    closed = df[df["status_norm"] == "CLOSED"].copy()
+
+    realized = float(
+        pd.to_numeric(closed.get("realized_pnl"), errors="coerce")
+        .fillna(0.0)
+        .sum()
+    ) if not closed.empty else 0.0
+
+    detail_rows = []
+    committed_total = 0.0
+    live_value_total = 0.0
+    open_risk_total = 0.0
+
+    for _, row in opened.iterrows():
+        symbol = _clean_text(row.get("symbol"), upper=True)
+        qty = int(_vf_num(row.get("quantity")) or 0)
+        entry = _vf_num(row.get("actual_entry"))
+        committed = _vf_num(row.get("capital_committed"))
+
+        if pd.isna(committed) or committed <= 0:
+            committed = (float(entry) * qty) if pd.notna(entry) and qty > 0 else 0.0
+
+        risk = _vf_num(row.get("risk_amount"))
+        if pd.isna(risk):
+            risk = 0.0
+
+        live_price = np.nan
+        if refresh_quotes and symbol:
+            try:
+                live_price = _vf_num(live_quote(symbol).get("price"))
+            except Exception:
+                live_price = np.nan
+
+        if pd.isna(live_price) or live_price <= 0:
+            live_price = entry
+
+        live_value = (
+            float(live_price) * qty
+            if pd.notna(live_price) and qty > 0
+            else float(committed or 0)
+        )
+        unrealized = live_value - float(committed or 0)
+
+        committed_total += float(committed or 0)
+        live_value_total += float(live_value or 0)
+        open_risk_total += float(risk or 0)
+
+        detail_rows.append({
+            "trade_id": row.get("trade_id"),
+            "Ticker": symbol,
+            "Nom": _clean_text(row.get("name")) or symbol,
+            "Qté": qty,
+            "Entrée": float(entry) if pd.notna(entry) else np.nan,
+            "Cours live": float(live_price) if pd.notna(live_price) else np.nan,
+            "Capital engagé": float(committed or 0),
+            "Valeur live": float(live_value or 0),
+            "P/L latent": float(unrealized or 0),
+            "Risque initial": float(risk or 0),
+        })
+
+    # A closed trade returns its principal to cash; only its P/L changes the
+    # project total. Therefore available cash = initial + realized - OPEN cost.
+    available_cash = initial + realized - committed_total
+    open_unrealized = live_value_total - committed_total
+    project_equity = available_cash + live_value_total
+    project_pnl = project_equity - initial
+    return_pct = (project_pnl / initial * 100.0) if initial else 0.0
+    exposure_pct = (
+        committed_total / project_equity * 100.0
+        if project_equity > 0 else 0.0
+    )
+
+    return {
+        "initial_capital": initial,
+        "available_cash": float(available_cash),
+        "capital_committed": float(committed_total),
+        "open_market_value": float(live_value_total),
+        "open_unrealized_pnl": float(open_unrealized),
+        "realized_pnl": float(realized),
+        "project_equity": float(project_equity),
+        "project_pnl": float(project_pnl),
+        "return_pct": float(return_pct),
+        "risk_open": float(open_risk_total),
+        "open_count": int(len(opened)),
+        "closed_count": int(len(closed)),
+        "exposure_pct": float(exposure_pct),
+        "open_detail": pd.DataFrame(detail_rows),
+    }
+
+
+def vf_xtb_project_zero_can_commit(amount, journal_df=None):
+    metrics = vf_xtb_project_zero_metrics(
+        journal_df=journal_df,
+        refresh_quotes=False
+    )
+    needed = float(_vf_num(amount) if pd.notna(_vf_num(amount)) else 0.0)
+    available = float(metrics.get("available_cash", 0.0) or 0.0)
+    return needed <= available + 1e-9, available
+
+
+def vf_xtb_project_zero_curve(journal_df=None):
+    """
+    Realized equity curve from the 1,000 EUR baseline.
+    Current live project equity is appended by the caller.
+    """
+    initial = float(XTB_PROJECT_ZERO_INITIAL_CAPITAL)
+    if journal_df is None:
+        journal_df = vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT)
+
+    rows = [{
+        "Date": pd.Timestamp(date.today()) - pd.Timedelta(days=1),
+        "Valeur Project 0": initial,
+    }]
+
+    if journal_df is not None and not journal_df.empty:
+        closed = journal_df[
+            journal_df["status"].fillna("").astype(str).str.upper() == "CLOSED"
+        ].copy()
+        if not closed.empty:
+            closed["_dt"] = pd.to_datetime(closed["closed_at"], errors="coerce")
+            closed["_pnl"] = pd.to_numeric(
+                closed["realized_pnl"], errors="coerce"
+            ).fillna(0.0)
+            closed = closed.dropna(subset=["_dt"]).sort_values("_dt")
+            running = initial
+            rows = []
+            first_open = pd.to_datetime(
+                journal_df.get("opened_at"),
+                errors="coerce"
+            ).min()
+            if pd.isna(first_open):
+                first_open = pd.Timestamp(date.today())
+            rows.append({
+                "Date": first_open - pd.Timedelta(seconds=1),
+                "Valeur Project 0": initial,
+            })
+            for _, rr in closed.iterrows():
+                running += float(rr["_pnl"])
+                rows.append({
+                    "Date": rr["_dt"],
+                    "Valeur Project 0": running,
+                })
+
+    return pd.DataFrame(rows)
+
+
 def vf_trade_journal_page():
     vf_page_header(
         "📓 Trade Journal",
@@ -6922,6 +7127,41 @@ def vf_trade_journal_page():
         st.warning(
             "La table Supabase trade_journal n'est pas encore disponible. "
             "Le journal fonctionne temporairement dans la session, mais ne survivra pas à un redémarrage."
+        )
+
+    # ------------------------------------------------------
+    # V39.0 — XTB Project 0 linkage
+    # ------------------------------------------------------
+    journal_project_df = vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT)
+    project = vf_xtb_project_zero_metrics(
+        journal_df=journal_project_df,
+        refresh_quotes=True
+    )
+
+    vf_section(
+        "🔗 XTB Project 0",
+        "Le Trade Journal est maintenant le registre opérationnel du CTO XTB Project 0."
+    )
+    pj1,pj2,pj3,pj4,pj5 = st.columns(5)
+    pj1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
+    pj2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
+    pj3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
+    pj4.metric(
+        "Valeur Project 0",
+        f"{project['project_equity']:,.2f} €",
+        f"{project['project_pnl']:+.2f} €"
+    )
+    pj5.metric("Performance", f"{project['return_pct']:+.2f}%")
+
+    st.caption(
+        "Un trade OPEN réserve automatiquement son capital dans Project 0. "
+        "À la clôture, le capital est libéré et le P/L réalisé revient dans le cash disponible."
+    )
+
+    if project["available_cash"] < 0:
+        st.error(
+            "Le journal contient actuellement plus de capital engagé que le budget Project 0. "
+            "Clôture/corrige les lignes concernées avant d'ajouter un nouveau trade."
         )
 
     # ------------------------------------------------------
@@ -7044,12 +7284,29 @@ def vf_trade_journal_page():
             gain_tp2 = max((tp2 - buy_price) * int(qty), 0.0) if buy_price and tp2 else 0.0
 
             p1,p2,p3,p4 = st.columns(4)
-            p1.metric("Capital engagé", f"{buy_price * int(qty):.2f} €")
+            capital_to_commit = buy_price * int(qty)
+            p1.metric("Capital engagé", f"{capital_to_commit:.2f} €")
             p2.metric("Risque jusqu'au SL", f"-{risk_eur:.2f} €")
             p3.metric("Gain théorique TP1", f"+{gain_tp1:.2f} €")
             p4.metric("Gain théorique TP2", f"+{gain_tp2:.2f} €")
 
+            current_project = vf_xtb_project_zero_metrics(
+                journal_df=vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT),
+                refresh_quotes=False
+            )
+            project_cash = float(current_project.get("available_cash", 0) or 0)
+            st.caption(
+                f"Cash disponible Project 0 avant ce trade : {project_cash:,.2f} € • "
+                f"Après engagement : {project_cash - capital_to_commit:,.2f} €"
+            )
+
             valid = True
+            if capital_to_commit > project_cash + 1e-9:
+                st.error(
+                    f"Capital insuffisant : ce trade requiert {capital_to_commit:.2f} € "
+                    f"pour {project_cash:.2f} € disponibles dans Project 0."
+                )
+                valid = False
             if sl >= buy_price:
                 st.error("Pour un trade acheteur, le Stop Loss doit être sous le prix d'achat.")
                 valid = False
@@ -7334,87 +7591,145 @@ def vf_trade_journal_page():
 
 def vf_xtb_zero_panel():
     """
-    CTO XTB 'Project Zero': starts conceptually from €0 and separates
-    deposits from actual investment performance.
+    V39.0 — CTO XTB Project 0.
+
+    The project starts with a fixed 1,000 EUR operational stake and is driven
+    directly by the XTB Trade Journal. This avoids double counting with future
+    real broker statement imports.
     """
     vf_section(
-        "🚀 XTB Project Zero",
-        "Suivre une progression réelle depuis 0 € : capital versé, valeur actuelle et performance générée séparément."
+        "🚀 XTB Project 0 — mise de départ 1 000 €",
+        "Le Trade Journal pilote directement le capital disponible, les positions ouvertes et la performance du projet."
     )
 
-    metrics, positions, tx, realized, _ = performance_metrics("cto_xtb")
-    save_performance_snapshot("cto_xtb", metrics)
-
-    contributions = float(metrics.get("contributions", 0) or 0)
-    withdrawals = float(metrics.get("withdrawals", 0) or 0)
-    net_contrib = contributions - withdrawals
-
-    assets = float(metrics.get("assets_value", 0) or 0)
-    cash = metrics.get("cash_estimate")
-    equity = metrics.get("equity_estimate")
-    if equity is None:
-        equity = assets
-    equity = float(equity or 0)
-
-    # If no contribution history exists yet, the tracker remains genuinely at 0.
-    gain = equity - net_contrib if net_contrib > 0 else 0.0
-    return_pct = gain / net_contrib * 100 if net_contrib > 0 else 0.0
-
-    z1,z2,z3,z4 = st.columns(4)
-    z1.metric("Point de départ", "0 €")
-    z2.metric("Capital net versé", f"{net_contrib:,.0f} €")
-    z3.metric("Valeur suivie", f"{equity:,.0f} €")
-    z4.metric("Performance créée", f"{gain:+,.0f} €", f"{return_pct:+.2f}%")
-
-    st.caption(
-        "Les dépôts ne sont pas comptés comme des gains. La performance créée correspond à la valeur "
-        "du compte moins les apports nets, sous réserve que l'historique XTB importé soit complet."
+    journal = vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT)
+    project = vf_xtb_project_zero_metrics(
+        journal_df=journal,
+        refresh_quotes=True
     )
 
-    hist = load_performance_snapshots("cto_xtb").copy()
-    if hist.empty:
-        zero = pd.DataFrame([{
-            "snapshot_date": pd.Timestamp(date.today()),
-            "equity_estimate": 0.0,
-            "net_contributions": 0.0,
-            "assets_value": 0.0,
-        }])
-        hist = zero
-    else:
-        hist["snapshot_date"] = pd.to_datetime(hist["snapshot_date"], errors="coerce")
-        first_date = hist["snapshot_date"].min()
-        baseline_date = first_date - pd.Timedelta(days=1)
-        baseline = pd.DataFrame([{
-            "snapshot_date": baseline_date,
-            "equity_estimate": 0.0,
-            "net_contributions": 0.0,
-            "assets_value": 0.0,
-        }])
-        hist = pd.concat([baseline, hist], ignore_index=True).sort_values("snapshot_date")
+    # Main project KPIs
+    z1,z2,z3,z4,z5 = st.columns(5)
+    z1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
+    z2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
+    z3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
+    z4.metric(
+        "Valeur Project 0",
+        f"{project['project_equity']:,.2f} €",
+        f"{project['project_pnl']:+.2f} €"
+    )
+    z5.metric("Performance totale", f"{project['return_pct']:+.2f}%")
 
-    vf_line(
-        hist,
-        "snapshot_date",
-        ["equity_estimate","net_contributions"],
-        "Évolution depuis zéro — valeur du compte vs capital versé"
+    s1,s2,s3,s4 = st.columns(4)
+    s1.metric("P/L réalisé", f"{project['realized_pnl']:+.2f} €")
+    s2.metric("P/L latent", f"{project['open_unrealized_pnl']:+.2f} €")
+    s3.metric("Risque OPEN", f"{project['risk_open']:.2f} €")
+    s4.metric(
+        "Exposition",
+        f"{project['exposure_pct']:.1f}%",
+        f"{project['open_count']} trade(s) OPEN"
     )
 
-    if net_contrib <= 0:
-        st.info(
-            "Le CTO XTB est actuellement au point zéro. Dès le premier dépôt/import, "
-            "VISION FUTURE séparera automatiquement capital apporté et performance réellement générée."
+    st.success(
+        "🔗 Liaison active : Trade Journal ↔ CTO XTB Project 0. "
+        "Les ouvertures réservent du cash et les clôtures réinjectent automatiquement le capital + le P/L."
+    )
+
+    if project["available_cash"] < 0:
+        st.error(
+            "Le journal dépasse actuellement le budget de 1 000 €. "
+            "Aucun nouveau trade ne sera accepté tant que le cash disponible reste négatif."
         )
-    else:
-        milestones = [100, 500, 1000, 2500, 5000, 10000]
-        next_milestone = next((x for x in milestones if equity < x), None)
-        if next_milestone:
-            progress = min(equity / next_milestone, 1.0)
-            st.markdown(f"**Prochain palier : {next_milestone:,.0f} €**")
-            st.progress(progress)
-            st.caption(f"{equity:,.0f} € / {next_milestone:,.0f} €")
+
+    # Live open positions from the journal
+    detail = project.get("open_detail")
+    if isinstance(detail, pd.DataFrame) and not detail.empty:
+        vf_section(
+            "Positions du projet",
+            "Ces lignes proviennent directement du Trade Journal XTB."
+        )
+        st.dataframe(
+            detail[[
+                "Ticker","Nom","Qté","Entrée","Cours live",
+                "Capital engagé","Valeur live","P/L latent","Risque initial"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Entrée": st.column_config.NumberColumn(format="%.4f"),
+                "Cours live": st.column_config.NumberColumn(format="%.4f"),
+                "Capital engagé": st.column_config.NumberColumn(format="%.2f €"),
+                "Valeur live": st.column_config.NumberColumn(format="%.2f €"),
+                "P/L latent": st.column_config.NumberColumn(format="%+.2f €"),
+                "Risque initial": st.column_config.NumberColumn(format="%.2f €"),
+            }
+        )
+
+    # Equity curve: realized history + current live point
+    curve = vf_xtb_project_zero_curve(journal)
+    current_point = pd.DataFrame([{
+        "Date": pd.Timestamp.utcnow(),
+        "Valeur Project 0": project["project_equity"],
+    }])
+    curve = pd.concat([curve, current_point], ignore_index=True)
+    curve = curve.dropna(subset=["Date"]).sort_values("Date")
+    vf_line(
+        curve,
+        "Date",
+        ["Valeur Project 0"],
+        "Évolution du Project 0 depuis la mise initiale de 1 000 €"
+    )
+
+    # Milestones are based on project equity, not deposits.
+    milestones = [1100, 1250, 1500, 2000, 2500, 5000, 10000]
+    next_milestone = next(
+        (x for x in milestones if project["project_equity"] < x),
+        None
+    )
+    if next_milestone:
+        base = project["initial_capital"]
+        denominator = max(next_milestone - base, 1.0)
+        progress = (project["project_equity"] - base) / denominator
+        progress = min(max(progress, 0.0), 1.0)
+        st.markdown(f"**Prochain palier Project 0 : {next_milestone:,.0f} €**")
+        st.progress(progress)
+        st.caption(
+            f"{project['project_equity']:,.2f} € / {next_milestone:,.0f} € "
+            f"• objectif depuis la mise initiale : +{next_milestone-base:,.0f} €"
+        )
+
+    # Broker reconciliation remains separate so future imported statements do
+    # not double count journal trades.
+    actual_metrics, actual_positions, actual_tx, _, _ = performance_metrics(
+        XTB_PROJECT_ZERO_ACCOUNT
+    )
+    has_broker_data = (
+        (actual_positions is not None and not actual_positions.empty)
+        or (actual_tx is not None and not actual_tx.empty)
+    )
+
+    if has_broker_data:
+        with st.expander("🏦 Rapprochement avec les données réellement importées de XTB"):
+            broker_equity = actual_metrics.get("equity_estimate")
+            broker_assets = float(actual_metrics.get("assets_value", 0) or 0)
+            b1,b2,b3 = st.columns(3)
+            b1.metric("Actifs importés XTB", f"{broker_assets:,.2f} €")
+            b2.metric(
+                "Valeur compte importée",
+                f"{float(broker_equity):,.2f} €"
+                if broker_equity is not None else "—"
+            )
+            if broker_equity is not None:
+                gap = project["project_equity"] - float(broker_equity)
+                b3.metric("Écart Project 0 / XTB", f"{gap:+.2f} €")
+            else:
+                b3.metric("Écart Project 0 / XTB", "—")
+            st.caption(
+                "Le Journal pilote le Project 0. Les imports XTB servent de contrôle/réconciliation "
+                "et ne sont pas additionnés au projet afin d'éviter un double comptage."
+            )
 
     vf_xtb_microtrade_desk()
-
 
 
 
@@ -8080,15 +8395,81 @@ def vf_re_pct(v):
 
 
 def vf_re_property_labels(props):
+    """
+    Returns unique UI labels for every property.
+
+    V38.9 fix:
+    two properties can legitimately have the same name/city. Previous versions
+    used the label as a dict key, so one duplicate silently overwrote the other
+    and could no longer be selected/deleted from the UI.
+    """
     labels = {}
     if props is None or props.empty:
         return labels
+
+    base_counts = {}
+    rows = []
+
     for _, r in props.iterrows():
         city = _clean_text(r.get("city"))
         name = _clean_text(r.get("name")) or "Bien"
-        label = f"{name}" + (f" • {city}" if city else "")
-        labels[label] = r.to_dict()
+        base = f"{name}" + (f" • {city}" if city else "")
+        base_counts[base] = base_counts.get(base, 0) + 1
+        rows.append((base, r.to_dict()))
+
+    used = {}
+    for base, row in rows:
+        if base_counts.get(base, 0) <= 1:
+            label = base
+        else:
+            price = vf_re_num(row.get("purchase_price"))
+            short_id = str(row.get("id") or "")[:6]
+            price_txt = f"{price:,.0f} €".replace(",", " ")
+            label = f"{base} • {price_txt} • {short_id}"
+
+        # Absolute fallback in the unlikely event labels are still identical.
+        used[label] = used.get(label, 0) + 1
+        if used[label] > 1:
+            label = f"{label} • #{used[label]}"
+
+        labels[label] = row
+
     return labels
+
+
+def vf_re_duplicate_candidates(props, payload, exclude_id=None):
+    """
+    Prevents accidental double creation of the same property.
+    This is intentionally an application-level check, not a DB UNIQUE
+    constraint, because a user may legitimately own several units at the same
+    address.
+    """
+    if props is None or props.empty:
+        return []
+
+    def norm(v):
+        s = _clean_text(v).lower().strip()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    target_name = norm(payload.get("name"))
+    target_address = norm(payload.get("address"))
+    target_city = norm(payload.get("city"))
+
+    matches = []
+    for _, row in props.iterrows():
+        rid = str(row.get("id") or "")
+        if exclude_id and rid == str(exclude_id):
+            continue
+
+        same_name = target_name and norm(row.get("name")) == target_name
+        same_address = target_address and norm(row.get("address")) == target_address
+        same_city = (not target_city) or norm(row.get("city")) == target_city
+
+        if same_name and same_address and same_city:
+            matches.append(row.to_dict())
+
+    return matches
 
 
 def vf_re_delete_flow(flow_id):
@@ -8490,6 +8871,15 @@ def vf_real_estate_page():
                 help="Décoche pour archiver le bien sans supprimer son historique."
             )
 
+            allow_duplicate = False
+            if not asset_id:
+                allow_duplicate = st.checkbox(
+                    "Autoriser volontairement un doublon avec le même nom et la même adresse",
+                    value=False,
+                    key=f"re_prop_allow_duplicate_{asset_widget_key}",
+                    help="À laisser décoché dans la grande majorité des cas."
+                )
+
             acquisition_total = (
                 purchase_price
                 + notary_fees
@@ -8518,38 +8908,57 @@ def vf_real_estate_page():
             if not name.strip():
                 st.error("Le nom du bien est obligatoire.")
             else:
-                try:
-                    vf_re_save_property({
-                        "id": asset_id,
-                        "name": name.strip(),
-                        "address": address.strip() or None,
-                        "postal_code": postal_code.strip() or None,
-                        "city": city.strip() or None,
-                        "property_type": ptype,
-                        "tax_regime": tax_regime,
-                        "purchase_date": vf_re_iso(purchase_date),
-                        "purchase_price": purchase_price,
-                        "notary_fees": notary_fees,
-                        "agency_fees": agency_fees,
-                        "initial_works": initial_works,
-                        "initial_furniture": initial_furniture,
-                        "other_acquisition_costs": other_costs,
-                        "surface_m2": surface,
-                        "monthly_rent_target": monthly_rent,
-                        "monthly_tenant_charges_target": monthly_charges,
-                        "ownership_share_pct": share,
-                        "notes": notes.strip() or None,
-                        "active": active,
-                    })
-                    vf_safe_cache_clear()
-                    st.success(
-                        "Bien mis à jour."
-                        if asset_id
-                        else "Bien créé."
+                payload = {
+                    "id": asset_id,
+                    "name": name.strip(),
+                    "address": address.strip() or None,
+                    "postal_code": postal_code.strip() or None,
+                    "city": city.strip() or None,
+                    "property_type": ptype,
+                    "tax_regime": tax_regime,
+                    "purchase_date": vf_re_iso(purchase_date),
+                    "purchase_price": purchase_price,
+                    "notary_fees": notary_fees,
+                    "agency_fees": agency_fees,
+                    "initial_works": initial_works,
+                    "initial_furniture": initial_furniture,
+                    "other_acquisition_costs": other_costs,
+                    "surface_m2": surface,
+                    "monthly_rent_target": monthly_rent,
+                    "monthly_tenant_charges_target": monthly_charges,
+                    "ownership_share_pct": share,
+                    "notes": notes.strip() or None,
+                    "active": active,
+                }
+
+                duplicates = vf_re_duplicate_candidates(
+                    props,
+                    payload,
+                    exclude_id=asset_id
+                )
+
+                if not asset_id and duplicates and not allow_duplicate:
+                    duplicate_names = ", ".join(
+                        f"{_clean_text(d.get('name'))} ({vf_re_currency(d.get('purchase_price'))})"
+                        for d in duplicates[:3]
                     )
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Enregistrement impossible : {exc}")
+                    st.error(
+                        "Un bien avec le même nom et la même adresse existe déjà : "
+                        f"{duplicate_names}. Sélectionne « Modifier un bien » pour le corriger, "
+                        "ou coche explicitement l'autorisation de doublon si c'est volontaire."
+                    )
+                else:
+                    try:
+                        vf_re_save_property(payload)
+                        vf_safe_cache_clear()
+                        st.success(
+                            "Bien mis à jour."
+                            if asset_id
+                            else "Bien créé."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Enregistrement impossible : {exc}")
 
         # --------------------------------------------------------------
         # Valuation history for an existing property
@@ -8661,12 +9070,18 @@ def vf_real_estate_page():
                     key=f"re_delete_imports_{asset_widget_key}"
                 )
 
+                property_short_id = str(asset_id)[:6]
+                st.caption(
+                    f"Identifiant du bien sélectionné : {property_short_id} • "
+                    f"Prix d'achat : {vf_re_currency(selected_asset.get('purchase_price'))}"
+                )
+
                 confirm_text = st.text_input(
-                    f'Pour confirmer, tape exactement : SUPPRIMER {selected_asset.get("name")}',
+                    f'Pour confirmer, tape exactement : SUPPRIMER {property_short_id}',
                     key=f"re_delete_confirm_{asset_widget_key}"
                 )
 
-                expected = f'SUPPRIMER {selected_asset.get("name")}'
+                expected = f'SUPPRIMER {property_short_id}'
                 confirmed_delete = confirm_text.strip() == expected
 
                 if st.button(
