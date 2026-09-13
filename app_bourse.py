@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.6 Immersive Horizon UI"
+APP_VERSION = "V38.7 Immobilier Import Intelligence"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -1485,6 +1485,20 @@ def delete_import_record(import_row: dict, delete_generated_data: bool = False):
                     .execute()
                 )
 
+        elif doc_type in {"IMMOBILIER_ACCOUNTING", "REAL_ESTATE_ACCOUNTING"}:
+            if file_hash:
+                try:
+                    (
+                        SUPABASE.table("real_estate_cashflows")
+                        .delete()
+                        .eq("source_import_hash", file_hash)
+                        .execute()
+                    )
+                except Exception:
+                    # Si la migration V38.7 n'est pas encore présente,
+                    # on conserve les flux plutôt que de supprimer à l'aveugle.
+                    pass
+
         elif doc_type == "TRANSACTIONS":
             linked_rows = []
             if file_hash:
@@ -1562,7 +1576,7 @@ def delete_import_record(import_row: dict, delete_generated_data: bool = False):
 
     # Réconciliation finale V8.3 :
     # s'il ne reste AUCUN import pour compte + courtier, on supprime les données orphelines.
-    if delete_generated_data and broker:
+    if delete_generated_data and broker and account != "immobilier":
         remaining_imports = (
             SUPABASE.table("imports")
             .select("id")
@@ -2225,7 +2239,12 @@ ALIASES = {
     "currency": ["currency","devise","ccy"],
     "purchase_date": ["purchasedate","buydate","acquisitiondate","dateachat","lastmovementdate"],
     "datetime": ["datetime","timestamp","occurredat","executiontime"],
-    "date": ["date","tradedate","bookingdate","valuedate"],
+    "date": [
+        "date","tradedate","bookingdate","valuedate",
+        "dateoperation","date opération","dateoperationcomptable",
+        "date mouvement","datemouvement","dateecriture","date écriture",
+        "datecomptable","date comptable"
+    ],
     "category": ["category","categorie","catégorie"],
     "type": ["type","transactiontype","operationtype","opération","operation"],
     "asset_class": ["assetclass","asset_class","classedactif","classeactif"],
@@ -2235,9 +2254,27 @@ ALIASES = {
     "tax": ["tax","taxes","impot","impôt","prelevement","prélèvement"],
     "description": ["description","details","détails","memo","comment"],
     "transaction_id": ["transactionid","transaction_id","id","operationid","tradeid"],
-    "label": ["label","libelle","libellé"],
-    "debit": ["debit","débit"],
-    "credit": ["credit","crédit"],
+    "label": [
+        "label","libelle","libellé","intitule","intitulé",
+        "libelleoperation","libellé opération","libelle operation",
+        "libelleecriture","libellé écriture","libelle ecriture",
+        "designation","désignation","nature","motif"
+    ],
+    "debit": [
+        "debit","débit","montantdebit","montant débit",
+        "debitproprietaire","débit propriétaire","debit propriétaire",
+        "debitbailleur","débit bailleur"
+    ],
+    "credit": [
+        "credit","crédit","montantcredit","montant crédit",
+        "creditproprietaire","crédit propriétaire","credit propriétaire",
+        "creditbailleur","crédit bailleur"
+    ],
+    "reference": [
+        "reference","référence","ref","piece","pièce","numpiece","num pièce",
+        "numero piece","numéro pièce","ecriture","écriture","idoperation",
+        "id opération","operationid"
+    ],
 }
 
 ISIN_TO_TICKER = {
@@ -2509,14 +2546,381 @@ def normalize_accounting(df: pd.DataFrame, cmap: dict):
             "label": str(value_from(row, cmap, "label", "")).strip(),
             "debit": parse_number(value_from(row, cmap, "debit", np.nan)),
             "credit": parse_number(value_from(row, cmap, "credit", np.nan)),
+            "amount": parse_number(value_from(row, cmap, "amount", np.nan)),
+            "reference": str(value_from(row, cmap, "reference", "")).strip(),
         })
     return pd.DataFrame(rows)
+
+
+def vf_detect_property_accounting_source(filename, df):
+    """
+    Détecte le gestionnaire à partir du nom de fichier, des colonnes et d'un
+    petit échantillon du contenu. Aucun document n'est envoyé à un service tiers.
+    """
+    parts = [str(filename or "")]
+    try:
+        parts.extend([str(c) for c in df.columns])
+        if df is not None and not df.empty:
+            sample = df.head(40).astype(str)
+            parts.append(" ".join(sample.fillna("").values.flatten().tolist()))
+    except Exception:
+        pass
+
+    hay = norm_token(" ".join(parts))
+    sources = [
+        ("Foncia", ["foncia"]),
+        ("Nexity", ["nexity"]),
+        ("Citya", ["citya"]),
+        ("Orpi", ["orpi"]),
+        ("Square Habitat", ["squarehabitat"]),
+        ("Century 21", ["century21"]),
+    ]
+    for label, tokens in sources:
+        if any(tok in hay for tok in tokens):
+            return label, 0.99
+    return "Gestion locative / générique", 0.45
+
+
+def vf_force_real_estate_accounting_result(result, filename=""):
+    """
+    Pour la cible Immobilier, on accepte un relevé comptable avec :
+    - date + libellé + débit/crédit
+    - OU date + libellé + montant signé.
+    Cela évite qu'un export Foncia soit rejeté parce qu'il ne ressemble pas
+    à un export de courtier boursier.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    raw = result.get("raw_df")
+    if raw is None or raw.empty:
+        return result
+
+    cmap = canonical_column_map(raw.columns)
+    keys = set(cmap)
+    accounting_shape = (
+        "date" in keys
+        and "label" in keys
+        and (
+            ("debit" in keys or "credit" in keys)
+            or "amount" in keys
+        )
+    )
+
+    if accounting_shape:
+        result["document_type"] = "ACCOUNTING"
+        result["confidence"] = max(float(result.get("confidence") or 0), 0.88)
+        result["column_map"] = cmap
+        result["normalized"] = normalize_accounting(raw, cmap)
+
+    source, source_conf = vf_detect_property_accounting_source(filename, raw)
+    result["broker"] = source
+    result["broker_confidence"] = source_conf
+    return result
+
+
+def vf_re_import_schema_ready():
+    if SUPABASE is None:
+        return False
+    try:
+        (
+            SUPABASE.table("real_estate_cashflows")
+            .select("id,source_import_hash,source_row_key,source_provider,source_filename")
+            .limit(1)
+            .execute()
+        )
+        return True
+    except Exception:
+        return False
+
+
+def vf_re_import_label_norm(value):
+    s = str(value or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"\\s+", " ", s)
+    return s
+
+
+def vf_re_auto_flow_code(label, side):
+    """
+    Classement prudent des écritures de gestion locative.
+    side = INCOME ou EXPENSE.
+    Les transferts de trésorerie / soldes / cautions sont exclus par défaut
+    pour ne pas fausser le rendement.
+    """
+    txt = vf_re_import_label_norm(label)
+
+    ignore_tokens = [
+        "virement proprietaire", "versement proprietaire",
+        "reglement proprietaire", "reversement proprietaire",
+        "virement bailleur", "versement bailleur",
+        "report a nouveau", "a nouveau", "solde precedent",
+        "solde anterieur", "solde compte", "reprise solde",
+        "depot de garantie", "depot garantie", "caution",
+        "avance proprietaire", "avance bailleur",
+        "transfert interne"
+    ]
+    if any(k in txt for k in ignore_tokens):
+        return "IGNORE", 0.95, "Transfert / hors rendement"
+
+    # Fiscalité
+    if "taxe fonciere" in txt or "taxe fonci" in txt:
+        return "PROPERTY_TAX", 0.98, "Taxe foncière"
+    if re.search(r"\\bcfe\\b", txt):
+        return "CFE", 0.98, "CFE"
+    if "prelevement social" in txt or "prelevements sociaux" in txt:
+        return "SOCIAL_TAX", 0.95, "Prélèvements sociaux"
+    if "impot" in txt or "fiscalite" in txt:
+        return "INCOME_TAX", 0.78, "Impôt lié au bien"
+
+    # Assurances / gestion
+    if "garantie loyers impayes" in txt or re.search(r"\\bgli\\b", txt):
+        return "GLI", 0.98, "Garantie loyers impayés"
+    if "proprietaire non occupant" in txt or re.search(r"\\bpno\\b", txt):
+        return "PNO", 0.98, "Assurance PNO"
+    if (
+        "honoraire" in txt or "commission" in txt
+        or "gestion locative" in txt or "frais de gestion" in txt
+        or "frais gestion" in txt
+    ):
+        return "MANAGEMENT", 0.94, "Gestion locative"
+    if (
+        "comptable" in txt or "comptabilite" in txt
+        or "liasse fiscale" in txt or "declaration fiscale" in txt
+    ):
+        return "ACCOUNTING", 0.90, "Comptabilité"
+
+    # Charges / travaux
+    if "copropriete" in txt or "syndic" in txt or "appel de fonds" in txt:
+        return "CONDO_NONRECOVERABLE", 0.82, "Copropriété"
+    if (
+        "travaux" in txt or "renovation" in txt or "remplacement" in txt
+        or "refection" in txt
+    ):
+        return "WORKS", 0.84, "Travaux"
+    if (
+        "reparation" in txt or "entretien" in txt or "depannage" in txt
+        or "serrurerie" in txt or "plomberie" in txt or "maintenance" in txt
+    ):
+        return "MAINTENANCE", 0.82, "Entretien / réparation"
+    if (
+        re.search(r"\\beau\\b", txt) or "electricite" in txt
+        or re.search(r"\\bgaz\\b", txt) or "edf" in txt
+        or "energie" in txt
+    ):
+        return "UTILITIES", 0.75, "Eau / énergie"
+
+    # Revenus locatifs / charges récupérées
+    if (
+        "charge locative" in txt or "charges locatives" in txt
+        or "provision sur charges" in txt or "provision charges" in txt
+        or "regularisation charges" in txt
+    ):
+        if side == "INCOME":
+            return "TENANT_CHARGES", 0.92, "Charges récupérées"
+        return "CONDO_RECOVERABLE", 0.68, "Charges récupérables avancées"
+
+    if (
+        "loyer" in txt or "quittance" in txt or "allocation logement" in txt
+        or re.search(r"\\bapl\\b", txt) or re.search(r"\\bcaf\\b", txt)
+    ):
+        if side == "INCOME":
+            return "RENT", 0.96, "Loyer"
+        return "OTHER_EXPENSE", 0.62, "Annulation / remboursement de loyer"
+
+    if "indemnite" in txt and side == "INCOME":
+        return "OTHER_INCOME", 0.72, "Autre revenu"
+
+    if side == "INCOME":
+        return "OTHER_INCOME", 0.35, "Revenu à vérifier"
+    return "OTHER_EXPENSE", 0.35, "Charge à vérifier"
+
+
+def vf_re_accounting_preview(normalized, property_id, orientation="credit_income"):
+    """
+    Transforme le relevé comptable en flux immobiliers éditables.
+    La clé de ligne est stable entre deux exports qui se chevauchent.
+    """
+    if normalized is None or normalized.empty:
+        return pd.DataFrame()
+
+    rows = []
+    occurrence = {}
+
+    for _, r in normalized.iterrows():
+        raw_date = r.get("date")
+        dt = pd.to_datetime(raw_date, errors="coerce", dayfirst=True)
+        if pd.isna(dt):
+            continue
+
+        label = str(r.get("label") or "").strip()
+        reference = str(r.get("reference") or "").strip()
+
+        debit = parse_number(r.get("debit"))
+        credit = parse_number(r.get("credit"))
+        signed_amount = parse_number(r.get("amount"))
+
+        debit_abs = abs(float(debit)) if pd.notna(debit) and abs(float(debit)) > 1e-12 else 0.0
+        credit_abs = abs(float(credit)) if pd.notna(credit) and abs(float(credit)) > 1e-12 else 0.0
+
+        side = None
+        amount = 0.0
+
+        if debit_abs > 0 or credit_abs > 0:
+            # If both sides are present, use the net owner movement.
+            if orientation == "debit_income":
+                net = debit_abs - credit_abs
+            else:
+                net = credit_abs - debit_abs
+            if abs(net) <= 1e-12:
+                continue
+            side = "INCOME" if net > 0 else "EXPENSE"
+            amount = abs(net)
+        elif pd.notna(signed_amount) and abs(float(signed_amount)) > 1e-12:
+            val = float(signed_amount)
+            if orientation == "signed_negative_income":
+                val = -val
+            side = "INCOME" if val > 0 else "EXPENSE"
+            amount = abs(val)
+        else:
+            continue
+
+        code, confidence, auto_reason = vf_re_auto_flow_code(label, side)
+        include = code != "IGNORE"
+
+        # Stable dedupe key; occurrence rank preserves legitimate repeated
+        # identical lines while still deduping overlapping statements.
+        base = "|".join([
+            str(property_id),
+            dt.date().isoformat(),
+            norm_token(label),
+            f"{debit_abs:.6f}",
+            f"{credit_abs:.6f}",
+            f"{float(signed_amount):.6f}" if pd.notna(signed_amount) else "",
+            norm_token(reference),
+        ])
+        occurrence[base] = occurrence.get(base, 0) + 1
+        source_key = hashlib.sha256(
+            f"{base}|occ={occurrence[base]}".encode("utf-8")
+        ).hexdigest()
+
+        human = (
+            "HORS RENDEMENT — Transfert / solde / caution"
+            if code == "IGNORE"
+            else f"{code} — {RE_FLOW_TYPES.get(code, ('','À vérifier'))[1]}"
+        )
+
+        rows.append({
+            "Inclure": include,
+            "Date": dt.date(),
+            "Libellé source": label,
+            "Référence": reference,
+            "Sens": "Revenu" if side == "INCOME" else "Dépense",
+            "Montant €": round(float(amount), 2),
+            "Catégorie": human,
+            "Confiance": round(float(confidence) * 100),
+            "Lecture auto": auto_reason,
+            "_source_row_key": source_key,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def vf_re_category_options():
+    opts = ["HORS RENDEMENT — Transfert / solde / caution"]
+    for code, (_group, label) in RE_FLOW_TYPES.items():
+        opts.append(f"{code} — {label}")
+    return opts
+
+
+def vf_re_category_code(value):
+    txt = str(value or "")
+    if txt.startswith("HORS RENDEMENT"):
+        return "IGNORE"
+    return txt.split(" — ", 1)[0].strip()
+
+
+def vf_re_save_accounting_import(
+    edited_df,
+    property_id,
+    file_hash,
+    source_provider,
+    source_filename
+):
+    if SUPABASE is None:
+        raise RuntimeError("Supabase n'est pas configuré.")
+    if not vf_re_import_schema_ready():
+        raise RuntimeError(
+            "Le schéma d'import immobilier V38.7 n'est pas installé. "
+            "Exécute d'abord v38_7_real_estate_import_traceability.sql."
+        )
+
+    payloads = []
+    uid = vf_current_user_id()
+
+    for _, r in edited_df.iterrows():
+        if not bool(r.get("Inclure", True)):
+            continue
+
+        code = vf_re_category_code(r.get("Catégorie"))
+        if code == "IGNORE" or code not in RE_FLOW_TYPES:
+            continue
+
+        dt = pd.to_datetime(r.get("Date"), errors="coerce")
+        amount = pd.to_numeric(pd.Series([r.get("Montant €")]), errors="coerce").iloc[0]
+        source_key = str(r.get("_source_row_key") or "").strip()
+
+        if pd.isna(dt) or pd.isna(amount) or float(amount) <= 0 or not source_key:
+            continue
+
+        group, canonical_label = RE_FLOW_TYPES[code]
+        raw_label = str(r.get("Libellé source") or "").strip()
+        ref = str(r.get("Référence") or "").strip()
+
+        notes_parts = []
+        if raw_label:
+            notes_parts.append(f"Source: {raw_label}")
+        if ref:
+            notes_parts.append(f"Réf: {ref}")
+
+        payloads.append({
+            "user_id": uid,
+            "property_id": property_id,
+            "flow_date": dt.date().isoformat(),
+            "flow_code": code,
+            "flow_group": group,
+            "label": canonical_label,
+            "amount": float(amount),
+            "tax_year": int(dt.year),
+            "notes": " • ".join(notes_parts) or None,
+            "source_import_hash": file_hash,
+            "source_row_key": source_key,
+            "source_provider": str(source_provider or "").strip() or None,
+            "source_filename": str(source_filename or "").strip() or None,
+            "created_at": datetime.utcnow().isoformat(),
+        })
+
+    if not payloads:
+        return 0
+
+    (
+        SUPABASE.table("real_estate_cashflows")
+        .upsert(
+            payloads,
+            on_conflict="user_id,property_id,source_row_key"
+        )
+        .execute()
+    )
+    return len(payloads)
+
 
 
 def interpret_document(uploaded_file):
     df, meta = read_document(uploaded_file)
     doc_type, confidence, cmap = classify_document(df)
     broker, broker_conf = detect_broker(df, doc_type)
+    if doc_type == "ACCOUNTING":
+        broker, broker_conf = vf_detect_property_accounting_source(meta.get("filename"), df)
     result = {
         "raw_df": df, "meta": meta, "document_type": doc_type, "confidence": confidence,
         "column_map": cmap, "broker": broker, "broker_confidence": broker_conf,
@@ -4408,15 +4812,23 @@ def show_import_page():
 
         account = st.selectbox(
             "Compte cible",
-            ["pea","cto_xtb","cto_trade_republic","cto_autre"],
+            ["pea","cto_xtb","cto_trade_republic","cto_autre","immobilier"],
             format_func=lambda x:{
                 "pea":"PEA",
                 "cto_xtb":"CTO XTB",
                 "cto_trade_republic":"CTO Trade Republic",
-                "cto_autre":"CTO / autre"
+                "cto_autre":"CTO / autre",
+                "immobilier":"🏘️ Immobilier / gestion locative"
             }[x],
             key="import_account"
         )
+
+        if account == "immobilier":
+            st.info(
+                "Mode Immobilier : importe un relevé comptable de gestion locative "
+                "(ex. Foncia). Les lignes sont classées, vérifiables et envoyées "
+                "dans le calculateur immobilier après validation."
+            )
 
         uploaded = st.file_uploader(
             "Document",
@@ -4433,6 +4845,8 @@ def show_import_page():
         else:
             try:
                 result = interpret_document(uploaded)
+                if account == "immobilier":
+                    result = vf_force_real_estate_accounting_result(result, uploaded.name)
             except Exception as exc:
                 raw = uploaded.getvalue()
                 st.error(f"Lecture impossible : {exc}")
@@ -4462,7 +4876,7 @@ def show_import_page():
                         st.warning("Aucun champ financier connu n'a été reconnu.")
 
                 broker_override=st.text_input(
-                    "Courtier / source",
+                    "Gestionnaire / source" if account == "immobilier" else "Courtier / source",
                     value=broker,
                     key="unified_broker_override"
                 )
@@ -4490,10 +4904,202 @@ def show_import_page():
                         "Document non reconnu avec assez de certitude. "
                         "Aucune donnée ne sera enregistrée."
                     )
+                elif doc == "ACCOUNTING" and account == "immobilier":
+                    props = vf_re_load_properties(active_only=True)
+
+                    if props is None or props.empty:
+                        st.error(
+                            "Aucun bien immobilier actif n'est enregistré. "
+                            "Crée d'abord le bien dans 🏘️ Immobilier."
+                        )
+                    elif not vf_re_import_schema_ready():
+                        st.error(
+                            "La traçabilité des imports immobiliers V38.7 n'est pas encore installée. "
+                            "Exécute le script SQL fourni avant le premier import."
+                        )
+                    else:
+                        prop_labels = vf_re_property_labels(props)
+                        selected_property_label = st.selectbox(
+                            "Bien immobilier à mettre à jour",
+                            list(prop_labels.keys()),
+                            key="re_import_property"
+                        )
+                        selected_property = prop_labels[selected_property_label]
+                        property_id = selected_property.get("id")
+
+                        normalized_acct = result.get("normalized", pd.DataFrame())
+                        has_debit_credit = False
+                        if normalized_acct is not None and not normalized_acct.empty:
+                            has_debit_credit = (
+                                pd.to_numeric(normalized_acct.get("debit"), errors="coerce").notna().any()
+                                or pd.to_numeric(normalized_acct.get("credit"), errors="coerce").notna().any()
+                            )
+
+                        orientation_options = (
+                            [
+                                "Crédit = revenu / Débit = dépense",
+                                "Débit = revenu / Crédit = dépense",
+                            ]
+                            if has_debit_credit
+                            else [
+                                "Montant signé : + revenu / - dépense",
+                                "Montant signé : - revenu / + dépense",
+                            ]
+                        )
+                        orientation_label = st.radio(
+                            "Lecture comptable",
+                            orientation_options,
+                            horizontal=True,
+                            key="re_import_orientation"
+                        )
+
+                        orientation = {
+                            "Crédit = revenu / Débit = dépense": "credit_income",
+                            "Débit = revenu / Crédit = dépense": "debit_income",
+                            "Montant signé : + revenu / - dépense": "signed_positive_income",
+                            "Montant signé : - revenu / + dépense": "signed_negative_income",
+                        }[orientation_label]
+
+                        preview = vf_re_accounting_preview(
+                            normalized_acct,
+                            property_id,
+                            orientation=orientation
+                        )
+
+                        if preview.empty:
+                            st.warning(
+                                "Aucune ligne comptable exploitable n'a été trouvée. "
+                                "Le fichier nécessite peut-être un mapping Foncia plus précis."
+                            )
+                        else:
+                            included = preview[preview["Inclure"] == True]
+                            excluded = preview[preview["Inclure"] == False]
+
+                            p1,p2,p3,p4 = st.columns(4)
+                            p1.metric("Lignes détectées", len(preview))
+                            p2.metric("Pré-sélectionnées", len(included))
+                            p3.metric("Hors rendement", len(excluded))
+                            p4.metric(
+                                "Montant pré-sélectionné",
+                                f"{pd.to_numeric(included['Montant €'], errors='coerce').fillna(0).sum():,.2f} €"
+                            )
+
+                            st.caption(
+                                "VISION FUTURE exclut par défaut les virements au propriétaire, "
+                                "reports de solde et cautions afin de ne pas les compter comme rendement."
+                            )
+
+                            edited_preview = st.data_editor(
+                                preview,
+                                use_container_width=True,
+                                hide_index=True,
+                                key=f"re_accounting_editor_{meta['hash'][:12]}",
+                                disabled=[
+                                    "Date","Libellé source","Référence","Sens",
+                                    "Montant €","Confiance","Lecture auto","_source_row_key"
+                                ],
+                                column_config={
+                                    "Inclure": st.column_config.CheckboxColumn(
+                                        "Inclure",
+                                        help="Décoche une ligne qui ne doit pas alimenter le rendement."
+                                    ),
+                                    "Date": st.column_config.DateColumn(
+                                        "Date",
+                                        format="DD/MM/YYYY"
+                                    ),
+                                    "Montant €": st.column_config.NumberColumn(
+                                        "Montant",
+                                        format="%.2f €"
+                                    ),
+                                    "Catégorie": st.column_config.SelectboxColumn(
+                                        "Catégorie",
+                                        options=vf_re_category_options(),
+                                        required=True
+                                    ),
+                                    "Confiance": st.column_config.ProgressColumn(
+                                        "Confiance auto",
+                                        min_value=0,
+                                        max_value=100,
+                                        format="%d%%"
+                                    ),
+                                    "_source_row_key": None,
+                                }
+                            )
+
+                            category_summary = (
+                                edited_preview[
+                                    edited_preview["Inclure"] == True
+                                ]
+                                .groupby("Catégorie", dropna=False)["Montant €"]
+                                .sum()
+                                .reset_index()
+                                .sort_values("Montant €", ascending=False)
+                            )
+                            if not category_summary.empty:
+                                with st.expander("Synthèse avant import", expanded=True):
+                                    st.dataframe(
+                                        category_summary,
+                                        use_container_width=True,
+                                        hide_index=True,
+                                        column_config={
+                                            "Montant €": st.column_config.NumberColumn(format="%.2f €")
+                                        }
+                                    )
+
+                            if st.button(
+                                "🏘️ Valider et mettre à jour le calculateur immobilier",
+                                type="primary",
+                                key="save_real_estate_accounting_import",
+                                use_container_width=True
+                            ):
+                                try:
+                                    count = vf_re_save_accounting_import(
+                                        edited_preview,
+                                        property_id=property_id,
+                                        file_hash=meta["hash"],
+                                        source_provider=broker_override,
+                                        source_filename=uploaded.name
+                                    )
+
+                                    import_metadata = {
+                                        k:v for k,v in meta.items() if k!="hash"
+                                    }
+                                    import_metadata.update({
+                                        "property_id": property_id,
+                                        "property_name": selected_property.get("name"),
+                                        "source_provider": broker_override,
+                                        "orientation": orientation,
+                                    })
+
+                                    upsert_import_record({
+                                        "file_hash":meta["hash"],
+                                        "account":"immobilier",
+                                        "filename":uploaded.name,
+                                        "document_type":"IMMOBILIER_ACCOUNTING",
+                                        "broker":broker_override,
+                                        "row_count":int(count),
+                                        "status":"IMPORTED",
+                                        "imported_at":datetime.utcnow().isoformat(),
+                                        "metadata":json.dumps(
+                                            import_metadata,
+                                            ensure_ascii=False,
+                                            default=str
+                                        ),
+                                    })
+
+                                    vf_safe_cache_clear()
+                                    st.success(
+                                        f"✅ {count} flux immobilier(s) synchronisé(s). "
+                                        f"Le suivi et les rendements de « {selected_property.get('name')} » "
+                                        "sont maintenant recalculés à partir de ces écritures."
+                                    )
+                                except Exception as exc:
+                                    st.error(f"Import immobilier impossible : {exc}")
+
                 elif doc == "ACCOUNTING":
                     st.info(
-                        "Document comptable reconnu. Il est volontairement exclu "
-                        "du portefeuille et du ledger boursier."
+                        "Document comptable reconnu. Pour l'utiliser dans le calculateur, "
+                        "sélectionne « 🏘️ Immobilier / gestion locative » comme compte cible."
                     )
                 elif st.button(
                     "☁️ Valider et enregistrer dans Supabase",
@@ -4573,7 +5179,15 @@ def show_import_page():
         c1, c2 = st.columns(2)
         account_filter = c1.selectbox(
             "Compte",
-            ["Tous","pea","cto_xtb","cto_trade_republic","cto_autre"],
+            ["Tous","pea","cto_xtb","cto_trade_republic","cto_autre","immobilier"],
+            format_func=lambda x:{
+                "Tous":"Tous",
+                "pea":"PEA",
+                "cto_xtb":"CTO XTB",
+                "cto_trade_republic":"CTO Trade Republic",
+                "cto_autre":"CTO / autre",
+                "immobilier":"🏘️ Immobilier"
+            }[x],
             key="unified_docs_account"
         )
         broker_filter = c2.text_input(
@@ -7065,7 +7679,9 @@ def vf_re_load_loans(property_id=None):
 def vf_re_load_flows(property_id=None, start_date=None, end_date=None):
     cols = [
         "id","user_id","property_id","flow_date","flow_code","flow_group",
-        "label","amount","tax_year","notes","created_at"
+        "label","amount","tax_year","notes",
+        "source_import_hash","source_row_key","source_provider","source_filename",
+        "created_at"
     ]
     if not vf_re_table_ready(RE_FLOW_TABLE):
         return pd.DataFrame(columns=cols)
