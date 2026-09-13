@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.7 Immobilier Import Intelligence"
+APP_VERSION = "V38.8 Property Management"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -7728,6 +7728,105 @@ def vf_re_load_valuations(property_id=None):
         return pd.DataFrame(columns=cols)
 
 
+
+def vf_re_property_dependencies(property_id):
+    """
+    Inventory shown before destructive deletion.
+    Import-history rows are detected from their JSON metadata when possible.
+    """
+    out = {
+        "loans": 0,
+        "flows": 0,
+        "valuations": 0,
+        "imports": 0,
+        "import_ids": [],
+    }
+    if not property_id:
+        return out
+
+    try:
+        out["loans"] = len(vf_re_load_loans(property_id))
+    except Exception:
+        pass
+    try:
+        out["flows"] = len(vf_re_load_flows(property_id))
+    except Exception:
+        pass
+    try:
+        out["valuations"] = len(vf_re_load_valuations(property_id))
+    except Exception:
+        pass
+
+    if SUPABASE is not None:
+        try:
+            res = (
+                SUPABASE.table("imports")
+                .select("id,account,metadata,filename,document_type")
+                .eq("account", "immobilier")
+                .execute()
+            )
+            rows = _sb_data(res) or []
+            matching = []
+            for row in rows:
+                meta = row.get("metadata")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except Exception:
+                        meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                if str(meta.get("property_id") or "") == str(property_id):
+                    matching.append(row.get("id"))
+            out["import_ids"] = [x for x in matching if x]
+            out["imports"] = len(out["import_ids"])
+        except Exception:
+            pass
+
+    return out
+
+
+def vf_re_delete_property(property_id, remove_import_history=True):
+    """
+    Definitive deletion.
+
+    The original real-estate schema uses ON DELETE CASCADE for loans,
+    cashflows and valuations. We still explicitly remove the children first
+    so the operation remains predictable if an older deployment differs.
+    """
+    if not vf_re_can_write():
+        raise PermissionError("Profil en lecture seule.")
+    if not property_id:
+        raise ValueError("Bien immobilier non renseigné.")
+    if SUPABASE is None:
+        raise RuntimeError("Supabase n'est pas configuré.")
+
+    deps = vf_re_property_dependencies(property_id)
+
+    # Explicit child cleanup, compatible with existing RLS.
+    for table in [RE_FLOW_TABLE, RE_LOAN_TABLE, RE_VALUATION_TABLE]:
+        try:
+            SUPABASE.table(table).delete().eq("property_id", property_id).execute()
+        except Exception:
+            # FK cascade on the parent remains the final safety net.
+            pass
+
+    # Clean import history linked to the exact property id.
+    if remove_import_history:
+        for import_id in deps.get("import_ids", []):
+            try:
+                SUPABASE.table("imports").delete().eq("id", import_id).execute()
+            except Exception:
+                pass
+
+    # Parent deletion. FK cascades remove any remaining linked rows.
+    SUPABASE.table(RE_PROPERTY_TABLE).delete().eq("id", property_id).execute()
+
+    vf_safe_cache_clear()
+    return deps
+
+
+
 def vf_re_save_property(payload):
     payload = dict(payload)
     payload["user_id"] = vf_current_user_id()
@@ -8167,76 +8266,249 @@ def vf_real_estate_page():
     # ASSETS
     # ------------------------------------------------------------------
     with tab_assets:
-        vf_section("Fiche bien", "Prix d'achat, frais, régime fiscal, loyer cible et caractéristiques.")
-
-        asset_labels = {"➕ Nouveau bien": None}
-        asset_labels.update(vf_re_property_labels(props))
-        selected_asset_label = st.selectbox(
-            "Bien à créer / modifier",
-            list(asset_labels.keys()),
-            key="re_asset_select"
+        vf_section(
+            "Gestion des biens",
+            "Crée un bien, modifie tous ses paramètres à tout moment ou supprime-le définitivement."
         )
-        selected_asset = asset_labels[selected_asset_label] or {}
 
-        default_purchase_date = pd.to_datetime(selected_asset.get("purchase_date"), errors="coerce")
+        # --------------------------------------------------------------
+        # Mode explicite : Nouveau / Modifier
+        # --------------------------------------------------------------
+        existing_labels = vf_re_property_labels(props)
+        has_properties = bool(existing_labels)
+
+        mode_options = ["➕ Créer un bien"]
+        if has_properties:
+            mode_options.append("✏️ Modifier un bien")
+
+        asset_mode = st.radio(
+            "Action",
+            mode_options,
+            horizontal=True,
+            key="re_asset_mode"
+        )
+
+        selected_asset = {}
+        selected_asset_label = ""
+
+        if asset_mode == "✏️ Modifier un bien":
+            selected_asset_label = st.selectbox(
+                "Bien à modifier",
+                list(existing_labels.keys()),
+                key="re_asset_edit_select",
+                help="Tous les champs de la fiche peuvent être modifiés puis enregistrés."
+            )
+            selected_asset = existing_labels.get(selected_asset_label) or {}
+
+            with st.container(border=True):
+                s1,s2,s3,s4 = st.columns(4)
+                s1.metric("Bien", _clean_text(selected_asset.get("name")) or "—")
+                s2.metric("Ville", _clean_text(selected_asset.get("city")) or "—")
+                s3.metric(
+                    "Prix d'achat",
+                    vf_re_currency(selected_asset.get("purchase_price"))
+                )
+                s4.metric(
+                    "Loyer cible",
+                    f"{vf_re_num(selected_asset.get('monthly_rent_target')):,.0f} €/mois"
+                )
+                st.caption(
+                    "Les modifications enregistrées recalculent immédiatement les indicateurs "
+                    "du suivi immobilier. Elles ne suppriment pas l'historique des flux."
+                )
+        else:
+            st.info(
+                "Création d'un nouveau bien. Une fois enregistré, il restera modifiable depuis "
+                "« ✏️ Modifier un bien »."
+            )
+
+        asset_id = selected_asset.get("id")
+        asset_widget_key = str(asset_id or "new")
+
+        default_purchase_date = pd.to_datetime(
+            selected_asset.get("purchase_date"),
+            errors="coerce"
+        )
         if pd.isna(default_purchase_date):
             default_purchase_date = pd.Timestamp.today()
 
-        with st.form("re_property_form"):
+        # --------------------------------------------------------------
+        # Editable property form
+        # --------------------------------------------------------------
+        form_title = (
+            f"Modifier — {_clean_text(selected_asset.get('name')) or 'Bien'}"
+            if asset_id
+            else "Nouveau bien"
+        )
+        st.markdown(f"### {form_title}")
+
+        with st.form(f"re_property_form_{asset_widget_key}"):
+            st.markdown("**Identité du bien**")
             c1,c2,c3 = st.columns(3)
-            name = c1.text_input("Nom du bien", value=_clean_text(selected_asset.get("name")), placeholder="Appartement Brest")
+
+            name = c1.text_input(
+                "Nom du bien",
+                value=_clean_text(selected_asset.get("name")),
+                placeholder="Appartement Brest",
+                key=f"re_prop_name_{asset_widget_key}"
+            )
+
             ptype_default = _clean_text(selected_asset.get("property_type"))
             ptype = c2.selectbox(
                 "Type",
                 RE_PROPERTY_TYPES,
-                index=RE_PROPERTY_TYPES.index(ptype_default) if ptype_default in RE_PROPERTY_TYPES else 0
+                index=RE_PROPERTY_TYPES.index(ptype_default)
+                if ptype_default in RE_PROPERTY_TYPES else 0,
+                key=f"re_prop_type_{asset_widget_key}"
             )
+
             regime_default = _clean_text(selected_asset.get("tax_regime"))
             tax_regime = c3.selectbox(
                 "Régime fiscal",
                 RE_TAX_REGIMES,
-                index=RE_TAX_REGIMES.index(regime_default) if regime_default in RE_TAX_REGIMES else 0
+                index=RE_TAX_REGIMES.index(regime_default)
+                if regime_default in RE_TAX_REGIMES else 0,
+                key=f"re_prop_tax_{asset_widget_key}"
             )
 
             a1,a2,a3 = st.columns([2,1,1])
-            address = a1.text_input("Adresse", value=_clean_text(selected_asset.get("address")))
-            postal_code = a2.text_input("Code postal", value=_clean_text(selected_asset.get("postal_code")))
-            city = a3.text_input("Ville", value=_clean_text(selected_asset.get("city")))
+            address = a1.text_input(
+                "Adresse",
+                value=_clean_text(selected_asset.get("address")),
+                key=f"re_prop_address_{asset_widget_key}"
+            )
+            postal_code = a2.text_input(
+                "Code postal",
+                value=_clean_text(selected_asset.get("postal_code")),
+                key=f"re_prop_postal_{asset_widget_key}"
+            )
+            city = a3.text_input(
+                "Ville",
+                value=_clean_text(selected_asset.get("city")),
+                key=f"re_prop_city_{asset_widget_key}"
+            )
 
             d1,d2,d3 = st.columns(3)
-            purchase_date = d1.date_input("Date d'achat", value=default_purchase_date.date())
-            surface = d2.number_input("Surface (m²)", min_value=0.0, value=vf_re_num(selected_asset.get("surface_m2")), step=1.0)
+            purchase_date = d1.date_input(
+                "Date d'achat",
+                value=default_purchase_date.date(),
+                key=f"re_prop_purchase_date_{asset_widget_key}"
+            )
+            surface = d2.number_input(
+                "Surface (m²)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("surface_m2")),
+                step=1.0,
+                key=f"re_prop_surface_{asset_widget_key}"
+            )
             share = d3.number_input(
                 "Quote-part détenue (%)",
-                min_value=0.0, max_value=100.0,
-                value=vf_re_num(selected_asset.get("ownership_share_pct"), 100.0) or 100.0,
-                step=1.0
+                min_value=0.0,
+                max_value=100.0,
+                value=vf_re_num(
+                    selected_asset.get("ownership_share_pct"),
+                    100.0
+                ) or 100.0,
+                step=1.0,
+                key=f"re_prop_share_{asset_widget_key}"
             )
 
             st.markdown("**Coût d'acquisition**")
             p1,p2,p3 = st.columns(3)
-            purchase_price = p1.number_input("Prix d'achat (€)", min_value=0.0, value=vf_re_num(selected_asset.get("purchase_price")), step=1000.0)
-            notary_fees = p2.number_input("Frais de notaire (€)", min_value=0.0, value=vf_re_num(selected_asset.get("notary_fees")), step=500.0)
-            agency_fees = p3.number_input("Frais d'agence (€)", min_value=0.0, value=vf_re_num(selected_asset.get("agency_fees")), step=500.0)
+            purchase_price = p1.number_input(
+                "Prix d'achat (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("purchase_price")),
+                step=1000.0,
+                key=f"re_prop_purchase_price_{asset_widget_key}"
+            )
+            notary_fees = p2.number_input(
+                "Frais de notaire (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("notary_fees")),
+                step=500.0,
+                key=f"re_prop_notary_{asset_widget_key}"
+            )
+            agency_fees = p3.number_input(
+                "Frais d'agence (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("agency_fees")),
+                step=500.0,
+                key=f"re_prop_agency_{asset_widget_key}"
+            )
 
             p4,p5,p6 = st.columns(3)
-            initial_works = p4.number_input("Travaux initiaux (€)", min_value=0.0, value=vf_re_num(selected_asset.get("initial_works")), step=500.0)
-            initial_furniture = p5.number_input("Mobilier initial (€)", min_value=0.0, value=vf_re_num(selected_asset.get("initial_furniture")), step=100.0)
-            other_costs = p6.number_input("Autres frais acquisition (€)", min_value=0.0, value=vf_re_num(selected_asset.get("other_acquisition_costs")), step=100.0)
+            initial_works = p4.number_input(
+                "Travaux initiaux (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("initial_works")),
+                step=500.0,
+                key=f"re_prop_works_{asset_widget_key}"
+            )
+            initial_furniture = p5.number_input(
+                "Mobilier initial (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("initial_furniture")),
+                step=100.0,
+                key=f"re_prop_furniture_{asset_widget_key}"
+            )
+            other_costs = p6.number_input(
+                "Autres frais acquisition (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("other_acquisition_costs")),
+                step=100.0,
+                key=f"re_prop_other_costs_{asset_widget_key}"
+            )
 
-            st.markdown("**Location cible**")
+            st.markdown("**Location / exploitation**")
             r1,r2 = st.columns(2)
-            monthly_rent = r1.number_input("Loyer mensuel HC (€)", min_value=0.0, value=vf_re_num(selected_asset.get("monthly_rent_target")), step=10.0)
-            monthly_charges = r2.number_input("Charges locatives mensuelles (€)", min_value=0.0, value=vf_re_num(selected_asset.get("monthly_tenant_charges_target")), step=5.0)
+            monthly_rent = r1.number_input(
+                "Loyer mensuel HC (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("monthly_rent_target")),
+                step=10.0,
+                key=f"re_prop_rent_{asset_widget_key}"
+            )
+            monthly_charges = r2.number_input(
+                "Charges locatives mensuelles (€)",
+                min_value=0.0,
+                value=vf_re_num(selected_asset.get("monthly_tenant_charges_target")),
+                step=5.0,
+                key=f"re_prop_tenant_charges_{asset_widget_key}"
+            )
 
-            notes = st.text_area("Notes", value=_clean_text(selected_asset.get("notes")))
-            active = st.checkbox("Bien actif", value=bool(selected_asset.get("active", True)))
+            notes = st.text_area(
+                "Notes",
+                value=_clean_text(selected_asset.get("notes")),
+                key=f"re_prop_notes_{asset_widget_key}"
+            )
 
-            acquisition_total = purchase_price + notary_fees + agency_fees + initial_works + initial_furniture + other_costs
-            st.caption(f"Coût de revient initial saisi : {acquisition_total:,.0f} €")
+            active = st.checkbox(
+                "Bien actif",
+                value=bool(selected_asset.get("active", True)),
+                key=f"re_prop_active_{asset_widget_key}",
+                help="Décoche pour archiver le bien sans supprimer son historique."
+            )
 
+            acquisition_total = (
+                purchase_price
+                + notary_fees
+                + agency_fees
+                + initial_works
+                + initial_furniture
+                + other_costs
+            )
+            st.caption(
+                f"Coût de revient initial saisi : {acquisition_total:,.0f} €"
+            )
+
+            save_label = (
+                "💾 Enregistrer les modifications"
+                if asset_id
+                else "💾 Créer le bien"
+            )
             save_asset = st.form_submit_button(
-                "💾 Enregistrer le bien",
+                save_label,
                 type="primary",
                 use_container_width=True,
                 disabled=not can_write
@@ -8248,7 +8520,7 @@ def vf_real_estate_page():
             else:
                 try:
                     vf_re_save_property({
-                        "id": selected_asset.get("id"),
+                        "id": asset_id,
                         "name": name.strip(),
                         "address": address.strip() or None,
                         "postal_code": postal_code.strip() or None,
@@ -8269,43 +8541,163 @@ def vf_real_estate_page():
                         "notes": notes.strip() or None,
                         "active": active,
                     })
-                    st.success("Bien enregistré.")
+                    vf_safe_cache_clear()
+                    st.success(
+                        "Bien mis à jour."
+                        if asset_id
+                        else "Bien créé."
+                    )
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Enregistrement impossible : {exc}")
 
-        if selected_asset.get("id"):
-            vf_section("Valorisation", "Ajoute une estimation pour suivre la valeur du patrimoine dans le temps.")
-            with st.form("re_valuation_form"):
+        # --------------------------------------------------------------
+        # Valuation history for an existing property
+        # --------------------------------------------------------------
+        if asset_id:
+            vf_section(
+                "Valorisation",
+                "Ajoute des estimations successives sans modifier le prix d'achat historique."
+            )
+
+            latest_val = vf_re_load_valuations(asset_id)
+            default_estimated_value = vf_re_num(
+                selected_asset.get("purchase_price")
+            )
+            if latest_val is not None and not latest_val.empty:
+                latest_val_sorted = latest_val.sort_values(
+                    "valuation_date",
+                    ascending=False
+                )
+                default_estimated_value = vf_re_num(
+                    latest_val_sorted.iloc[0].get("estimated_value"),
+                    default_estimated_value
+                )
+
+            with st.form(f"re_valuation_form_{asset_widget_key}"):
                 v1,v2,v3 = st.columns([1,1,2])
-                valuation_date = v1.date_input("Date de valorisation", value=date.today())
-                estimated_value = v2.number_input("Valeur estimée (€)", min_value=0.0, value=vf_re_num(selected_asset.get("purchase_price")), step=1000.0)
-                val_source = v3.text_input("Source", placeholder="Estimation agence, DVF, notaire, estimation personnelle…")
-                val_notes = st.text_input("Note valorisation")
-                save_val = st.form_submit_button("Ajouter la valorisation", use_container_width=True, disabled=not can_write)
+                valuation_date = v1.date_input(
+                    "Date de valorisation",
+                    value=date.today(),
+                    key=f"re_val_date_{asset_widget_key}"
+                )
+                estimated_value = v2.number_input(
+                    "Valeur estimée (€)",
+                    min_value=0.0,
+                    value=default_estimated_value,
+                    step=1000.0,
+                    key=f"re_val_amount_{asset_widget_key}"
+                )
+                val_source = v3.text_input(
+                    "Source",
+                    placeholder="Agence, DVF, notaire, estimation personnelle…",
+                    key=f"re_val_source_{asset_widget_key}"
+                )
+                val_notes = st.text_input(
+                    "Note valorisation",
+                    key=f"re_val_notes_{asset_widget_key}"
+                )
+                save_val = st.form_submit_button(
+                    "Ajouter la valorisation",
+                    use_container_width=True,
+                    disabled=not can_write
+                )
 
             if save_val:
                 try:
                     vf_re_add_valuation({
-                        "property_id": selected_asset["id"],
+                        "property_id": asset_id,
                         "valuation_date": vf_re_iso(valuation_date),
                         "estimated_value": estimated_value,
                         "source": val_source.strip() or None,
                         "notes": val_notes.strip() or None,
                     })
+                    vf_safe_cache_clear()
                     st.success("Valorisation ajoutée.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"Ajout impossible : {exc}")
 
-            vals = vf_re_load_valuations(selected_asset["id"])
-            if not vals.empty:
+            vals = vf_re_load_valuations(asset_id)
+            if vals is not None and not vals.empty:
                 st.dataframe(
-                    vals[["valuation_date","estimated_value","source","notes"]],
+                    vals[[
+                        "valuation_date","estimated_value","source","notes"
+                    ]],
                     use_container_width=True,
                     hide_index=True,
-                    column_config={"estimated_value": st.column_config.NumberColumn(format="%.0f €")}
+                    column_config={
+                        "estimated_value": st.column_config.NumberColumn(
+                            format="%.0f €"
+                        )
+                    }
                 )
+
+            # ----------------------------------------------------------
+            # Danger zone
+            # ----------------------------------------------------------
+            vf_section(
+                "Zone de gestion",
+                "Archive le bien sans perdre l'historique, ou supprime-le définitivement."
+            )
+
+            deps = vf_re_property_dependencies(asset_id)
+
+            with st.container(border=True):
+                z1,z2,z3,z4 = st.columns(4)
+                z1.metric("Crédits liés", deps.get("loans", 0))
+                z2.metric("Flux liés", deps.get("flows", 0))
+                z3.metric("Valorisations", deps.get("valuations", 0))
+                z4.metric("Imports immo liés", deps.get("imports", 0))
+
+                st.warning(
+                    "La suppression définitive efface le bien ainsi que ses crédits, "
+                    "flux, valorisations et, si l'option est cochée, l'historique de ses imports immobiliers."
+                )
+
+                remove_import_history = st.checkbox(
+                    "Supprimer également l'historique des imports immobiliers liés",
+                    value=True,
+                    key=f"re_delete_imports_{asset_widget_key}"
+                )
+
+                confirm_text = st.text_input(
+                    f'Pour confirmer, tape exactement : SUPPRIMER {selected_asset.get("name")}',
+                    key=f"re_delete_confirm_{asset_widget_key}"
+                )
+
+                expected = f'SUPPRIMER {selected_asset.get("name")}'
+                confirmed_delete = confirm_text.strip() == expected
+
+                if st.button(
+                    "🗑️ Supprimer définitivement ce bien",
+                    key=f"re_delete_property_{asset_widget_key}",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=(not can_write or not confirmed_delete)
+                ):
+                    try:
+                        deleted = vf_re_delete_property(
+                            asset_id,
+                            remove_import_history=remove_import_history
+                        )
+
+                        # Clear property-specific widget state so a deleted
+                        # property cannot remain selected after rerun.
+                        for key in list(st.session_state.keys()):
+                            if asset_widget_key in str(key) and str(key).startswith("re_"):
+                                st.session_state.pop(key, None)
+                        st.session_state["re_asset_mode"] = "➕ Créer un bien"
+
+                        st.success(
+                            "Bien supprimé définitivement "
+                            f"({deleted.get('flows',0)} flux, "
+                            f"{deleted.get('loans',0)} crédit(s), "
+                            f"{deleted.get('valuations',0)} valorisation(s))."
+                        )
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Suppression impossible : {exc}")
 
     # ------------------------------------------------------------------
     # LOANS
