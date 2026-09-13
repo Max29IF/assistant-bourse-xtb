@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.2 Editorial Horizon UI"
+APP_VERSION = "V39.2.1 Editorial Horizon Safe Layer"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -12437,6 +12437,120 @@ hr {
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+# V39.2.1 — SAFE LAYER FIX
+# The previous V39.2 used a fixed pseudo-element on .stApp for the decorative
+# mountain background. Some Streamlit/browser combinations can stack this
+# pseudo-element over the application. We explicitly remove every global
+# decorative layer and keep imagery only inside the dashboard hero.
+
+st.markdown("""
+<style>
+/* ---------------------------------------------------------
+   SAFE STACKING RESET — no element may sit above the app
+   --------------------------------------------------------- */
+html,
+body,
+.stApp,
+[data-testid="stAppViewContainer"]{
+  background:#F8F6F1 !important;
+  background-image:none !important;
+}
+
+.stApp{
+  isolation:auto !important;
+  position:relative !important;
+}
+
+/* Remove every full-screen decorative pseudo layer inherited
+   from older VISION FUTURE visual versions. */
+.stApp::before,
+.stApp::after,
+[data-testid="stAppViewContainer"]::before,
+[data-testid="stAppViewContainer"]::after{
+  content:none !important;
+  display:none !important;
+  opacity:0 !important;
+  visibility:hidden !important;
+  pointer-events:none !important;
+}
+
+/* Guarantee that the actual Streamlit interface is the foreground. */
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"],
+section[data-testid="stSidebar"],
+[data-testid="stHeader"],
+.vf-topbar{
+  position:relative !important;
+  z-index:5 !important;
+  opacity:1 !important;
+  visibility:visible !important;
+}
+
+/* Do not let legacy entrance animations leave useful content invisible. */
+[data-testid="stMainBlockContainer"],
+[data-testid="stMainBlockContainer"] > div,
+.vf-page-heading,
+.vf-home-hero,
+.vf-dashboard-pillars,
+.vf-section-title,
+div[data-testid="stMetric"],
+div[data-testid="stTabs"] [role="tabpanel"]{
+  opacity:1 !important;
+  visibility:visible !important;
+}
+
+/* No global motion or transform on page shells. */
+.vf-page-shell,
+.vf-page-heading,
+.vf-home-hero{
+  transform:none !important;
+}
+
+/* Decorative legacy elements must never reappear. */
+.vf-3d-stage,
+.vf-plane,
+.vf-plane-a,
+.vf-plane-b,
+.vf-plane-c,
+.vf-horizon,
+.vf-scanline{
+  display:none !important;
+}
+
+/* The inspirational image exists only inside the homepage hero. */
+.vf-home-visual{
+  position:relative !important;
+  z-index:1 !important;
+  isolation:isolate !important;
+}
+.vf-home-visual::before{
+  content:none !important;
+}
+.vf-home-visual::after{
+  z-index:1 !important;
+  pointer-events:none !important;
+}
+.vf-home-visual-caption{
+  z-index:2 !important;
+}
+
+/* Sidebar is always readable. */
+section[data-testid="stSidebar"]{
+  background:#FBF9F4 !important;
+}
+
+/* Mobile safety. */
+@media(max-width:980px){
+  [data-testid="stMain"],
+  [data-testid="stMainBlockContainer"]{
+    z-index:5 !important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 vf_global_topbar()
 
