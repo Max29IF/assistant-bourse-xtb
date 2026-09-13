@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.2.3 English Hero"
+APP_VERSION = "V39.3 Mobile Optimized"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -12270,6 +12270,377 @@ div[data-testid="stTabs"] [role="tabpanel"]{
     grid-template-columns:1fr;
   }
 }
+</style>
+""", unsafe_allow_html=True)
+
+
+
+# ============================================================
+# V39.3 — MOBILE OPTIMIZED
+# Responsive layer only. No fixed decorative overlays.
+# ============================================================
+
+st.markdown("""
+<style>
+
+/* Touch targets on all screens */
+button,
+[data-baseweb="tab"],
+[data-testid="stSidebarNav"] a,
+section[data-testid="stSidebar"] label {
+  min-height: 42px;
+}
+
+/* Keep wide tables usable instead of crushing columns */
+div[data-testid="stDataFrame"],
+div[data-testid="stTable"] {
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* =========================================================
+   TABLET / PHONE
+   ========================================================= */
+@media (max-width: 768px) {
+
+  html, body, .stApp {
+    overflow-x: hidden !important;
+  }
+
+  [data-testid="stMainBlockContainer"] {
+    max-width: 100% !important;
+    padding: .55rem .70rem 3.5rem !important;
+  }
+
+  /* Mobile header: shorter and clearer */
+  .vf-topbar {
+    padding: .28rem .20rem .45rem !important;
+    min-height: 0 !important;
+  }
+
+  .vf-topbar-right {
+    display: none !important;
+  }
+
+  /* Sidebar remains accessible through Streamlit's menu,
+     but becomes cleaner when opened */
+  section[data-testid="stSidebar"] {
+    width: min(88vw, 320px) !important;
+  }
+
+  section[data-testid="stSidebar"] .block-container {
+    padding: .60rem .60rem 1.4rem !important;
+  }
+
+  .vf-sidebar-brand {
+    padding: .45rem .30rem .75rem !important;
+  }
+
+  .vf-sidebar-monogram {
+    font-size: 1.55rem !important;
+  }
+
+  .vf-sidebar-name {
+    font-size: .78rem !important;
+  }
+
+  .vf-group-title {
+    margin-top: .65rem !important;
+    font-size: .57rem !important;
+  }
+
+  /* ---------- Home hero ---------- */
+  .vf-safe-home-hero {
+    grid-template-columns: 1fr !important;
+    border-radius: 16px !important;
+    margin-top: .15rem !important;
+  }
+
+  .vf-safe-home-copy {
+    padding: 1.55rem 1.15rem 1.35rem !important;
+  }
+
+  .vf-safe-kicker {
+    font-size: .55rem !important;
+    line-height: 1.35 !important;
+    letter-spacing: .13em !important;
+    margin-bottom: .72rem !important;
+  }
+
+  .vf-safe-home-copy h1 {
+    font-size: clamp(2.05rem, 11vw, 3rem) !important;
+    line-height: .97 !important;
+    letter-spacing: -.035em !important;
+  }
+
+  .vf-safe-home-copy p {
+    font-size: .90rem !important;
+    line-height: 1.52 !important;
+    margin-top: .92rem !important;
+  }
+
+  .vf-safe-motto {
+    font-size: .53rem !important;
+    line-height: 1.4 !important;
+  }
+
+  .vf-safe-home-image,
+  .vf-safe-home-image img {
+    min-height: 215px !important;
+    height: 215px !important;
+  }
+
+  .vf-safe-image-caption {
+    left: 1rem !important;
+    right: 1rem !important;
+    bottom: .85rem !important;
+  }
+
+  .vf-safe-image-caption strong {
+    font-size: 1.08rem !important;
+  }
+
+  .vf-safe-image-caption span {
+    font-size: .70rem !important;
+  }
+
+  /* Pillars: vertical compact cards */
+  .vf-safe-pillars {
+    grid-template-columns: 1fr !important;
+    gap: .45rem !important;
+  }
+
+  .vf-safe-pillar {
+    padding: .72rem .78rem !important;
+  }
+
+  .vf-safe-pillar small {
+    font-size: .70rem !important;
+  }
+
+  /* ---------- All page headers ---------- */
+  .vf-hero {
+    padding: .72rem 0 .62rem !important;
+  }
+
+  .vf-hero-title {
+    font-size: 1.52rem !important;
+    line-height: 1.08 !important;
+  }
+
+  .vf-hero-sub {
+    max-width: 100% !important;
+    font-size: .80rem !important;
+    line-height: 1.42 !important;
+  }
+
+  /* ---------- Streamlit columns ---------- */
+  /* On phone, readability is more important than squeezing columns. */
+  div[data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    gap: .48rem !important;
+  }
+
+  div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+    flex: 1 1 100% !important;
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  /* ---------- Metrics ---------- */
+  div[data-testid="stMetric"] {
+    padding: .72rem .78rem !important;
+    border-radius: 10px !important;
+  }
+
+  div[data-testid="stMetricLabel"] p {
+    font-size: .68rem !important;
+  }
+
+  div[data-testid="stMetricValue"] {
+    font-size: 1.20rem !important;
+    line-height: 1.15 !important;
+  }
+
+  div[data-testid="stMetricDelta"] {
+    font-size: .67rem !important;
+  }
+
+  /* ---------- Section hierarchy ---------- */
+  .vf-section-title {
+    margin-top: .85rem !important;
+    font-size: 1.02rem !important;
+  }
+
+  .vf-section-sub {
+    font-size: .75rem !important;
+    line-height: 1.4 !important;
+  }
+
+  /* ---------- Forms ---------- */
+  div[data-testid="stForm"] {
+    padding: .65rem !important;
+  }
+
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stNumberInput"] input,
+  div[data-testid="stTextArea"] textarea,
+  div[data-baseweb="select"] > div {
+    font-size: 16px !important; /* prevents iOS auto zoom */
+    min-height: 44px !important;
+  }
+
+  textarea {
+    min-height: 90px !important;
+  }
+
+  button {
+    min-height: 44px !important;
+    font-size: .86rem !important;
+  }
+
+  /* ---------- Tabs ---------- */
+  div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    white-space: nowrap !important;
+    scrollbar-width: none !important;
+    gap: .65rem !important;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  div[data-testid="stTabs"] [data-baseweb="tab-list"]::-webkit-scrollbar {
+    display: none;
+  }
+
+  div[data-testid="stTabs"] button {
+    flex: 0 0 auto !important;
+    min-height: 42px !important;
+    font-size: .75rem !important;
+    padding: .42rem .08rem !important;
+  }
+
+  /* ---------- Expanders ---------- */
+  div[data-testid="stExpander"] details summary {
+    min-height: 44px !important;
+    align-items: center !important;
+  }
+
+  /* ---------- Charts ---------- */
+  div[data-testid="stVegaLiteChart"] {
+    padding: .22rem !important;
+    border-radius: 10px !important;
+    overflow-x: auto !important;
+  }
+
+  /* ---------- Tables ---------- */
+  div[data-testid="stDataFrame"] {
+    max-width: 100% !important;
+    border-radius: 9px !important;
+    font-size: .72rem !important;
+  }
+
+  /* ---------- Alerts ---------- */
+  div[data-testid="stAlert"] {
+    padding: .65rem .72rem !important;
+    font-size: .78rem !important;
+  }
+
+  /* ---------- Identity cards / trade cards ---------- */
+  .vf-command-card,
+  .vf-cardline,
+  .vf-alert-row {
+    padding: .75rem !important;
+  }
+
+  .vf-name {
+    font-size: 1rem !important;
+  }
+
+  /* Prevent long IDs / tickers / URLs from overflowing */
+  code,
+  pre,
+  .stMarkdown,
+  .stCaption,
+  p {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  /* Radio and checkbox labels: easier tapping */
+  div[data-testid="stRadio"] label,
+  div[data-testid="stCheckbox"] label {
+    padding-top: .18rem !important;
+    padding-bottom: .18rem !important;
+  }
+}
+
+/* =========================================================
+   SMALL PHONE
+   ========================================================= */
+@media (max-width: 480px) {
+
+  [data-testid="stMainBlockContainer"] {
+    padding-left: .52rem !important;
+    padding-right: .52rem !important;
+  }
+
+  .vf-safe-home-copy {
+    padding: 1.30rem .95rem 1.20rem !important;
+  }
+
+  .vf-safe-home-copy h1 {
+    font-size: clamp(1.95rem, 12vw, 2.55rem) !important;
+  }
+
+  .vf-safe-home-image,
+  .vf-safe-home-image img {
+    min-height: 185px !important;
+    height: 185px !important;
+  }
+
+  .vf-safe-pillar {
+    border-radius: 10px !important;
+  }
+
+  .vf-hero-title {
+    font-size: 1.38rem !important;
+  }
+
+  div[data-testid="stMetricValue"] {
+    font-size: 1.10rem !important;
+  }
+
+  /* Slightly tighter cards on very small devices */
+  div[data-testid="stMetric"],
+  div[data-testid="stExpander"],
+  div[data-testid="stForm"],
+  .vf-command-card,
+  .vf-cardline,
+  .vf-alert-row {
+    border-radius: 9px !important;
+  }
+}
+
+/* =========================================================
+   LANDSCAPE PHONE
+   ========================================================= */
+@media (max-width: 900px) and (orientation: landscape) {
+  .vf-safe-home-hero {
+    grid-template-columns: 1.1fr .9fr !important;
+  }
+
+  .vf-safe-home-image,
+  .vf-safe-home-image img {
+    min-height: 250px !important;
+    height: 100% !important;
+  }
+
+  .vf-safe-home-copy h1 {
+    font-size: 2.3rem !important;
+  }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
