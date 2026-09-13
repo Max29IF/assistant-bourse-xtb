@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V38.4 Europe Market Reference"
+APP_VERSION = "V38.5 Immersive Minimal UI"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -268,12 +268,451 @@ st.markdown('\n<style>\nsection[data-testid="stSidebar"]{\n  background:linear-g
 
 
 
+
+# ==========================================================
+# V38.5 — IMMERSIVE MINIMAL UI
+# ==========================================================
+# Final visual layer: intentionally flat/readable. Motion is concentrated
+# in page/tab entry rather than permanent decorative effects.
+st.markdown("""
+<style>
+/* ----------------------------------------------------------
+   TOKENS — quiet, high-contrast, editorial
+   ---------------------------------------------------------- */
+:root{
+  --vf-bg:#F7F7F5;
+  --vf-surface:#FFFFFF;
+  --vf-surface-soft:#FAFAF8;
+  --vf-text:#111827;
+  --vf-muted:#667085;
+  --vf-line:#E4E7EC;
+  --vf-line-strong:#D0D5DD;
+  --vf-blue:#2563EB;
+  --vf-blue-soft:#EFF4FF;
+  --vf-green:#087A56;
+  --vf-red:#B42318;
+  --vf-amber:#B54708;
+  --vf-radius:12px;
+}
+
+/* ----------------------------------------------------------
+   GLOBAL — remove visual noise
+   ---------------------------------------------------------- */
+html,body,.stApp,[data-testid="stAppViewContainer"]{
+  background:var(--vf-bg)!important;
+  color:var(--vf-text)!important;
+  font-family:'Inter',system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;
+}
+[data-testid="stMainBlockContainer"]{
+  max-width:1480px!important;
+  padding-top:1rem!important;
+  padding-bottom:3rem!important;
+}
+h1,h2,h3,h4,h5,h6,
+.vf-hero-title,.vf-section-title,
+div[data-testid="stMetricValue"],
+.vf-future-strip-text{
+  font-family:'Inter',system-ui,sans-serif!important;
+  letter-spacing:-.02em!important;
+}
+hr{border-color:var(--vf-line)!important}
+
+/* Remove accumulated ornamental gradients/shadows */
+.vf-page-shell,.vf-hero,.vf-command-card,.vf-cardline,.vf-alert-row,
+.vf-future-strip,.vf-brand-quote,.vf-topbar,
+div[data-testid="stMetric"],
+div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stDataFrame"],
+div[data-testid="stExpander"],
+div[data-testid="stForm"]{
+  box-shadow:none!important;
+}
+
+/* ----------------------------------------------------------
+   SIDEBAR — quieter navigation
+   ---------------------------------------------------------- */
+section[data-testid="stSidebar"]{
+  background:#FCFCFB!important;
+  border-right:1px solid var(--vf-line)!important;
+}
+section[data-testid="stSidebar"] .block-container{
+  padding-top:.85rem!important;
+}
+section[data-testid="stSidebar"] button{
+  min-height:38px!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+  transition:background .16s ease,border-color .16s ease,transform .16s ease!important;
+}
+section[data-testid="stSidebar"] button:hover{
+  transform:translateX(2px);
+  border-color:#C9D5F5!important;
+  background:#F5F7FB!important;
+}
+
+/* ----------------------------------------------------------
+   TOP BAR — less branding clutter
+   ---------------------------------------------------------- */
+.vf-topbar{
+  background:transparent!important;
+  border:0!important;
+  padding:7px 2px 12px!important;
+}
+.vf-brand{
+  font-family:'Inter',system-ui,sans-serif!important;
+  font-size:.88rem!important;
+  font-weight:800!important;
+  letter-spacing:.08em!important;
+}
+.vf-brand-sub{
+  font-size:.64rem!important;
+  letter-spacing:.05em!important;
+  color:#98A2B3!important;
+}
+.vf-topbar-right{
+  display:none!important;
+}
+
+/* ----------------------------------------------------------
+   PAGE ENTRY — restrained immersive 3D
+   ---------------------------------------------------------- */
+.vf-page-shell{
+  position:relative;
+  overflow:hidden;
+  min-height:128px;
+  margin:0 0 18px 0!important;
+  border:1px solid var(--vf-line)!important;
+  border-radius:14px!important;
+  background:
+    linear-gradient(120deg,#FFFFFF 0%,#FBFCFF 72%,#F5F7FF 100%)!important;
+  perspective:1000px;
+  animation:vfPageEnter .54s cubic-bezier(.2,.75,.25,1) both;
+}
+.vf-hero{
+  position:relative;
+  z-index:4;
+  width:min(72%,920px);
+  margin:0!important;
+  padding:25px 28px!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+}
+.vf-hero-title{
+  font-size:1.55rem!important;
+  line-height:1.14!important;
+  font-weight:750!important;
+  color:var(--vf-text)!important;
+}
+.vf-hero-sub{
+  max-width:820px;
+  margin-top:7px!important;
+  color:var(--vf-muted)!important;
+  font-size:.91rem!important;
+  line-height:1.5!important;
+}
+.vf-premium-divider{
+  display:none!important;
+}
+
+.vf-3d-stage{
+  position:absolute;
+  z-index:1;
+  inset:0 0 0 auto;
+  width:34%;
+  min-width:260px;
+  overflow:hidden;
+  pointer-events:none;
+  transform-style:preserve-3d;
+  opacity:.94;
+}
+.vf-3d-grid{
+  position:absolute;
+  width:230px;
+  height:150px;
+  right:28px;
+  top:25px;
+  border:1px solid rgba(37,99,235,.14);
+  background:
+    linear-gradient(rgba(37,99,235,.07) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(37,99,235,.07) 1px,transparent 1px);
+  background-size:22px 22px;
+  transform:rotateX(64deg) rotateZ(-18deg) translateZ(-14px);
+  transform-origin:center;
+  animation:vfGridFloat 6.5s ease-in-out infinite;
+  border-radius:10px;
+}
+.vf-3d-orb{
+  position:absolute;
+  width:64px;
+  height:64px;
+  right:93px;
+  top:29px;
+  border-radius:50%;
+  background:
+    radial-gradient(circle at 33% 28%,#FFFFFF 0 7%,#AFC5FF 23%,#5A82E8 53%,#244AAB 82%,#16306F 100%);
+  box-shadow:
+    0 17px 34px rgba(37,99,235,.16),
+    inset -8px -10px 18px rgba(11,31,75,.22);
+  animation:vfOrbFloat 5.8s ease-in-out infinite;
+}
+.vf-3d-ring{
+  position:absolute;
+  width:112px;
+  height:42px;
+  right:69px;
+  top:78px;
+  border:1px solid rgba(37,99,235,.27);
+  border-radius:50%;
+  transform:rotateX(68deg) rotateZ(-12deg);
+  animation:vfRingDrift 7s ease-in-out infinite;
+}
+.vf-3d-line{
+  position:absolute;
+  right:18px;
+  top:0;
+  width:1px;
+  height:100%;
+  background:linear-gradient(transparent,rgba(37,99,235,.16),transparent);
+  transform:rotate(14deg);
+}
+
+@keyframes vfPageEnter{
+  0%{opacity:0;transform:translateY(13px) rotateX(2.5deg) scale(.992)}
+  65%{opacity:1;transform:translateY(-1px) rotateX(0) scale(1)}
+  100%{opacity:1;transform:none}
+}
+@keyframes vfGridFloat{
+  0%,100%{transform:rotateX(64deg) rotateZ(-18deg) translate3d(0,0,-14px)}
+  50%{transform:rotateX(61deg) rotateZ(-15deg) translate3d(-7px,-4px,7px)}
+}
+@keyframes vfOrbFloat{
+  0%,100%{transform:translate3d(0,0,26px) scale(1)}
+  50%{transform:translate3d(-8px,7px,42px) scale(1.035)}
+}
+@keyframes vfRingDrift{
+  0%,100%{transform:rotateX(68deg) rotateZ(-12deg) translate3d(0,0,12px)}
+  50%{transform:rotateX(71deg) rotateZ(-8deg) translate3d(5px,-4px,22px)}
+}
+
+/* Tabs also enter smoothly, without permanent motion. */
+div[data-testid="stTabs"] [role="tabpanel"]{
+  animation:vfTabEnter .32s ease-out both;
+}
+@keyframes vfTabEnter{
+  from{opacity:0;transform:translateY(7px)}
+  to{opacity:1;transform:none}
+}
+
+/* ----------------------------------------------------------
+   CONTENT — flatter hierarchy, denser information
+   ---------------------------------------------------------- */
+.vf-section-title{
+  position:relative!important;
+  margin:20px 0 3px!important;
+  padding-left:0!important;
+  font-size:1.08rem!important;
+  font-weight:740!important;
+  color:var(--vf-text)!important;
+}
+.vf-section-title::before{
+  display:none!important;
+}
+.vf-section-sub{
+  margin-bottom:10px!important;
+  color:var(--vf-muted)!important;
+  font-size:.83rem!important;
+  line-height:1.45!important;
+}
+
+div[data-testid="stMetric"]{
+  background:var(--vf-surface)!important;
+  border:1px solid var(--vf-line)!important;
+  border-radius:10px!important;
+  padding:12px 14px!important;
+}
+div[data-testid="stMetricLabel"] p{
+  color:#667085!important;
+  font-size:.72rem!important;
+  font-weight:650!important;
+}
+div[data-testid="stMetricValue"]{
+  color:var(--vf-text)!important;
+  font-size:1.48rem!important;
+  font-weight:720!important;
+}
+div[data-testid="stMetricDelta"]{
+  font-size:.72rem!important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stExpander"],
+div[data-testid="stForm"],
+div[data-testid="stDataFrame"]{
+  background:var(--vf-surface)!important;
+  border:1px solid var(--vf-line)!important;
+  border-radius:10px!important;
+}
+div[data-testid="stVerticalBlockBorderWrapper"]{
+  padding:2px!important;
+}
+div[data-testid="stExpander"]{
+  overflow:hidden!important;
+}
+
+/* Tables: cleaner frame */
+div[data-testid="stDataFrame"]{
+  overflow:hidden!important;
+}
+
+/* Tabs: simple underline instead of pill-heavy navigation */
+div[data-testid="stTabs"] [data-baseweb="tab-list"]{
+  gap:4px!important;
+  padding:0!important;
+  border:0!important;
+  border-bottom:1px solid var(--vf-line)!important;
+  border-radius:0!important;
+  background:transparent!important;
+}
+div[data-testid="stTabs"] button{
+  min-height:40px!important;
+  padding:8px 11px!important;
+  border-radius:7px 7px 0 0!important;
+  background:transparent!important;
+  color:#667085!important;
+  font-weight:620!important;
+}
+div[data-testid="stTabs"] button[aria-selected="true"]{
+  background:#FFFFFF!important;
+  color:var(--vf-text)!important;
+  border-bottom:2px solid var(--vf-blue)!important;
+}
+
+/* Inputs/buttons — consistent and compact */
+button[kind="primary"]{
+  background:var(--vf-blue)!important;
+  border:1px solid var(--vf-blue)!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+}
+button[kind="secondary"]{
+  background:#FFFFFF!important;
+  color:#344054!important;
+  border:1px solid var(--vf-line-strong)!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+}
+button[kind="primary"]:hover,
+button[kind="secondary"]:hover{
+  filter:brightness(.985);
+}
+div[data-baseweb="select"]>div,
+input,textarea{
+  background:#FFFFFF!important;
+  border-color:var(--vf-line-strong)!important;
+  border-radius:8px!important;
+  box-shadow:none!important;
+}
+
+/* Callouts — keep meaning, lose ornament */
+.vf-future-strip{
+  background:#FFFFFF!important;
+  border:1px solid var(--vf-line)!important;
+  border-left:3px solid #AFC5FF!important;
+  border-radius:9px!important;
+  padding:11px 13px!important;
+}
+.vf-future-strip-title{
+  color:#667085!important;
+  font-size:.61rem!important;
+  letter-spacing:.08em!important;
+  font-weight:700!important;
+}
+.vf-future-strip-text{
+  color:#344054!important;
+  font-size:.9rem!important;
+  font-weight:520!important;
+  line-height:1.45!important;
+}
+
+/* Cards */
+.vf-command-card,.vf-cardline,.vf-alert-row{
+  background:#FFFFFF!important;
+  border:1px solid var(--vf-line)!important;
+  border-radius:10px!important;
+  padding:13px 14px!important;
+}
+.vf-command-title,.vf-alert-meta,.vf-command-note{
+  color:#667085!important;
+}
+.vf-command-value{
+  font-size:1.28rem!important;
+  font-weight:730!important;
+}
+.vf-badge,.vf-chip{
+  border-radius:6px!important;
+  font-size:.69rem!important;
+  font-weight:700!important;
+}
+
+/* Decorative items are intentionally toned down. */
+.vf-brand-line,.vf-goldline{
+  height:1px!important;
+  background:#D0D5DD!important;
+}
+.vf-brand-quote{
+  background:#FFFFFF!important;
+  border:1px solid var(--vf-line)!important;
+  border-radius:10px!important;
+  font-family:'Inter',system-ui,sans-serif!important;
+  font-style:normal!important;
+  font-size:.94rem!important;
+}
+.vf-brand-panorama{
+  min-height:108px!important;
+  border-radius:10px!important;
+  border-color:var(--vf-line)!important;
+  filter:saturate(.65) contrast(.94)!important;
+}
+
+/* Mobile / narrow screens */
+@media (max-width:900px){
+  .vf-page-shell{min-height:118px}
+  .vf-hero{width:100%;padding:21px 20px 22px!important}
+  .vf-hero-title{font-size:1.34rem!important}
+  .vf-hero-sub{max-width:78%}
+  .vf-3d-stage{width:38%;min-width:190px;opacity:.62}
+  .vf-3d-grid{right:-20px}
+  .vf-3d-orb{right:24px;width:50px;height:50px}
+  .vf-3d-ring{right:7px}
+}
+
+/* Accessibility: honor reduced-motion preferences */
+@media (prefers-reduced-motion: reduce){
+  .vf-page-shell,
+  .vf-3d-grid,
+  .vf-3d-orb,
+  .vf-3d-ring,
+  div[data-testid="stTabs"] [role="tabpanel"]{
+    animation:none!important;
+    transition:none!important;
+  }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 def vf_page_header(title: str, subtitle: str = ""):
     sub = f'<div class="vf-hero-sub">{subtitle}</div>' if subtitle else ""
     st.markdown(
         '<div class="vf-page-shell">'
+        '<div class="vf-3d-stage" aria-hidden="true">'
+        '<div class="vf-3d-grid"></div>'
+        '<div class="vf-3d-ring"></div>'
+        '<div class="vf-3d-orb"></div>'
+        '<div class="vf-3d-line"></div>'
+        '</div>'
         f'<div class="vf-hero"><div class="vf-hero-title">{title}</div>{sub}</div>'
-        '<div class="vf-premium-divider"></div>'
         '</div>',
         unsafe_allow_html=True
     )
