@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.0 XTB Project 0 Linked Journal"
+APP_VERSION = "V39.1 Trade Cancellation"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -6892,6 +6892,51 @@ def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""
     return vf_save_trade_journal_record(payload)
 
 
+def vf_cancel_trade_record(trade_row, cancel_reason="DUPLICATE", notes=""):
+    """
+    Cancel a journal line without creating a market P/L.
+
+    CANCELLED means the journal entry itself was invalid/non-executed/duplicated.
+    It is different from CLOSED, which represents a real broker exit.
+
+    Consequences for Project 0:
+    - reserved capital is released immediately;
+    - no realized P/L is created;
+    - the line is excluded from strategy statistics;
+    - the record remains in the audit trail.
+    """
+    if hasattr(trade_row, "to_dict"):
+        trade_row = trade_row.to_dict()
+    row = dict(trade_row)
+
+    if _clean_text(row.get("status"), upper=True) != "OPEN":
+        return False, "Seuls les trades OPEN peuvent être annulés."
+
+    previous_notes = _clean_text(row.get("notes"))
+    cancel_note = _clean_text(notes)
+    reason = _clean_text(cancel_reason, upper=True) or "CANCELLED"
+
+    audit_note = f"ANNULÉ [{reason}]"
+    if cancel_note:
+        audit_note += f" — {cancel_note}"
+    if previous_notes:
+        audit_note += f" • Note initiale : {previous_notes}"
+
+    payload = {
+        **row,
+        "status": "CANCELLED",
+        "closed_at": datetime.utcnow().isoformat(),
+        "exit_price": None,
+        "exit_reason": f"CANCELLED_{reason}",
+        "fees": 0.0,
+        "realized_pnl": None,
+        "realized_pct": None,
+        "r_multiple": None,
+        "notes": audit_note,
+    }
+    return vf_save_trade_journal_record(payload)
+
+
 def vf_trade_journal_stats(df):
     closed = df[df["status"].astype(str).str.upper() == "CLOSED"].copy() if not df.empty else pd.DataFrame()
     if closed.empty:
@@ -6960,6 +7005,7 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
             "risk_open": 0.0,
             "open_count": 0,
             "closed_count": 0,
+            "cancelled_count": 0,
             "exposure_pct": 0.0,
             "open_detail": pd.DataFrame(),
         }
@@ -6969,6 +7015,7 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
 
     opened = df[df["status_norm"] == "OPEN"].copy()
     closed = df[df["status_norm"] == "CLOSED"].copy()
+    cancelled = df[df["status_norm"] == "CANCELLED"].copy()
 
     realized = float(
         pd.to_numeric(closed.get("realized_pnl"), errors="coerce")
@@ -7053,6 +7100,7 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
         "risk_open": float(open_risk_total),
         "open_count": int(len(opened)),
         "closed_count": int(len(closed)),
+        "cancelled_count": int(len(cancelled)),
         "exposure_pct": float(exposure_pct),
         "open_detail": pd.DataFrame(detail_rows),
     }
@@ -7457,10 +7505,127 @@ def vf_trade_journal_page():
                         pass
 
     # ------------------------------------------------------
+    # Cancel one or more erroneous OPEN journal lines
+    # ------------------------------------------------------
+    if not opened.empty:
+        vf_section(
+            "↩️ Annuler / corriger un trade",
+            "À utiliser pour un doublon, une erreur de saisie ou un ordre finalement non exécuté. "
+            "Une annulation libère le capital Project 0 sans créer de gain ni de perte."
+        )
+
+        cancel_labels = {}
+        for _, rr in opened.iterrows():
+            tid = str(rr.get("trade_id") or "")
+            opened_dt = pd.to_datetime(rr.get("opened_at"), errors="coerce")
+            opened_txt = (
+                opened_dt.strftime("%d/%m %H:%M")
+                if pd.notna(opened_dt)
+                else "date inconnue"
+            )
+            entry_v = _vf_num(rr.get("actual_entry"))
+            qty_v = int(_vf_num(rr.get("quantity")) or 0)
+            label = (
+                f"{_clean_text(rr.get('symbol'), upper=True)} • "
+                f"{_clean_text(rr.get('name')) or '—'} • "
+                f"Qté {qty_v} • "
+                f"{entry_v:.2f} € • "
+                f"{opened_txt} • ID {tid[-6:]}"
+            )
+            cancel_labels[label] = rr
+
+        selected_cancel_labels = st.multiselect(
+            "Trade(s) OPEN à annuler",
+            list(cancel_labels.keys()),
+            key="journal_cancel_trades",
+            help="Tu peux sélectionner plusieurs doublons en une seule fois."
+        )
+
+        ca1,ca2 = st.columns([1,2])
+        cancel_reason_label = ca1.selectbox(
+            "Motif",
+            [
+                "Doublon",
+                "Erreur de saisie",
+                "Ordre non exécuté",
+                "Mauvais instrument",
+                "Autre",
+            ],
+            key="journal_cancel_reason"
+        )
+        cancel_note = ca2.text_input(
+            "Note facultative",
+            placeholder="Ex. création multiple accidentelle de la même position",
+            key="journal_cancel_note"
+        )
+
+        reason_map = {
+            "Doublon": "DUPLICATE",
+            "Erreur de saisie": "INPUT_ERROR",
+            "Ordre non exécuté": "NOT_EXECUTED",
+            "Mauvais instrument": "WRONG_INSTRUMENT",
+            "Autre": "OTHER",
+        }
+
+        if selected_cancel_labels:
+            selected_rows = [
+                cancel_labels[label]
+                for label in selected_cancel_labels
+            ]
+            released = sum(
+                float(_vf_num(r.get("capital_committed")) or 0.0)
+                for r in selected_rows
+            )
+            st.info(
+                f"{len(selected_rows)} trade(s) sélectionné(s) • "
+                f"environ {released:,.2f} € de capital Project 0 seront libérés. "
+                "Aucun P/L ne sera comptabilisé."
+            )
+
+        confirm_cancel = st.checkbox(
+            "Je confirme qu'il s'agit d'une annulation de ligne de journal, et non d'une vente réellement exécutée chez XTB.",
+            value=False,
+            key="journal_cancel_confirm"
+        )
+
+        if st.button(
+            "↩️ Annuler les trades sélectionnés",
+            use_container_width=True,
+            disabled=(not selected_cancel_labels or not confirm_cancel),
+            key="journal_cancel_submit"
+        ):
+            success_count = 0
+            errors = []
+            for label in selected_cancel_labels:
+                rr = cancel_labels[label]
+                ok, where = vf_cancel_trade_record(
+                    rr,
+                    cancel_reason=reason_map[cancel_reason_label],
+                    notes=cancel_note,
+                )
+                if ok:
+                    success_count += 1
+                else:
+                    errors.append(str(where))
+
+            if success_count:
+                vf_safe_cache_clear()
+                st.success(
+                    f"{success_count} trade(s) annulé(s). "
+                    "Le capital correspondant est de nouveau disponible dans XTB Project 0."
+                )
+                st.rerun()
+            elif errors:
+                st.error("Annulation impossible : " + " • ".join(errors[:3]))
+
+    # ------------------------------------------------------
     # Close a trade
     # ------------------------------------------------------
     if not opened.empty:
-        vf_section("Clôturer un trade", "Saisir l'exécution réelle pour mesurer prévu vs réalisé.")
+        vf_section(
+            "✅ Clôturer un trade réellement exécuté",
+            "À utiliser uniquement lorsqu'une vente/sortie a réellement été exécutée chez XTB."
+        )
 
         labels = {}
         for _, rr in opened.iterrows():
@@ -7505,6 +7670,34 @@ def vf_trade_journal_page():
                 st.success(f"Trade clôturé • journal {where}.")
                 vf_safe_cache_clear()
                 st.rerun()
+
+    # ------------------------------------------------------
+    # Cancelled audit trail
+    # ------------------------------------------------------
+    cancelled_df = df[
+        df["status"].astype(str).str.upper() == "CANCELLED"
+    ].copy()
+
+    if not cancelled_df.empty:
+        with st.expander(
+            f"↩️ Trades annulés — {len(cancelled_df)}",
+            expanded=False
+        ):
+            st.caption(
+                "Ces lignes sont conservées pour traçabilité mais sont exclues du P/L, "
+                "du win rate et du capital engagé Project 0."
+            )
+            cancelled_visible = [
+                "closed_at","symbol","name","actual_entry","quantity",
+                "capital_committed","exit_reason","notes","trade_id"
+            ]
+            st.dataframe(
+                cancelled_df[
+                    [c for c in cancelled_visible if c in cancelled_df.columns]
+                ].sort_values("closed_at", ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
 
     # ------------------------------------------------------
     # Strategy analytics
@@ -7620,7 +7813,7 @@ def vf_xtb_zero_panel():
     )
     z5.metric("Performance totale", f"{project['return_pct']:+.2f}%")
 
-    s1,s2,s3,s4 = st.columns(4)
+    s1,s2,s3,s4,s5 = st.columns(5)
     s1.metric("P/L réalisé", f"{project['realized_pnl']:+.2f} €")
     s2.metric("P/L latent", f"{project['open_unrealized_pnl']:+.2f} €")
     s3.metric("Risque OPEN", f"{project['risk_open']:.2f} €")
@@ -7629,6 +7822,7 @@ def vf_xtb_zero_panel():
         f"{project['exposure_pct']:.1f}%",
         f"{project['open_count']} trade(s) OPEN"
     )
+    s5.metric("Annulés", int(project.get("cancelled_count", 0)))
 
     st.success(
         "🔗 Liaison active : Trade Journal ↔ CTO XTB Project 0. "
