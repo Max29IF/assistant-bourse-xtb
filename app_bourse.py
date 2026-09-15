@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.3 Mobile Optimized"
+APP_VERSION = "V39.4 Mobile UX Pro"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -991,6 +991,80 @@ def vf_login_gate():
         "« Profil & sécurité ». Aucun profil Famille n'est créé dans cette version."
     )
     return None
+
+
+
+# ============================================================
+# V39.4 — AUTH / LOGIN CONTRAST FIX
+# Loaded before vf_login_gate() so it is active on the login screen.
+# ============================================================
+st.markdown("""
+<style>
+/* Login page: force readable text on white / ivory inputs */
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextInput"] input[type="email"],
+div[data-testid="stTextInput"] input[type="password"],
+div[data-testid="stTextInput"] input[type="text"],
+div[data-testid="stNumberInput"] input {
+    color:#172033 !important;
+    -webkit-text-fill-color:#172033 !important;
+    caret-color:#2563EB !important;
+    background:#FFFFFF !important;
+    border-color:#D8DDE6 !important;
+    opacity:1 !important;
+}
+
+div[data-testid="stTextInput"] input::placeholder,
+div[data-testid="stNumberInput"] input::placeholder {
+    color:#8A94A3 !important;
+    -webkit-text-fill-color:#8A94A3 !important;
+    opacity:1 !important;
+}
+
+div[data-testid="stTextInput"] label,
+div[data-testid="stNumberInput"] label,
+div[data-testid="stTextArea"] label {
+    color:#263247 !important;
+}
+
+/* Browser autofill can otherwise repaint the text white on mobile */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+    -webkit-text-fill-color:#172033 !important;
+    caret-color:#2563EB !important;
+    -webkit-box-shadow:0 0 0 1000px #FFFFFF inset !important;
+    box-shadow:0 0 0 1000px #FFFFFF inset !important;
+    transition:background-color 9999s ease-out 0s;
+}
+
+/* Password reveal icon / adornments */
+div[data-testid="stTextInput"] button,
+div[data-baseweb="input"] svg {
+    color:#667085 !important;
+    fill:#667085 !important;
+}
+
+@media (max-width:768px) {
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input {
+        min-height:46px !important;
+        font-size:16px !important;
+        border-radius:10px !important;
+        padding-left:.80rem !important;
+        padding-right:.80rem !important;
+    }
+
+    div[data-testid="stForm"] {
+        background:#FFFDF9 !important;
+        border:1px solid #E4E0D8 !important;
+        border-radius:14px !important;
+        padding:.85rem !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 
 
 # Authentication must happen before any private database query.
@@ -7190,16 +7264,17 @@ def vf_trade_journal_page():
         "🔗 XTB Project 0",
         "Le Trade Journal est maintenant le registre opérationnel du CTO XTB Project 0."
     )
-    pj1,pj2,pj3,pj4,pj5 = st.columns(5)
-    pj1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
-    pj2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
-    pj3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
-    pj4.metric(
-        "Valeur Project 0",
-        f"{project['project_equity']:,.2f} €",
-        f"{project['project_pnl']:+.2f} €"
-    )
-    pj5.metric("Performance", f"{project['return_pct']:+.2f}%")
+    with st.container(key="vf_journal_project_kpis"):
+        pj1,pj2,pj3,pj4,pj5 = st.columns(5)
+        pj1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
+        pj2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
+        pj3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
+        pj4.metric(
+            "Valeur Project 0",
+            f"{project['project_equity']:,.2f} €",
+            f"{project['project_pnl']:+.2f} €"
+        )
+        pj5.metric("Performance", f"{project['return_pct']:+.2f}%")
 
     st.caption(
         "Un trade OPEN réserve automatiquement son capital dans Project 0. "
@@ -7802,27 +7877,28 @@ def vf_xtb_zero_panel():
     )
 
     # Main project KPIs
-    z1,z2,z3,z4,z5 = st.columns(5)
-    z1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
-    z2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
-    z3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
-    z4.metric(
-        "Valeur Project 0",
-        f"{project['project_equity']:,.2f} €",
-        f"{project['project_pnl']:+.2f} €"
-    )
-    z5.metric("Performance totale", f"{project['return_pct']:+.2f}%")
+    with st.container(key="vf_project_zero_kpis"):
+        z1,z2,z3,z4,z5 = st.columns(5)
+        z1.metric("Mise de départ", f"{project['initial_capital']:,.0f} €")
+        z2.metric("Cash disponible", f"{project['available_cash']:,.2f} €")
+        z3.metric("Capital engagé", f"{project['capital_committed']:,.2f} €")
+        z4.metric(
+            "Valeur Project 0",
+            f"{project['project_equity']:,.2f} €",
+            f"{project['project_pnl']:+.2f} €"
+        )
+        z5.metric("Performance totale", f"{project['return_pct']:+.2f}%")
 
-    s1,s2,s3,s4,s5 = st.columns(5)
-    s1.metric("P/L réalisé", f"{project['realized_pnl']:+.2f} €")
-    s2.metric("P/L latent", f"{project['open_unrealized_pnl']:+.2f} €")
-    s3.metric("Risque OPEN", f"{project['risk_open']:.2f} €")
-    s4.metric(
-        "Exposition",
-        f"{project['exposure_pct']:.1f}%",
-        f"{project['open_count']} trade(s) OPEN"
-    )
-    s5.metric("Annulés", int(project.get("cancelled_count", 0)))
+        s1,s2,s3,s4,s5 = st.columns(5)
+        s1.metric("P/L réalisé", f"{project['realized_pnl']:+.2f} €")
+        s2.metric("P/L latent", f"{project['open_unrealized_pnl']:+.2f} €")
+        s3.metric("Risque OPEN", f"{project['risk_open']:.2f} €")
+        s4.metric(
+            "Exposition",
+            f"{project['exposure_pct']:.1f}%",
+            f"{project['open_count']} trade(s) OPEN"
+        )
+        s5.metric("Annulés", int(project.get("cancelled_count", 0)))
 
     st.success(
         "🔗 Liaison active : Trade Journal ↔ CTO XTB Project 0. "
@@ -11432,6 +11508,35 @@ def vf_global_topbar():
     st.markdown(html, unsafe_allow_html=True)
 
 
+def vf_mobile_bottom_nav():
+    """
+    Mobile-first navigation. Hidden on desktop via CSS.
+    The regular sidebar stays available for all secondary pages.
+    """
+    current = st.session_state.get("nav_mode", "🏠 Dashboard")
+    items = [
+        ("⌂", "Accueil", "🏠 Dashboard"),
+        ("◫", "Portfolio", "📈 Performance"),
+        ("⌕", "Scanner", "🔎 Scanner"),
+        ("✎", "Journal", "📓 Trade Journal"),
+        ("⌂", "Immo", "🏘️ Immobilier"),
+    ]
+
+    with st.container(key="vf_mobile_nav"):
+        cols = st.columns(len(items), gap="small")
+        for idx, (icon, label, target) in enumerate(items):
+            active = current == target
+            with cols[idx]:
+                if st.button(
+                    f"{icon}\n{label}",
+                    key=f"vf_mobile_nav_{idx}",
+                    use_container_width=True,
+                    type="primary" if active else "secondary"
+                ):
+                    st.session_state["_pending_nav_mode"] = target
+                    st.rerun()
+
+
 def vf_watchlist_from_alerts(limit=6):
     alerts = load_market_alerts(limit=100)
     if alerts is None or alerts.empty:
@@ -11732,12 +11837,23 @@ def vf_dashboard_command_center():
     pulse=vf_market_pulse()
     watch_count=len(vf_watchlist_get())
 
-    c1,c2,c3,c4,c5=st.columns(5)
-    c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
-    c2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
-    c3.metric("Opportunités",entries)
-    c4.metric("Alertes risque",risks)
-    c5.metric("Watchlist",watch_count)
+    # Mobile summary — 4 essentials in a 2x2 touch-friendly grid.
+    with st.container(key="vf_dashboard_mobile_kpis"):
+        m1,m2 = st.columns(2)
+        m1.metric("Patrimoine",f"{total_value:,.0f} €",f"{total_positions} position(s)")
+        m2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
+        m3,m4 = st.columns(2)
+        m3.metric("Opportunités",entries)
+        m4.metric("Risques",risks)
+
+    # Full dashboard KPI row for desktop/tablet landscape.
+    with st.container(key="vf_dashboard_desktop_kpis"):
+        c1,c2,c3,c4,c5=st.columns(5)
+        c1.metric("Patrimoine suivi",f"{total_value:,.0f} €",f"{total_positions} position(s)")
+        c2.metric("P/L latent",f"{total_unrealized:+,.0f} €")
+        c3.metric("Opportunités",entries)
+        c4.metric("Alertes risque",risks)
+        c5.metric("Watchlist",watch_count)
 
     # V29 — Recovery + Project Zero overview
     try:
@@ -12645,7 +12761,187 @@ div[data-testid="stTable"] {
 """, unsafe_allow_html=True)
 
 
+
+# ============================================================
+# V39.4 — MOBILE UX PRO
+# ============================================================
+st.markdown("""
+<style>
+
+/* Mobile bottom navigation is invisible on desktop. */
+.st-key-vf_mobile_nav {
+    display:none;
+}
+
+/* Dedicated mobile dashboard cards hidden on desktop. */
+.st-key-vf_dashboard_mobile_kpis {
+    display:none;
+}
+
+@media (max-width:768px) {
+
+    /* Leave room for the fixed bottom navigation. */
+    [data-testid="stMainBlockContainer"] {
+        padding-bottom:6.6rem !important;
+    }
+
+    /* -----------------------------------------------------
+       MOBILE BOTTOM NAV
+       ----------------------------------------------------- */
+    .st-key-vf_mobile_nav {
+        display:block !important;
+        position:fixed !important;
+        left:50% !important;
+        bottom:max(.45rem, env(safe-area-inset-bottom)) !important;
+        transform:translateX(-50%) !important;
+        width:calc(100vw - 1rem) !important;
+        max-width:560px !important;
+        z-index:999 !important;
+        padding:.34rem .34rem .28rem !important;
+        background:rgba(255,253,249,.96) !important;
+        border:1px solid #E2DDD5 !important;
+        border-radius:18px !important;
+        box-shadow:0 12px 36px rgba(20,31,49,.16) !important;
+        backdrop-filter:blur(18px);
+        -webkit-backdrop-filter:blur(18px);
+    }
+
+    .st-key-vf_mobile_nav [data-testid="stHorizontalBlock"] {
+        flex-wrap:nowrap !important;
+        gap:.18rem !important;
+    }
+
+    .st-key-vf_mobile_nav [data-testid="column"] {
+        flex:1 1 20% !important;
+        width:20% !important;
+        min-width:0 !important;
+    }
+
+    .st-key-vf_mobile_nav button {
+        min-height:52px !important;
+        padding:.25rem .10rem !important;
+        border-radius:13px !important;
+        font-size:.68rem !important;
+        line-height:1.15 !important;
+        white-space:pre-line !important;
+        box-shadow:none !important;
+    }
+
+    .st-key-vf_mobile_nav button[kind="secondary"] {
+        background:transparent !important;
+        border-color:transparent !important;
+        color:#667085 !important;
+    }
+
+    .st-key-vf_mobile_nav button[kind="primary"] {
+        background:#EEF3FF !important;
+        border-color:#DCE6FF !important;
+        color:#214DBA !important;
+    }
+
+    /* -----------------------------------------------------
+       MOBILE DASHBOARD — only the essentials first
+       ----------------------------------------------------- */
+    .st-key-vf_dashboard_mobile_kpis {
+        display:block !important;
+        margin:.20rem 0 .70rem !important;
+    }
+
+    .st-key-vf_dashboard_desktop_kpis {
+        display:none !important;
+    }
+
+    .st-key-vf_dashboard_mobile_kpis [data-testid="stHorizontalBlock"] {
+        flex-wrap:nowrap !important;
+        gap:.45rem !important;
+        margin-bottom:.45rem !important;
+    }
+
+    .st-key-vf_dashboard_mobile_kpis [data-testid="column"] {
+        flex:1 1 50% !important;
+        width:50% !important;
+        min-width:0 !important;
+    }
+
+    .st-key-vf_dashboard_mobile_kpis [data-testid="stMetric"] {
+        min-height:94px !important;
+        display:flex !important;
+        flex-direction:column !important;
+        justify-content:center !important;
+    }
+
+    /* -----------------------------------------------------
+       PROJECT 0 / JOURNAL — compact two-column KPI grid
+       ----------------------------------------------------- */
+    .st-key-vf_project_zero_kpis [data-testid="stHorizontalBlock"],
+    .st-key-vf_journal_project_kpis [data-testid="stHorizontalBlock"] {
+        flex-wrap:wrap !important;
+        gap:.42rem !important;
+    }
+
+    .st-key-vf_project_zero_kpis [data-testid="column"],
+    .st-key-vf_journal_project_kpis [data-testid="column"] {
+        flex:1 1 calc(50% - .22rem) !important;
+        width:calc(50% - .22rem) !important;
+        min-width:0 !important;
+    }
+
+    .st-key-vf_project_zero_kpis [data-testid="stMetric"],
+    .st-key-vf_journal_project_kpis [data-testid="stMetric"] {
+        min-height:88px !important;
+    }
+
+    /* -----------------------------------------------------
+       LONG PAGES / TOUCH UX
+       ----------------------------------------------------- */
+    div[data-testid="stExpander"] details summary {
+        min-height:48px !important;
+    }
+
+    button {
+        touch-action:manipulation;
+    }
+
+    /* Cards are visually separated without excess ornament. */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius:12px !important;
+        margin-bottom:.15rem !important;
+    }
+
+    /* Better chart proportions on portrait phones. */
+    div[data-testid="stVegaLiteChart"] {
+        min-height:230px;
+    }
+
+    /* Streamlit's sidebar remains available for secondary pages. */
+    section[data-testid="stSidebar"] button {
+        min-height:44px !important;
+    }
+}
+
+/* Extra-small phones */
+@media (max-width:390px) {
+    .st-key-vf_mobile_nav {
+        width:calc(100vw - .60rem) !important;
+        border-radius:15px !important;
+    }
+
+    .st-key-vf_mobile_nav button {
+        font-size:.62rem !important;
+        min-height:49px !important;
+    }
+
+    .st-key-vf_dashboard_mobile_kpis [data-testid="stMetricValue"] {
+        font-size:1.02rem !important;
+    }
+}
+
+</style>
+""", unsafe_allow_html=True)
+
+
 vf_global_topbar()
+vf_mobile_bottom_nav()
 
 if mode=="🏠 Dashboard":
     vf_dashboard_command_center()
