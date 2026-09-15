@@ -28,11 +28,23 @@ except Exception:
     genai = None
     genai_types = None
 
+try:
+    from rapidocr import RapidOCR
+except Exception:
+    RapidOCR = None
+
+try:
+    from PIL import Image, ImageEnhance, ImageFilter
+except Exception:
+    Image = None
+    ImageEnhance = None
+    ImageFilter = None
+
 st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligence", page_icon="🔭", layout="wide")
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.7 XTB Screenshot Import"
+APP_VERSION = "V39.8 Local OCR Screenshot Import"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -7144,106 +7156,468 @@ def vf_normalize_xtb_capture_data(data):
     return result
 
 
+@st.cache_resource(show_spinner=False)
+def vf_local_ocr_engine():
+    if RapidOCR is None:
+        return None
+    return RapidOCR()
+
+
+def vf_ocr_box_bounds(box):
+    try:
+        pts = np.asarray(box, dtype=float).reshape(-1, 2)
+        xs = pts[:, 0]
+        ys = pts[:, 1]
+        return float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0
+
+
+def vf_rapidocr_tokens(result):
+    """
+    Compatibility adapter for current RapidOCR and older tuple/list outputs.
+    Returns [{text, score, box, x1,y1,x2,y2,cx,cy}, ...].
+    """
+    if result is None:
+        return []
+
+    # Old API can return (results, elapsed)
+    if isinstance(result, tuple) and len(result) >= 1:
+        first = result[0]
+        if first is not None:
+            result = first
+
+    rows = []
+
+    # Newer RapidOCR result objects commonly expose boxes/txts/scores.
+    boxes = getattr(result, "boxes", None)
+    txts = getattr(result, "txts", None)
+    scores = getattr(result, "scores", None)
+    if boxes is not None and txts is not None:
+        scores = list(scores) if scores is not None else [1.0] * len(txts)
+        for box, text, score in zip(list(boxes), list(txts), scores):
+            rows.append((box, text, score))
+    else:
+        # Older list format: [box, text, score]
+        try:
+            iterable = list(result)
+        except Exception:
+            iterable = []
+
+        for item in iterable:
+            if item is None:
+                continue
+            if isinstance(item, dict):
+                box = item.get("box") or item.get("dt_box") or item.get("points")
+                text = item.get("text") or item.get("txt")
+                score = item.get("score", 1.0)
+                rows.append((box, text, score))
+                continue
+
+            try:
+                if len(item) >= 3:
+                    rows.append((item[0], item[1], item[2]))
+            except Exception:
+                pass
+
+    tokens = []
+    for box, text, score in rows:
+        text = str(text or "").strip()
+        if not text:
+            continue
+        x1, y1, x2, y2 = vf_ocr_box_bounds(box)
+        tokens.append({
+            "text": text,
+            "score": float(score) if score is not None else 1.0,
+            "box": box,
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "cx": (x1 + x2) / 2.0,
+            "cy": (y1 + y2) / 2.0,
+        })
+    return tokens
+
+
+def vf_norm_ocr_text(text):
+    import unicodedata
+    s = str(text or "").strip().lower()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    s = s.replace("’", "'").replace("`", "'")
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def vf_ocr_lines(tokens, y_tolerance=16):
+    """
+    Rebuild approximate reading lines from OCR boxes.
+    """
+    if not tokens:
+        return []
+
+    ordered = sorted(tokens, key=lambda t: (t["cy"], t["cx"]))
+    lines = []
+
+    for tok in ordered:
+        placed = False
+        for line in lines:
+            if abs(tok["cy"] - line["cy"]) <= y_tolerance:
+                line["tokens"].append(tok)
+                n = len(line["tokens"])
+                line["cy"] = ((line["cy"] * (n - 1)) + tok["cy"]) / n
+                placed = True
+                break
+        if not placed:
+            lines.append({"cy": tok["cy"], "tokens": [tok]})
+
+    out = []
+    for line in sorted(lines, key=lambda x: x["cy"]):
+        ts = sorted(line["tokens"], key=lambda t: t["cx"])
+        text = " ".join(t["text"] for t in ts).strip()
+        out.append({
+            "text": text,
+            "norm": vf_norm_ocr_text(text),
+            "cy": line["cy"],
+            "tokens": ts,
+            "x1": min(t["x1"] for t in ts),
+            "x2": max(t["x2"] for t in ts),
+        })
+    return out
+
+
+def vf_ocr_find_anchor(tokens, aliases):
+    """
+    Find the best token/line anchor matching one of the known XTB labels.
+    """
+    aliases = [vf_norm_ocr_text(a) for a in aliases]
+    candidates = []
+
+    for tok in tokens:
+        norm = vf_norm_ocr_text(tok["text"])
+        for alias in aliases:
+            if alias in norm or norm in alias:
+                candidates.append((len(alias), tok))
+            else:
+                # Keyword-tolerant matching for OCR truncation such as
+                # "Taux de conversion..." / "Taux de change à la..."
+                aw = [w for w in alias.split() if len(w) >= 3]
+                nw = set(norm.replace("/", " ").split())
+                hit = sum(1 for w in aw if w in nw)
+                if aw and hit >= max(1, len(aw) - 1):
+                    candidates.append((hit, tok))
+
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda x: x[0], reverse=True)[0][1]
+
+
+def vf_ocr_region_values(tokens, anchor, img_w, img_h, max_lines=2):
+    """
+    Read value(s) immediately below a label, in the same XTB grid column.
+    """
+    if anchor is None:
+        return []
+
+    col_width = img_w / 4.0
+    x_left = max(0, anchor["cx"] - col_width * 0.48)
+    x_right = min(img_w, anchor["cx"] + col_width * 0.55)
+    y_top = anchor["y2"] + 2
+    y_bottom = min(img_h, anchor["y2"] + img_h * 0.105)
+
+    label_words = {
+        "type","volume","gain","perte","benefice","brut","prix","ouvert",
+        "fermeture","horaire","ouverture","heure","cloture","valeur","achat",
+        "vente","taux","conversion","change","commission","position","numero",
+        "ordre","source","origine"
+    }
+
+    candidates = []
+    for tok in tokens:
+        if not (x_left <= tok["cx"] <= x_right and y_top <= tok["cy"] <= y_bottom):
+            continue
+        norm = vf_norm_ocr_text(tok["text"])
+        words = set(re.findall(r"[a-z]+", norm))
+        if words and len(words & label_words) >= 2:
+            continue
+        candidates.append(tok)
+
+    if not candidates:
+        return []
+
+    # Group into value lines
+    lines = vf_ocr_lines(candidates, y_tolerance=max(10, int(img_h * 0.008)))
+    return [ln["text"] for ln in lines[:max_lines]]
+
+
+def vf_ocr_first_number(text):
+    if text is None:
+        return None
+    s = str(text).replace("\u202f", " ").replace(",", ".")
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+
+def vf_ocr_first_int(text):
+    val = vf_ocr_first_number(text)
+    return int(round(val)) if val is not None else None
+
+
+def vf_ocr_parse_date_time(lines):
+    if not lines:
+        return None
+    joined = " ".join(lines)
+    # Common XTB format: 14.09.2026 15:24
+    m = re.search(
+        r"(\d{1,2}[./-]\d{1,2}[./-]\d{4}).*?(\d{1,2}:\d{2})",
+        joined
+    )
+    if m:
+        raw = f"{m.group(1)} {m.group(2)}"
+        try:
+            return pd.to_datetime(raw, dayfirst=True).strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception:
+            pass
+
+    # Date only if OCR missed the time
+    m = re.search(r"(\d{1,2}[./-]\d{1,2}[./-]\d{4})", joined)
+    if m:
+        try:
+            return pd.to_datetime(m.group(1), dayfirst=True).strftime("%Y-%m-%dT00:00:00")
+        except Exception:
+            pass
+    return None
+
+
+def vf_ocr_parse_xtb_fields(tokens, img_w, img_h):
+    """
+    Deterministic local parser for XTB 'Détails de la position' screenshots.
+    No remote AI/API is used.
+    """
+    fields = {
+        "broker": "XTB",
+        "status": None,
+        "side": None,
+        "instrument_type": "ACTION",
+        "broker_symbol": None,
+        "market_data_symbol": None,
+        "name": None,
+        "instrument_currency": None,
+        "account_currency": "EUR",
+        "quantity": None,
+        "entry_price": None,
+        "exit_price": None,
+        "opened_at": None,
+        "closed_at": None,
+        "fx_rate_entry": None,
+        "fx_rate_exit": None,
+        "broker_buy_value": None,
+        "broker_sell_value": None,
+        "broker_reported_pnl": None,
+        "broker_reported_commission": None,
+        "xtb_position_id": None,
+        "xtb_order_id": None,
+        "xtb_source": None,
+        "xtb_open_origin": None,
+        "xtb_close_origin": None,
+        "confidence": None,
+        "warnings": [],
+        "raw_ocr_text": "",
+    }
+
+    lines = vf_ocr_lines(tokens, y_tolerance=max(12, int(img_h * 0.009)))
+    fields["raw_ocr_text"] = "\n".join(ln["text"] for ln in lines)
+
+    # Broker symbol: TLW.UK, AAPL.US, etc.
+    symbol_re = re.compile(r"\b([A-Z0-9][A-Z0-9.-]{0,12}\.(?:UK|US|FR|DE|NL|ES|IT|PL|BE|PT|CH|SE|NO|DK|FI))\b", re.I)
+    for ln in lines:
+        m = symbol_re.search(ln["text"])
+        if m:
+            fields["broker_symbol"] = m.group(1).upper()
+            fields["market_data_symbol"] = vf_guess_market_data_symbol(fields["broker_symbol"])
+            # Name often follows broker code after comma
+            remainder = ln["text"][m.end():].strip(" ,;-")
+            if remainder:
+                fields["name"] = remainder
+            break
+
+    # Name: if not on ticker line, take a short upper-area line with letters.
+    if not fields["name"]:
+        for ln in lines:
+            if ln["cy"] > img_h * 0.20:
+                break
+            txt = ln["text"].strip()
+            norm = ln["norm"]
+            if (
+                len(txt) >= 3
+                and any(ch.isalpha() for ch in txt)
+                and "detail" not in norm
+                and "position" not in norm
+                and not symbol_re.search(txt)
+                and norm not in {"action","buy","sell"}
+            ):
+                fields["name"] = txt
+                break
+
+    # Known XTB labels
+    specs = {
+        "side": (["Type"], 1),
+        "quantity": (["Volume"], 1),
+        "broker_reported_pnl": (["Gain/perte", "Gain perte"], 1),
+        "entry_price": (["Prix ouvert"], 1),
+        "exit_price": (["Prix de fermeture", "Prix fermeture"], 1),
+        "opened_at": (["Horaire d'ouverture", "Horaire ouverture"], 2),
+        "closed_at": (["Heure de clôture", "Heure de cloture"], 2),
+        "broker_buy_value": (["Valeur d'achat", "Valeur achat"], 1),
+        "broker_sell_value": (["Valeur de vente", "Valeur vente"], 1),
+        "fx_rate_entry": (["Taux de conversion"], 1),
+        "fx_rate_exit": (["Taux de change"], 1),
+        "broker_reported_commission": (["Commission"], 1),
+        "xtb_position_id": (["ID de position"], 1),
+        "xtb_order_id": (["Numéro d'ordre", "Numero d'ordre"], 1),
+        "xtb_source": (["Source"], 1),
+        "xtb_open_origin": (["Origine d'ouverture", "Origine ouverture"], 1),
+        "xtb_close_origin": (["Origine de fermeture", "Origine fermeture"], 1),
+    }
+
+    raw_values = {}
+    for key, (aliases, max_lines) in specs.items():
+        anchor = vf_ocr_find_anchor(tokens, aliases)
+        vals = vf_ocr_region_values(tokens, anchor, img_w, img_h, max_lines=max_lines)
+        raw_values[key] = vals
+
+    def joined(key):
+        return " ".join(raw_values.get(key) or []).strip()
+
+    side_text = vf_norm_ocr_text(joined("side"))
+    if "buy" in side_text:
+        fields["side"] = "BUY"
+    elif "sell" in side_text:
+        fields["side"] = "SELL"
+
+    fields["quantity"] = vf_ocr_first_int(joined("quantity"))
+    fields["broker_reported_pnl"] = vf_ocr_first_number(joined("broker_reported_pnl"))
+    fields["entry_price"] = vf_ocr_first_number(joined("entry_price"))
+    fields["exit_price"] = vf_ocr_first_number(joined("exit_price"))
+    fields["opened_at"] = vf_ocr_parse_date_time(raw_values.get("opened_at"))
+    fields["closed_at"] = vf_ocr_parse_date_time(raw_values.get("closed_at"))
+    fields["broker_buy_value"] = vf_ocr_first_number(joined("broker_buy_value"))
+    fields["broker_sell_value"] = vf_ocr_first_number(joined("broker_sell_value"))
+    fields["fx_rate_entry"] = vf_ocr_first_number(joined("fx_rate_entry"))
+    fields["fx_rate_exit"] = vf_ocr_first_number(joined("fx_rate_exit"))
+    fields["broker_reported_commission"] = vf_ocr_first_number(joined("broker_reported_commission"))
+
+    # IDs must remain strings, no scientific notation.
+    for key in ("xtb_position_id", "xtb_order_id"):
+        m = re.search(r"\b\d{6,}\b", joined(key).replace(" ", ""))
+        if m:
+            fields[key] = m.group(0)
+
+    fields["xtb_source"] = joined("xtb_source") or None
+    fields["xtb_open_origin"] = joined("xtb_open_origin") or None
+    fields["xtb_close_origin"] = joined("xtb_close_origin") or None
+
+    # Currency from FX pair, broker suffix, or market metadata.
+    all_text = fields["raw_ocr_text"].upper()
+    pair_match = re.search(r"\b(GBP|USD|EUR|PLN|CHF|CAD|JPY|AUD|SEK|NOK|DKK)\s*/\s*EUR\b", all_text)
+    if pair_match:
+        fields["instrument_currency"] = pair_match.group(1)
+    elif fields["broker_symbol"]:
+        suffix = fields["broker_symbol"].split(".")[-1]
+        country_currency = {
+            "UK":"GBP","US":"USD","FR":"EUR","DE":"EUR","NL":"EUR",
+            "ES":"EUR","IT":"EUR","PL":"PLN","BE":"EUR","PT":"EUR",
+            "CH":"CHF","SE":"SEK","NO":"NOK","DK":"DKK","FI":"EUR"
+        }
+        fields["instrument_currency"] = country_currency.get(suffix)
+
+    fields["status"] = "CLOSED" if fields["exit_price"] is not None or fields["closed_at"] else "OPEN"
+
+    # Local confidence = average OCR confidence + completeness score.
+    scores = [t["score"] for t in tokens if isinstance(t.get("score"), (int,float))]
+    mean_score = float(np.mean(scores)) if scores else 0.0
+    important = [
+        "broker_symbol","quantity","entry_price","broker_buy_value",
+        "xtb_position_id","xtb_order_id"
+    ]
+    if fields["status"] == "CLOSED":
+        important += ["exit_price","closed_at","broker_sell_value","broker_reported_pnl"]
+    completeness = sum(fields.get(k) not in (None, "") for k in important) / max(len(important),1)
+    fields["confidence"] = max(0.0, min(1.0, mean_score * 0.65 + completeness * 0.35))
+
+    if not fields["broker_symbol"]:
+        fields["warnings"].append("Ticker XTB non détecté automatiquement.")
+    if fields["quantity"] is None:
+        fields["warnings"].append("Volume non détecté.")
+    if fields["entry_price"] is None:
+        fields["warnings"].append("Prix d'ouverture non détecté.")
+    if fields["status"] == "CLOSED" and fields["exit_price"] is None:
+        fields["warnings"].append("Prix de fermeture non détecté.")
+    if fields["confidence"] < 0.72:
+        fields["warnings"].append("Lecture OCR incertaine : vérifie attentivement les champs.")
+
+    return fields
+
+
 def vf_extract_xtb_trade_screenshot(image_bytes, mime_type="image/png"):
     """
-    Multimodal extraction from an XTB screenshot.
-    The image is sent to the Gemini API only when the user presses Analyze.
-    It is not persisted by VISION FUTURE.
+    Fully local OCR extraction.
+
+    - No Gemini/OpenAI/Google API call.
+    - No API key.
+    - The screenshot is processed in the Streamlit Python process.
+    - Designed for structured XTB screenshots, not arbitrary scene description.
     """
-    api_key = _secret("GEMINI_API_KEY")
-    model = _secret("GEMINI_MODEL", "gemini-3.5-flash-lite")
-
-    if not api_key:
-        return False, None, "GEMINI_API_KEY absent des secrets Streamlit."
-    if genai is None or genai_types is None:
+    if RapidOCR is None:
         return False, None, (
-            "Le module google-genai n'est pas disponible. "
-            "Vérifie que `google-genai` est présent dans requirements.txt."
+            "RapidOCR n'est pas installé. Ajoute `rapidocr` et `onnxruntime` "
+            "dans requirements.txt puis redémarre l'application."
         )
-
-    prompt = r"""
-Tu es un moteur d'extraction de données, pas un conseiller financier.
-
-Analyse UNIQUEMENT la capture d'écran fournie. Elle provient normalement de XTB
-et peut montrer "Détails de la position", une transaction ouverte ou clôturée.
-
-Retourne un objet JSON strict, sans markdown, avec exactement les clés suivantes :
-{
-  "broker": "XTB" | null,
-  "status": "OPEN" | "CLOSED" | null,
-  "side": "BUY" | "SELL" | null,
-  "instrument_type": "ACTION" | "ETF" | "CFD" | "CRYPTO" | "AUTRE" | null,
-  "broker_symbol": string | null,
-  "market_data_symbol": null,
-  "name": string | null,
-  "instrument_currency": "EUR" | "GBP" | "USD" | "PLN" | "CHF" | "CAD" | "JPY" | "AUD" | "SEK" | "NOK" | "DKK" | null,
-  "account_currency": "EUR" | null,
-  "quantity": number | null,
-  "entry_price": number | null,
-  "exit_price": number | null,
-  "opened_at": "YYYY-MM-DDTHH:MM:SS" | null,
-  "closed_at": "YYYY-MM-DDTHH:MM:SS" | null,
-  "fx_rate_entry": number | null,
-  "fx_rate_exit": number | null,
-  "broker_buy_value": number | null,
-  "broker_sell_value": number | null,
-  "broker_reported_pnl": number | null,
-  "broker_reported_commission": number | null,
-  "xtb_position_id": string | null,
-  "xtb_order_id": string | null,
-  "xtb_source": string | null,
-  "xtb_open_origin": string | null,
-  "xtb_close_origin": string | null,
-  "confidence": number,
-  "warnings": [string]
-}
-
-Règles impératives :
-- N'invente aucune valeur absente de l'image.
-- Les nombres doivent être des nombres JSON, jamais du texte.
-- Une virgule décimale française doit être convertie en point JSON.
-- "Volume" correspond à quantity.
-- "Prix ouvert" correspond à entry_price.
-- "Prix de fermeture" correspond à exit_price.
-- "Valeur d'achat" correspond à broker_buy_value.
-- "Valeur de vente" correspond à broker_sell_value.
-- "Gain/perte" correspond à broker_reported_pnl.
-- "Bénéfice brut" ne doit pas remplacer Gain/perte si les deux sont visibles.
-- "Commission" correspond à broker_reported_commission.
-- "Taux de conversion" à l'ouverture correspond à fx_rate_entry.
-- "Taux de change" à la clôture correspond à fx_rate_exit.
-- Si l'écran indique "GBP/EUR", conserve le nombre tel qu'affiché :
-  il signifie ici 1 GBP = X EUR.
-- Si un prix est affiché 0.2450, retourne 0.2450, jamais 24.50.
-- Ne transforme PAS toi-même GBX/GBp en GBP si l'écran XTB affiche déjà un prix
-  en GBP décimal. La correction de flux live est gérée séparément.
-- broker_symbol doit être exactement le symbole visible chez XTB, par exemple TLW.UK.
-- market_data_symbol doit rester null : l'application fera la correspondance.
-- Si une heure/date est visible, conserve-la précisément.
-- confidence doit être entre 0 et 1.
-- Ajoute dans warnings toute ambiguïté réelle ou champ important non lisible.
-"""
+    if Image is None:
+        return False, None, "Pillow n'est pas disponible."
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model,
-            contents=[
-                genai_types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type=mime_type or "image/png"
-                ),
-                prompt,
-            ],
-            config=genai_types.GenerateContentConfig(
-                temperature=0,
-                response_mime_type="application/json",
-            ),
-        )
-        parsed = vf_parse_json_response(getattr(response, "text", "") or "")
-        return True, vf_normalize_xtb_capture_data(parsed), None
+        from io import BytesIO
+
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+
+        # Improve small mobile screenshots before OCR.
+        max_w = 1800
+        if img.width < max_w:
+            scale = min(2.0, max_w / max(img.width, 1))
+            if scale > 1.05:
+                img = img.resize(
+                    (int(img.width * scale), int(img.height * scale)),
+                    Image.Resampling.LANCZOS
+                )
+
+        if ImageEnhance is not None:
+            img = ImageEnhance.Contrast(img).enhance(1.10)
+            img = ImageEnhance.Sharpness(img).enhance(1.18)
+
+        arr = np.asarray(img)
+        engine = vf_local_ocr_engine()
+        if engine is None:
+            return False, None, "Moteur OCR local indisponible."
+
+        result = engine(arr)
+        tokens = vf_rapidocr_tokens(result)
+
+        if not tokens:
+            return False, None, (
+                "Aucun texte détecté. Essaie une capture plus nette et non compressée."
+            )
+
+        parsed = vf_ocr_parse_xtb_fields(tokens, img.width, img.height)
+        parsed = vf_normalize_xtb_capture_data(parsed)
+        parsed["raw_ocr_text"] = vf_ocr_parse_xtb_fields(tokens, img.width, img.height).get("raw_ocr_text", "")
+        return True, parsed, None
+
     except Exception as exc:
-        return False, None, f"Analyse de la capture impossible : {exc}"
+        return False, None, f"Lecture OCR locale impossible : {exc}"
 
 
 def vf_capture_trade_consistency(data):
@@ -8760,15 +9134,15 @@ def vf_trade_journal_page():
     # ------------------------------------------------------
     vf_section(
         "📸 Capture XTB → Trade Journal",
-        "Glisse une capture « Détails de la position ». L'IA lit les champs, "
-        "puis tu vérifies et modifies les données avant l'enregistrement."
+        "Glisse une capture « Détails de la position ». L'OCR local lit le texte et "
+        "reconstruit les champs XTB, sans API externe."
     )
 
     with st.expander("✨ Importer une capture de trade", expanded=False):
         st.caption(
-            "La capture est analysée uniquement lorsque tu cliques sur « Analyser ». "
-            "Elle est envoyée à Gemini pour l'extraction, mais VISION FUTURE ne "
-            "l'enregistre pas dans Supabase ni dans le Trade Journal."
+            "La capture est lue directement par le moteur OCR local de VISION FUTURE. "
+            "Aucune clé API n'est nécessaire et aucune image n'est envoyée à Gemini/OpenAI. "
+            "Tu vérifies toujours les données avant l'enregistrement."
         )
 
         capture = st.file_uploader(
@@ -8785,12 +9159,12 @@ def vf_trade_journal_page():
             st.image(image_bytes, caption=capture.name, use_container_width=True)
 
             if st.button(
-                "✨ Analyser la capture",
+                "🔎 Lire la capture localement",
                 type="primary",
                 use_container_width=True,
                 key=f"analyze_xtb_capture_{capture_hash}"
             ):
-                with st.spinner("Lecture de la capture XTB…"):
+                with st.spinner("Lecture OCR locale de la capture XTB…"):
                     ok, extracted, err = vf_extract_xtb_trade_screenshot(
                         image_bytes,
                         mime_type=getattr(capture, "type", None) or "image/png"
@@ -8800,7 +9174,7 @@ def vf_trade_journal_page():
                         "hash": capture_hash,
                         "data": extracted,
                     }
-                    st.success("Capture analysée. Vérifie les champs avant d'enregistrer.")
+                    st.success("Capture lue localement. Vérifie les champs avant d'enregistrer.")
                 else:
                     st.error(err)
 
@@ -8819,6 +9193,11 @@ def vf_trade_journal_page():
                 for warning in warnings:
                     if _clean_text(warning):
                         st.warning(_clean_text(warning))
+
+                raw_ocr_text = _clean_text(d.get("raw_ocr_text"))
+                if raw_ocr_text:
+                    with st.expander("🧾 Texte OCR brut", expanded=False):
+                        st.code(raw_ocr_text, language=None)
 
                 broker_symbol_default = _clean_text(d.get("broker_symbol"), upper=True)
                 market_symbol_default = (
