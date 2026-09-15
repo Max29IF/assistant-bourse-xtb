@@ -1,13 +1,13 @@
 streamlit
 yfinance
 pandas
-numpy
+numpy<3
 streamlit-autorefresh
 supabase
 openpyxl
 xlrd
 altair
 google-genai
-rapidocr
-onnxruntime
+rapidocr==3.9.2
+onnxruntime==1.30.0
 Pillow
