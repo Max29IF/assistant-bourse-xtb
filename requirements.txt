@@ -8,3 +8,6 @@ openpyxl
 xlrd
 altair
 google-genai
+rapidocr
+onnxruntime
+Pillow
