@@ -21,11 +21,18 @@ try:
 except Exception:
     create_client = None
 
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except Exception:
+    genai = None
+    genai_types = None
+
 st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligence", page_icon="🔭", layout="wide")
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.6 XTB Statement Journal"
+APP_VERSION = "V39.7 XTB Screenshot Import"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -7005,6 +7012,278 @@ def vf_safe_cache_clear():
         pass
 
 
+
+# ==========================================================
+# V39.7 — XTB SCREENSHOT -> STRUCTURED TRADE DATA
+# ==========================================================
+def vf_parse_json_response(raw_text):
+    raw = (raw_text or "").strip()
+    if not raw:
+        raise ValueError("Réponse IA vide.")
+
+    # Accept plain JSON or fenced JSON.
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.I)
+    raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(raw[start:end+1])
+        raise
+
+
+def vf_ai_num(value):
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        try:
+            v = float(value)
+            return v if math.isfinite(v) else None
+        except Exception:
+            return None
+    s = str(value).strip().replace("\u202f", "").replace(" ", "")
+    if not s:
+        return None
+    # French decimal comma support.
+    if "," in s and "." not in s:
+        s = s.replace(",", ".")
+    # Remove currency / textual suffixes while keeping sign and decimal point.
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+
+def vf_ai_int(value):
+    n = vf_ai_num(value)
+    if n is None:
+        return None
+    try:
+        return int(round(n))
+    except Exception:
+        return None
+
+
+def vf_ai_datetime(value):
+    if value is None or str(value).strip() == "":
+        return None
+    s = str(value).strip()
+    # Gemini is instructed to return ISO, but support XTB / French formats too.
+    for dayfirst in (False, True):
+        try:
+            ts = pd.to_datetime(s, errors="coerce", dayfirst=dayfirst)
+            if pd.notna(ts):
+                if getattr(ts, "tzinfo", None) is not None:
+                    ts = ts.tz_localize(None)
+                return ts.to_pydatetime()
+        except Exception:
+            pass
+    return None
+
+
+def vf_normalize_xtb_capture_data(data):
+    data = dict(data or {})
+
+    def txt(key, upper=False):
+        return _clean_text(data.get(key), upper=upper)
+
+    broker_symbol = txt("broker_symbol", upper=True)
+    market_symbol = txt("market_data_symbol", upper=True)
+    if not market_symbol and broker_symbol:
+        market_symbol = vf_guess_market_data_symbol(broker_symbol)
+
+    status = txt("status", upper=True)
+    if status not in {"OPEN", "CLOSED"}:
+        status = "CLOSED" if data.get("closed_at") or data.get("exit_price") is not None else "OPEN"
+
+    result = {
+        "broker": txt("broker") or "XTB",
+        "status": status,
+        "side": txt("side", upper=True) or "BUY",
+        "instrument_type": txt("instrument_type", upper=True) or "ACTION",
+        "broker_symbol": broker_symbol,
+        "market_data_symbol": market_symbol,
+        "name": txt("name"),
+        "instrument_currency": txt("instrument_currency", upper=True),
+        "account_currency": txt("account_currency", upper=True) or "EUR",
+        "quantity": vf_ai_int(data.get("quantity")),
+        "entry_price": vf_ai_num(data.get("entry_price")),
+        "exit_price": vf_ai_num(data.get("exit_price")),
+        "opened_at": data.get("opened_at"),
+        "closed_at": data.get("closed_at"),
+        "fx_rate_entry": vf_ai_num(data.get("fx_rate_entry")),
+        "fx_rate_exit": vf_ai_num(data.get("fx_rate_exit")),
+        "broker_buy_value": vf_ai_num(data.get("broker_buy_value")),
+        "broker_sell_value": vf_ai_num(data.get("broker_sell_value")),
+        "broker_reported_pnl": vf_ai_num(data.get("broker_reported_pnl")),
+        "broker_reported_commission": vf_ai_num(data.get("broker_reported_commission")),
+        "xtb_position_id": txt("xtb_position_id"),
+        "xtb_order_id": txt("xtb_order_id"),
+        "xtb_source": txt("xtb_source") or "Mes Transactions",
+        "xtb_open_origin": txt("xtb_open_origin"),
+        "xtb_close_origin": txt("xtb_close_origin"),
+        "confidence": vf_ai_num(data.get("confidence")),
+        "warnings": data.get("warnings") if isinstance(data.get("warnings"), list) else [],
+    }
+
+    # If the screenshot says GBP/EUR, the numeric rate is interpreted as
+    # 1 GBP = X EUR, matching the journal convention.
+    if not result["instrument_currency"] and (
+        (result["fx_rate_entry"] and result["fx_rate_entry"] > 1.05)
+        or (result["fx_rate_exit"] and result["fx_rate_exit"] > 1.05)
+    ):
+        result["instrument_currency"] = "GBP"
+
+    return result
+
+
+def vf_extract_xtb_trade_screenshot(image_bytes, mime_type="image/png"):
+    """
+    Multimodal extraction from an XTB screenshot.
+    The image is sent to the Gemini API only when the user presses Analyze.
+    It is not persisted by VISION FUTURE.
+    """
+    api_key = _secret("GEMINI_API_KEY")
+    model = _secret("GEMINI_MODEL", "gemini-3.5-flash-lite")
+
+    if not api_key:
+        return False, None, "GEMINI_API_KEY absent des secrets Streamlit."
+    if genai is None or genai_types is None:
+        return False, None, (
+            "Le module google-genai n'est pas disponible. "
+            "Vérifie que `google-genai` est présent dans requirements.txt."
+        )
+
+    prompt = r"""
+Tu es un moteur d'extraction de données, pas un conseiller financier.
+
+Analyse UNIQUEMENT la capture d'écran fournie. Elle provient normalement de XTB
+et peut montrer "Détails de la position", une transaction ouverte ou clôturée.
+
+Retourne un objet JSON strict, sans markdown, avec exactement les clés suivantes :
+{
+  "broker": "XTB" | null,
+  "status": "OPEN" | "CLOSED" | null,
+  "side": "BUY" | "SELL" | null,
+  "instrument_type": "ACTION" | "ETF" | "CFD" | "CRYPTO" | "AUTRE" | null,
+  "broker_symbol": string | null,
+  "market_data_symbol": null,
+  "name": string | null,
+  "instrument_currency": "EUR" | "GBP" | "USD" | "PLN" | "CHF" | "CAD" | "JPY" | "AUD" | "SEK" | "NOK" | "DKK" | null,
+  "account_currency": "EUR" | null,
+  "quantity": number | null,
+  "entry_price": number | null,
+  "exit_price": number | null,
+  "opened_at": "YYYY-MM-DDTHH:MM:SS" | null,
+  "closed_at": "YYYY-MM-DDTHH:MM:SS" | null,
+  "fx_rate_entry": number | null,
+  "fx_rate_exit": number | null,
+  "broker_buy_value": number | null,
+  "broker_sell_value": number | null,
+  "broker_reported_pnl": number | null,
+  "broker_reported_commission": number | null,
+  "xtb_position_id": string | null,
+  "xtb_order_id": string | null,
+  "xtb_source": string | null,
+  "xtb_open_origin": string | null,
+  "xtb_close_origin": string | null,
+  "confidence": number,
+  "warnings": [string]
+}
+
+Règles impératives :
+- N'invente aucune valeur absente de l'image.
+- Les nombres doivent être des nombres JSON, jamais du texte.
+- Une virgule décimale française doit être convertie en point JSON.
+- "Volume" correspond à quantity.
+- "Prix ouvert" correspond à entry_price.
+- "Prix de fermeture" correspond à exit_price.
+- "Valeur d'achat" correspond à broker_buy_value.
+- "Valeur de vente" correspond à broker_sell_value.
+- "Gain/perte" correspond à broker_reported_pnl.
+- "Bénéfice brut" ne doit pas remplacer Gain/perte si les deux sont visibles.
+- "Commission" correspond à broker_reported_commission.
+- "Taux de conversion" à l'ouverture correspond à fx_rate_entry.
+- "Taux de change" à la clôture correspond à fx_rate_exit.
+- Si l'écran indique "GBP/EUR", conserve le nombre tel qu'affiché :
+  il signifie ici 1 GBP = X EUR.
+- Si un prix est affiché 0.2450, retourne 0.2450, jamais 24.50.
+- Ne transforme PAS toi-même GBX/GBp en GBP si l'écran XTB affiche déjà un prix
+  en GBP décimal. La correction de flux live est gérée séparément.
+- broker_symbol doit être exactement le symbole visible chez XTB, par exemple TLW.UK.
+- market_data_symbol doit rester null : l'application fera la correspondance.
+- Si une heure/date est visible, conserve-la précisément.
+- confidence doit être entre 0 et 1.
+- Ajoute dans warnings toute ambiguïté réelle ou champ important non lisible.
+"""
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                genai_types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type or "image/png"
+                ),
+                prompt,
+            ],
+            config=genai_types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+            ),
+        )
+        parsed = vf_parse_json_response(getattr(response, "text", "") or "")
+        return True, vf_normalize_xtb_capture_data(parsed), None
+    except Exception as exc:
+        return False, None, f"Analyse de la capture impossible : {exc}"
+
+
+def vf_capture_trade_consistency(data):
+    """Return human-readable consistency checks without changing broker data."""
+    d = dict(data or {})
+    messages = []
+
+    qty = vf_ai_int(d.get("quantity"))
+    entry = vf_ai_num(d.get("entry_price"))
+    exit_price = vf_ai_num(d.get("exit_price"))
+    fx_in = vf_ai_num(d.get("fx_rate_entry"))
+    fx_out = vf_ai_num(d.get("fx_rate_exit"))
+    buy = vf_ai_num(d.get("broker_buy_value"))
+    sell = vf_ai_num(d.get("broker_sell_value"))
+    pnl = vf_ai_num(d.get("broker_reported_pnl"))
+
+    if qty and entry is not None and fx_in:
+        calc_buy = entry * qty * fx_in
+        if buy is not None and abs(calc_buy - buy) > max(0.03, abs(buy) * 0.01):
+            messages.append(
+                f"Achat : calcul ≈ {calc_buy:.2f} € vs XTB {buy:.2f} €."
+            )
+
+    if qty and exit_price is not None and fx_out:
+        calc_sell = exit_price * qty * fx_out
+        if sell is not None and abs(calc_sell - sell) > max(0.03, abs(sell) * 0.01):
+            messages.append(
+                f"Vente : calcul ≈ {calc_sell:.2f} € vs XTB {sell:.2f} €."
+            )
+
+    if buy is not None and sell is not None and pnl is not None:
+        diff = sell - buy
+        if abs(diff - pnl) > 0.02:
+            messages.append(
+                f"P/L : vente - achat = {diff:+.2f} € alors que XTB affiche {pnl:+.2f} €."
+            )
+
+    return messages
+
+
 def vf_trade_journal_backend_ready():
     if SUPABASE is None:
         return False
@@ -8475,6 +8754,383 @@ def vf_trade_journal_page():
                     st.success(f"Trade ajouté au suivi • {where}.")
                     vf_safe_cache_clear()
                     st.rerun()
+
+    # ------------------------------------------------------
+    # V39.7 — Screenshot drag & drop -> structured XTB trade
+    # ------------------------------------------------------
+    vf_section(
+        "📸 Capture XTB → Trade Journal",
+        "Glisse une capture « Détails de la position ». L'IA lit les champs, "
+        "puis tu vérifies et modifies les données avant l'enregistrement."
+    )
+
+    with st.expander("✨ Importer une capture de trade", expanded=False):
+        st.caption(
+            "La capture est analysée uniquement lorsque tu cliques sur « Analyser ». "
+            "Elle est envoyée à Gemini pour l'extraction, mais VISION FUTURE ne "
+            "l'enregistre pas dans Supabase ni dans le Trade Journal."
+        )
+
+        capture = st.file_uploader(
+            "Glisser la capture ici",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key="xtb_trade_screenshot_uploader",
+            help="Capture XTB — idéalement l'écran complet « Détails de la position »."
+        )
+
+        if capture is not None:
+            image_bytes = capture.getvalue()
+            capture_hash = hashlib.sha256(image_bytes).hexdigest()[:16]
+            st.image(image_bytes, caption=capture.name, use_container_width=True)
+
+            if st.button(
+                "✨ Analyser la capture",
+                type="primary",
+                use_container_width=True,
+                key=f"analyze_xtb_capture_{capture_hash}"
+            ):
+                with st.spinner("Lecture de la capture XTB…"):
+                    ok, extracted, err = vf_extract_xtb_trade_screenshot(
+                        image_bytes,
+                        mime_type=getattr(capture, "type", None) or "image/png"
+                    )
+                if ok:
+                    st.session_state["vf_xtb_capture_extraction"] = {
+                        "hash": capture_hash,
+                        "data": extracted,
+                    }
+                    st.success("Capture analysée. Vérifie les champs avant d'enregistrer.")
+                else:
+                    st.error(err)
+
+            extraction_state = st.session_state.get("vf_xtb_capture_extraction") or {}
+            if extraction_state.get("hash") == capture_hash:
+                d = dict(extraction_state.get("data") or {})
+
+                confidence = vf_ai_num(d.get("confidence"))
+                if confidence is not None:
+                    st.progress(
+                        min(max(float(confidence), 0.0), 1.0),
+                        text=f"Confiance extraction : {float(confidence)*100:.0f}%"
+                    )
+
+                warnings = d.get("warnings") or []
+                for warning in warnings:
+                    if _clean_text(warning):
+                        st.warning(_clean_text(warning))
+
+                broker_symbol_default = _clean_text(d.get("broker_symbol"), upper=True)
+                market_symbol_default = (
+                    _clean_text(d.get("market_data_symbol"), upper=True)
+                    or vf_guess_market_data_symbol(broker_symbol_default)
+                )
+
+                s1,s2,s3 = st.columns(3)
+                cap_broker_symbol = s1.text_input(
+                    "Ticker XTB",
+                    value=broker_symbol_default,
+                    key=f"cap_broker_symbol_{capture_hash}"
+                )
+                cap_market_symbol = s2.text_input(
+                    "Ticker cours live",
+                    value=market_symbol_default,
+                    key=f"cap_market_symbol_{capture_hash}",
+                    help="Ex. TLW.UK chez XTB → TLW.L pour Yahoo."
+                )
+                cap_name = s3.text_input(
+                    "Nom",
+                    value=_clean_text(d.get("name")),
+                    key=f"cap_name_{capture_hash}"
+                )
+
+                # Resolve live quote metadata after the user can verify ticker mapping.
+                cap_market_ctx = (
+                    vf_trade_quote(cap_market_symbol)
+                    if _clean_text(cap_market_symbol)
+                    else {
+                        "instrument_currency": _clean_text(d.get("instrument_currency"), upper=True) or "EUR",
+                        "raw_currency": _clean_text(d.get("instrument_currency"), upper=True) or "EUR",
+                        "quote_scale": 1.0
+                    }
+                )
+
+                extracted_curr = _clean_text(d.get("instrument_currency"), upper=True)
+                live_curr = _clean_text(cap_market_ctx.get("instrument_currency"), upper=True)
+                cap_curr_default = extracted_curr or live_curr or "EUR"
+                cap_raw_currency = _clean_text(cap_market_ctx.get("raw_currency")) or cap_curr_default
+                cap_scale_default = float(cap_market_ctx.get("quote_scale") or 1.0)
+
+                c1,c2,c3,c4 = st.columns(4)
+                currencies = ["EUR","GBP","USD","PLN","CHF","CAD","JPY","AUD","SEK","NOK","DKK"]
+                if cap_curr_default not in currencies:
+                    currencies.append(cap_curr_default)
+                cap_currency = c1.selectbox(
+                    "Devise instrument",
+                    currencies,
+                    index=currencies.index(cap_curr_default),
+                    key=f"cap_currency_{capture_hash}"
+                )
+                cap_qty = c2.number_input(
+                    "Volume",
+                    min_value=1,
+                    value=max(vf_ai_int(d.get("quantity")) or 1, 1),
+                    step=1,
+                    key=f"cap_qty_{capture_hash}"
+                )
+                cap_entry = c3.number_input(
+                    f"Prix ouvert ({cap_currency})",
+                    min_value=0.0,
+                    value=float(vf_ai_num(d.get("entry_price")) or 0.0),
+                    step=0.0001,
+                    format="%.4f",
+                    key=f"cap_entry_{capture_hash}"
+                )
+                cap_exit = c4.number_input(
+                    f"Prix fermeture ({cap_currency})",
+                    min_value=0.0,
+                    value=float(vf_ai_num(d.get("exit_price")) or 0.0),
+                    step=0.0001,
+                    format="%.4f",
+                    key=f"cap_exit_{capture_hash}"
+                )
+
+                opened_default = vf_ai_datetime(d.get("opened_at")) or datetime.now().replace(second=0, microsecond=0)
+                closed_default = vf_ai_datetime(d.get("closed_at")) or datetime.now().replace(second=0, microsecond=0)
+
+                dt1,dt2,dt3,dt4 = st.columns(4)
+                cap_open_date = dt1.date_input(
+                    "Date ouverture",
+                    value=opened_default.date(),
+                    key=f"cap_open_date_{capture_hash}"
+                )
+                cap_open_time = dt2.time_input(
+                    "Heure ouverture",
+                    value=opened_default.time().replace(second=0, microsecond=0),
+                    key=f"cap_open_time_{capture_hash}"
+                )
+                cap_close_date = dt3.date_input(
+                    "Date clôture",
+                    value=closed_default.date(),
+                    key=f"cap_close_date_{capture_hash}"
+                )
+                cap_close_time = dt4.time_input(
+                    "Heure clôture",
+                    value=closed_default.time().replace(second=0, microsecond=0),
+                    key=f"cap_close_time_{capture_hash}"
+                )
+
+                current_fx = vf_fx_rate(cap_currency, "EUR")
+                if pd.isna(current_fx) or current_fx <= 0:
+                    current_fx = 1.0
+
+                fx1,fx2 = st.columns(2)
+                cap_fx_entry = fx1.number_input(
+                    f"Taux FX entrée • 1 {cap_currency} = EUR",
+                    min_value=0.000001,
+                    value=float(vf_ai_num(d.get("fx_rate_entry")) or current_fx),
+                    step=0.00001,
+                    format="%.6f",
+                    key=f"cap_fx_entry_{capture_hash}"
+                )
+                cap_fx_exit = fx2.number_input(
+                    f"Taux FX sortie • 1 {cap_currency} = EUR",
+                    min_value=0.000001,
+                    value=float(vf_ai_num(d.get("fx_rate_exit")) or current_fx),
+                    step=0.00001,
+                    format="%.6f",
+                    key=f"cap_fx_exit_{capture_hash}"
+                )
+
+                theoretical_buy = float(cap_entry) * int(cap_qty) * float(cap_fx_entry)
+                theoretical_sell = float(cap_exit) * int(cap_qty) * float(cap_fx_exit)
+
+                val1,val2,val3,val4 = st.columns(4)
+                cap_buy_value = val1.number_input(
+                    "Valeur achat XTB (€)",
+                    min_value=0.0,
+                    value=float(
+                        vf_ai_num(d.get("broker_buy_value"))
+                        if vf_ai_num(d.get("broker_buy_value")) is not None
+                        else round(theoretical_buy, 2)
+                    ),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"cap_buy_value_{capture_hash}"
+                )
+                cap_sell_value = val2.number_input(
+                    "Valeur vente XTB (€)",
+                    min_value=0.0,
+                    value=float(
+                        vf_ai_num(d.get("broker_sell_value"))
+                        if vf_ai_num(d.get("broker_sell_value")) is not None
+                        else round(theoretical_sell, 2)
+                    ),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"cap_sell_value_{capture_hash}"
+                )
+                cap_pnl = val3.number_input(
+                    "Gain / perte XTB (€)",
+                    value=float(
+                        vf_ai_num(d.get("broker_reported_pnl"))
+                        if vf_ai_num(d.get("broker_reported_pnl")) is not None
+                        else round(cap_sell_value - cap_buy_value, 2)
+                    ),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"cap_pnl_{capture_hash}"
+                )
+                cap_commission = val4.number_input(
+                    "Commission (€)",
+                    min_value=0.0,
+                    value=float(vf_ai_num(d.get("broker_reported_commission")) or 0.0),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"cap_commission_{capture_hash}"
+                )
+
+                id1,id2,id3 = st.columns(3)
+                cap_position_id = id1.text_input(
+                    "ID position",
+                    value=_clean_text(d.get("xtb_position_id")),
+                    key=f"cap_position_id_{capture_hash}"
+                )
+                cap_order_id = id2.text_input(
+                    "N° ordre",
+                    value=_clean_text(d.get("xtb_order_id")),
+                    key=f"cap_order_id_{capture_hash}"
+                )
+                cap_source = id3.text_input(
+                    "Source",
+                    value=_clean_text(d.get("xtb_source")) or "Mes Transactions",
+                    key=f"cap_source_{capture_hash}"
+                )
+
+                org1,org2 = st.columns(2)
+                cap_open_origin = org1.text_input(
+                    "Origine ouverture",
+                    value=_clean_text(d.get("xtb_open_origin")),
+                    key=f"cap_open_origin_{capture_hash}"
+                )
+                cap_close_origin = org2.text_input(
+                    "Origine fermeture",
+                    value=_clean_text(d.get("xtb_close_origin")),
+                    key=f"cap_close_origin_{capture_hash}"
+                )
+
+                cap_scale = st.number_input(
+                    "Multiplicateur du flux live",
+                    min_value=0.0001,
+                    max_value=10000.0,
+                    value=float(cap_scale_default),
+                    step=0.001 if cap_scale_default < 1 else 0.01,
+                    format="%.4f",
+                    key=f"cap_scale_{capture_hash}",
+                    help=(
+                        f"Flux brut détecté : {cap_raw_currency or '—'}. "
+                        "Pour Londres, GBX/GBp → GBP = 0,01."
+                    )
+                )
+
+                cap_notes = st.text_input(
+                    "Note",
+                    value="Import depuis capture XTB",
+                    key=f"cap_notes_{capture_hash}"
+                )
+
+                # Live quote preview — useful for catching TLW 24.xx vs 0.24 issues.
+                if _clean_text(cap_market_symbol):
+                    live_preview = vf_trade_quote(
+                        cap_market_symbol,
+                        quote_scale_override=cap_scale,
+                        instrument_currency_override=cap_currency
+                    )
+                    live_raw = _vf_num(live_preview.get("raw_price"))
+                    live_norm = _vf_num(live_preview.get("price"))
+                    if pd.notna(live_norm):
+                        st.info(
+                            f"Suivi live prévu : "
+                            f"{live_raw:.4f} {live_preview.get('raw_currency') or cap_raw_currency} "
+                            f"× {float(cap_scale):g} → "
+                            f"{live_norm:.4f} {cap_currency}."
+                        )
+
+                edited_data = {
+                    "quantity": cap_qty,
+                    "entry_price": cap_entry,
+                    "exit_price": cap_exit,
+                    "fx_rate_entry": cap_fx_entry,
+                    "fx_rate_exit": cap_fx_exit,
+                    "broker_buy_value": cap_buy_value,
+                    "broker_sell_value": cap_sell_value,
+                    "broker_reported_pnl": cap_pnl,
+                }
+                consistency = vf_capture_trade_consistency(edited_data)
+                for msg in consistency:
+                    st.warning(msg)
+
+                cap_opened_dt = datetime.combine(cap_open_date, cap_open_time)
+                cap_closed_dt = datetime.combine(cap_close_date, cap_close_time)
+
+                capture_valid = (
+                    bool(_clean_text(cap_broker_symbol))
+                    and bool(_clean_text(cap_market_symbol))
+                    and int(cap_qty) > 0
+                    and float(cap_entry) > 0
+                    and float(cap_exit) > 0
+                    and cap_closed_dt >= cap_opened_dt
+                )
+
+                if _clean_text(d.get("status"), upper=True) == "OPEN":
+                    st.warning(
+                        "La capture semble correspondre à une position encore OPEN. "
+                        "Cette V39.7 n'enregistre automatiquement que les positions clôturées ; "
+                        "les données extraites restent visibles pour vérification."
+                    )
+                    capture_valid = False
+
+                if st.button(
+                    "✅ Valider et ajouter au Trade Journal",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not capture_valid,
+                    key=f"save_xtb_capture_{capture_hash}"
+                ):
+                    ok, where = vf_register_xtb_closed_trade(
+                        broker_symbol=cap_broker_symbol,
+                        market_data_symbol=cap_market_symbol,
+                        name=cap_name,
+                        qty=int(cap_qty),
+                        entry_price=cap_entry,
+                        exit_price=cap_exit,
+                        opened_at=cap_opened_dt,
+                        closed_at=cap_closed_dt,
+                        instrument_currency=cap_currency,
+                        account_currency="EUR",
+                        quote_currency=cap_raw_currency,
+                        quote_scale=cap_scale,
+                        fx_rate_entry=cap_fx_entry,
+                        fx_rate_exit=cap_fx_exit,
+                        broker_buy_value=cap_buy_value,
+                        broker_sell_value=cap_sell_value,
+                        broker_reported_pnl=cap_pnl,
+                        broker_reported_commission=cap_commission,
+                        xtb_position_id=cap_position_id,
+                        xtb_order_id=cap_order_id,
+                        xtb_source=cap_source,
+                        xtb_open_origin=cap_open_origin,
+                        xtb_close_origin=cap_close_origin,
+                        notes=cap_notes,
+                        instrument_type=_clean_text(d.get("instrument_type"), upper=True) or "ACTION",
+                    )
+                    if ok:
+                        st.session_state.pop("vf_xtb_capture_extraction", None)
+                        st.success(f"Trade ajouté depuis la capture • {where}.")
+                        vf_safe_cache_clear()
+                        st.rerun()
+                    else:
+                        st.error(str(where))
 
     # ------------------------------------------------------
     # V39.6 — Direct import of an already CLOSED XTB position
@@ -14752,6 +15408,23 @@ st.markdown("""
     }
 }
 
+</style>
+""", unsafe_allow_html=True)
+
+
+
+st.markdown("""
+<style>
+@media(max-width:768px){
+  div[data-testid="stFileUploaderDropzone"]{
+    min-height:120px!important;
+    border-radius:14px!important;
+    padding:.8rem!important;
+  }
+  div[data-testid="stFileUploaderDropzone"] button{
+    min-height:44px!important;
+  }
+}
 </style>
 """, unsafe_allow_html=True)
 
