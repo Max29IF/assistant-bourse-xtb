@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.5 XTB FX & Quote Integrity"
+APP_VERSION = "V39.6 XTB Statement Journal"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -3155,6 +3155,41 @@ def vf_normalize_quote_currency(raw_currency):
     return (upper or "EUR"), 1.0, raw or upper or "EUR"
 
 
+def vf_guess_market_data_symbol(broker_symbol):
+    """
+    Best-effort XTB -> Yahoo ticker translation.
+    The result is only a suggestion and remains editable in the journal.
+    """
+    s = _clean_text(broker_symbol, upper=True)
+    if not s:
+        return ""
+
+    # Common XTB country suffixes -> Yahoo Finance exchange suffixes.
+    suffix_map = {
+        ".UK": ".L",    # London
+        ".FR": ".PA",   # Paris
+        ".NL": ".AS",   # Amsterdam
+        ".ES": ".MC",   # Madrid
+        ".IT": ".MI",   # Milan
+        ".PL": ".WA",   # Warsaw
+        ".BE": ".BR",   # Brussels
+        ".PT": ".LS",   # Lisbon
+        ".CH": ".SW",   # Switzerland
+        ".SE": ".ST",   # Stockholm
+        ".NO": ".OL",   # Oslo
+        ".DK": ".CO",   # Copenhagen
+        ".FI": ".HE",   # Helsinki
+    }
+    if s.endswith(".US"):
+        return s[:-3]
+
+    for xtb_suffix, yahoo_suffix in suffix_map.items():
+        if s.endswith(xtb_suffix):
+            return s[:-len(xtb_suffix)] + yahoo_suffix
+
+    return s
+
+
 def vf_trade_quote(symbol, quote_scale_override=None, instrument_currency_override=None):
     """
     Journal-safe quote:
@@ -3302,17 +3337,35 @@ def vf_xtb_cost_estimate(
 
 
 def vf_trade_row_currency_context(row, refresh_fx=True):
-    """Resolve quote unit, instrument currency and current FX for an existing trade."""
+    """
+    Resolve the broker ticker separately from the market-data ticker.
+
+    Example:
+      XTB: TLW.UK
+      Yahoo: TLW.L
+      Yahoo raw quote: GBp/GBX
+      normalized journal quote: GBP with quote_scale 0.01
+    """
     if hasattr(row, "to_dict"):
         row = row.to_dict()
     row = dict(row or {})
 
-    symbol = _clean_text(row.get("symbol"), upper=True)
+    stored_symbol = _clean_text(row.get("symbol"), upper=True)
+    broker_symbol = (
+        _clean_text(row.get("broker_symbol"), upper=True)
+        or stored_symbol
+    )
+    market_data_symbol = (
+        _clean_text(row.get("market_data_symbol"), upper=True)
+        or vf_guess_market_data_symbol(broker_symbol)
+        or stored_symbol
+    )
+
     scale = _vf_num(row.get("quote_scale"))
     currency_override = _clean_text(row.get("instrument_currency"), upper=True)
 
     tq = vf_trade_quote(
-        symbol,
+        market_data_symbol,
         quote_scale_override=scale if pd.notna(scale) and scale > 0 else None,
         instrument_currency_override=currency_override or None,
     )
@@ -3330,6 +3383,8 @@ def vf_trade_row_currency_context(row, refresh_fx=True):
 
     return {
         **tq,
+        "broker_symbol": broker_symbol,
+        "market_data_symbol": market_data_symbol,
         "instrument_currency": instrument_currency,
         "account_currency": account_currency,
         "live_fx_rate": float(live_fx),
@@ -6964,7 +7019,7 @@ def vf_journal_session():
     return st.session_state.setdefault("vf_trade_journal_fallback", [])
 
 
-def vf_load_trade_journal(account="cto_xtb"):
+def vf_trade_journal_column_sets():
     legacy_cols = [
         "trade_id","account","broker","symbol","name","isin","status",
         "planned_entry","actual_entry","stop","tp1","tp2","quantity",
@@ -6981,9 +7036,30 @@ def vf_load_trade_journal(account="cto_xtb"):
         "broker_commission_rate_pct","broker_fee_entry","broker_fee_exit",
         "other_exit_fees"
     ]
-    cols = legacy_cols + fx_cols
+    xtb_cols = [
+        "broker_symbol","market_data_symbol",
+        "xtb_position_id","xtb_order_id","xtb_source",
+        "xtb_open_origin","xtb_close_origin",
+        "broker_buy_value","broker_sell_value",
+        "broker_reported_pnl","broker_reported_commission"
+    ]
+    return legacy_cols, fx_cols, xtb_cols
+
+
+def vf_load_trade_journal(account="cto_xtb"):
+    legacy_cols, fx_cols, xtb_cols = vf_trade_journal_column_sets()
+    v395_cols = legacy_cols + fx_cols
+    cols = v395_cols + xtb_cols
+
+    def _frame(res, available_cols):
+        df = pd.DataFrame(_sb_data(res))
+        for c in cols:
+            if c not in df.columns:
+                df[c] = np.nan
+        return df[cols]
 
     if vf_trade_journal_backend_ready():
+        # Full V39.6 schema
         try:
             res = (
                 SUPABASE.table(TRADE_JOURNAL_TABLE)
@@ -6993,29 +7069,40 @@ def vf_load_trade_journal(account="cto_xtb"):
                 .execute()
             )
             st.session_state["vf_trade_journal_fx_schema_missing"] = False
-            df = pd.DataFrame(_sb_data(res))
-            for c in cols:
-                if c not in df.columns:
-                    df[c] = np.nan
-            return df[cols]
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = False
+            return _frame(res, cols)
         except Exception:
-            # Backward-compatible load before the V39.5 SQL migration.
-            try:
-                res = (
-                    SUPABASE.table(TRADE_JOURNAL_TABLE)
-                    .select(",".join(legacy_cols))
-                    .eq("account", account)
-                    .order("opened_at", desc=True)
-                    .execute()
-                )
-                st.session_state["vf_trade_journal_fx_schema_missing"] = True
-                df = pd.DataFrame(_sb_data(res))
-                for c in cols:
-                    if c not in df.columns:
-                        df[c] = np.nan
-                return df[cols]
-            except Exception:
-                pass
+            pass
+
+        # V39.5 schema still works while V39.6 migration is pending.
+        try:
+            res = (
+                SUPABASE.table(TRADE_JOURNAL_TABLE)
+                .select(",".join(v395_cols))
+                .eq("account", account)
+                .order("opened_at", desc=True)
+                .execute()
+            )
+            st.session_state["vf_trade_journal_fx_schema_missing"] = False
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = True
+            return _frame(res, v395_cols)
+        except Exception:
+            pass
+
+        # Legacy schema.
+        try:
+            res = (
+                SUPABASE.table(TRADE_JOURNAL_TABLE)
+                .select(",".join(legacy_cols))
+                .eq("account", account)
+                .order("opened_at", desc=True)
+                .execute()
+            )
+            st.session_state["vf_trade_journal_fx_schema_missing"] = True
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = True
+            return _frame(res, legacy_cols)
+        except Exception:
+            pass
 
     rows = [r for r in vf_journal_session() if r.get("account") == account]
     if not rows:
@@ -7041,36 +7128,48 @@ def vf_save_trade_journal_record(payload):
 
     clean["user_id"] = vf_current_user_id()
 
-    legacy_cols = {
-        "trade_id","account","broker","symbol","name","isin","status",
-        "planned_entry","actual_entry","stop","tp1","tp2","quantity",
-        "risk_amount","capital_committed","score","rr","upside",
-        "horizon_tp1","horizon_tp2","sessions_tp1","sessions_tp2",
-        "rotation","opened_at","closed_at","exit_price","exit_reason",
-        "fees","realized_pnl","realized_pct","r_multiple","notes","user_id"
-    }
+    legacy_cols, fx_cols, xtb_cols = vf_trade_journal_column_sets()
+    legacy_allowed = set(legacy_cols + ["user_id"])
+    v395_allowed = set(legacy_cols + fx_cols + ["user_id"])
 
     if vf_trade_journal_backend_ready():
+        # Full V39.6 save
         try:
             SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
                 clean, on_conflict="trade_id"
             ).execute()
             st.session_state["vf_trade_journal_fx_schema_missing"] = False
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = False
             vf_safe_cache_clear()
             return True, "Supabase"
         except Exception:
-            # If the V39.5 migration has not yet been applied, preserve the
-            # legacy journal instead of silently losing the trade.
-            try:
-                legacy_clean = {k: v for k, v in clean.items() if k in legacy_cols}
-                SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
-                    legacy_clean, on_conflict="trade_id"
-                ).execute()
-                st.session_state["vf_trade_journal_fx_schema_missing"] = True
-                vf_safe_cache_clear()
-                return True, "Supabase (mode compatibilité — migration V39.5 à appliquer)"
-            except Exception:
-                pass
+            pass
+
+        # Keep V39.5 fully operational if only the new V39.6 fields are missing.
+        try:
+            v395_clean = {k: v for k, v in clean.items() if k in v395_allowed}
+            SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
+                v395_clean, on_conflict="trade_id"
+            ).execute()
+            st.session_state["vf_trade_journal_fx_schema_missing"] = False
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = True
+            vf_safe_cache_clear()
+            return True, "Supabase (V39.5 — migration V39.6 à appliquer)"
+        except Exception:
+            pass
+
+        # Last fallback: historical schema.
+        try:
+            legacy_clean = {k: v for k, v in clean.items() if k in legacy_allowed}
+            SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
+                legacy_clean, on_conflict="trade_id"
+            ).execute()
+            st.session_state["vf_trade_journal_fx_schema_missing"] = True
+            st.session_state["vf_trade_journal_xtb_schema_missing"] = True
+            vf_safe_cache_clear()
+            return True, "Supabase (mode compatibilité)"
+        except Exception:
+            pass
 
     rows = vf_journal_session()
     found = False
@@ -7282,6 +7381,181 @@ def vf_register_manual_open_trade(
     return vf_save_trade_journal_record(payload)
 
 
+
+def vf_register_xtb_closed_trade(
+    broker_symbol,
+    market_data_symbol,
+    name,
+    qty,
+    entry_price,
+    exit_price,
+    opened_at,
+    closed_at,
+    instrument_currency="EUR",
+    account_currency="EUR",
+    quote_currency="EUR",
+    quote_scale=1.0,
+    fx_rate_entry=1.0,
+    fx_rate_exit=1.0,
+    broker_buy_value=None,
+    broker_sell_value=None,
+    broker_reported_pnl=None,
+    broker_reported_commission=0.0,
+    xtb_position_id="",
+    xtb_order_id="",
+    xtb_source="Mes Transactions",
+    xtb_open_origin="",
+    xtb_close_origin="",
+    notes="",
+    instrument_type="ACTION",
+):
+    """
+    Register an already CLOSED broker trade from the XTB position detail screen.
+
+    Broker-reported EUR/account-currency values are the accounting source of truth
+    when supplied. This is intentional: the XTB conversion rates shown on the
+    statement can already reflect the effective broker conversion, so we do not
+    add a synthetic 0.5% fee again.
+    """
+    broker_symbol = _clean_text(broker_symbol, upper=True)
+    market_data_symbol = (
+        _clean_text(market_data_symbol, upper=True)
+        or vf_guess_market_data_symbol(broker_symbol)
+        or broker_symbol
+    )
+    name = _clean_text(name) or broker_symbol or market_data_symbol
+
+    try:
+        qty = int(qty or 0)
+    except Exception:
+        qty = 0
+
+    entry_price = _vf_num(entry_price)
+    exit_price = _vf_num(exit_price)
+    fx_rate_entry = _vf_num(fx_rate_entry)
+    fx_rate_exit = _vf_num(fx_rate_exit)
+
+    if not broker_symbol or qty <= 0 or pd.isna(entry_price) or pd.isna(exit_price):
+        return False, "Ticker, quantité, prix d'ouverture et prix de clôture sont obligatoires."
+
+    if pd.isna(fx_rate_entry) or fx_rate_entry <= 0:
+        fx_rate_entry = 1.0
+    if pd.isna(fx_rate_exit) or fx_rate_exit <= 0:
+        fx_rate_exit = fx_rate_entry
+
+    calc_buy = float(entry_price) * qty * float(fx_rate_entry)
+    calc_sell = float(exit_price) * qty * float(fx_rate_exit)
+
+    buy_value = _vf_num(broker_buy_value)
+    sell_value = _vf_num(broker_sell_value)
+    reported_pnl = _vf_num(broker_reported_pnl)
+    commission = max(vf_float0(broker_reported_commission), 0.0)
+
+    if pd.isna(buy_value) or buy_value <= 0:
+        buy_value = calc_buy
+    if pd.isna(sell_value) or sell_value <= 0:
+        sell_value = calc_sell
+
+    # If the broker gives a P/L, use it exactly. Otherwise derive it.
+    if pd.isna(reported_pnl):
+        realized_pnl = float(sell_value) - float(buy_value) - commission
+    else:
+        realized_pnl = float(reported_pnl)
+
+    realized_pct = (
+        realized_pnl / float(buy_value) * 100.0
+        if float(buy_value) else np.nan
+    )
+
+    # Preserve exact XTB timestamps.
+    if isinstance(opened_at, pd.Timestamp):
+        opened_iso = opened_at.to_pydatetime().isoformat()
+    elif isinstance(opened_at, datetime):
+        opened_iso = opened_at.isoformat()
+    else:
+        opened_iso = str(opened_at)
+
+    if isinstance(closed_at, pd.Timestamp):
+        closed_iso = closed_at.to_pydatetime().isoformat()
+    elif isinstance(closed_at, datetime):
+        closed_iso = closed_at.isoformat()
+    else:
+        closed_iso = str(closed_at)
+
+    audit = "Import XTB clôturé"
+    if _clean_text(xtb_position_id):
+        audit += f" • Position {xtb_position_id}"
+    if _clean_text(xtb_order_id):
+        audit += f" • Ordre {xtb_order_id}"
+    if _clean_text(notes):
+        audit += f" • {_clean_text(notes)}"
+
+    payload = {
+        "trade_id": vf_trade_id(broker_symbol),
+        "account": XTB_PROJECT_ZERO_ACCOUNT,
+        "broker": XTB_PROJECT_ZERO_BROKER,
+        "symbol": broker_symbol,
+        "name": name,
+        "isin": "",
+        "status": "CLOSED",
+        "planned_entry": float(entry_price),
+        "actual_entry": float(entry_price),
+        "stop": None,
+        "tp1": None,
+        "tp2": None,
+        "quantity": qty,
+        "risk_amount": 0.0,
+        "capital_committed": float(buy_value),
+        "score": None,
+        "rr": None,
+        "upside": None,
+        "horizon_tp1": None,
+        "horizon_tp2": None,
+        "sessions_tp1": None,
+        "sessions_tp2": None,
+        "rotation": None,
+        "opened_at": opened_iso,
+        "closed_at": closed_iso,
+        "exit_price": float(exit_price),
+        "exit_reason": "XTB_HISTORY",
+        "fees": commission,
+        "realized_pnl": realized_pnl,
+        "realized_pct": float(realized_pct) if pd.notna(realized_pct) else None,
+        "r_multiple": None,
+        "notes": audit,
+
+        "instrument_type": _clean_text(instrument_type, upper=True) or "ACTION",
+        "instrument_currency": _clean_text(instrument_currency, upper=True) or "EUR",
+        "account_currency": _clean_text(account_currency, upper=True) or "EUR",
+        "quote_currency": _clean_text(quote_currency) or _clean_text(instrument_currency, upper=True) or "EUR",
+        "quote_scale": float(_vf_num(quote_scale) or 1.0),
+        "fx_rate_entry": float(fx_rate_entry),
+        "fx_rate_exit": float(fx_rate_exit),
+
+        # Statement FX rates are treated as effective broker rates.
+        "fx_fee_rate_pct": 0.0,
+        "fx_fee_entry": 0.0,
+        "fx_fee_exit": 0.0,
+        "broker_commission_rate_pct": 0.0,
+        "broker_fee_entry": 0.0,
+        "broker_fee_exit": commission,
+        "other_exit_fees": 0.0,
+
+        # V39.6 exact broker traceability
+        "broker_symbol": broker_symbol,
+        "market_data_symbol": market_data_symbol,
+        "xtb_position_id": _clean_text(xtb_position_id),
+        "xtb_order_id": _clean_text(xtb_order_id),
+        "xtb_source": _clean_text(xtb_source),
+        "xtb_open_origin": _clean_text(xtb_open_origin),
+        "xtb_close_origin": _clean_text(xtb_close_origin),
+        "broker_buy_value": float(buy_value),
+        "broker_sell_value": float(sell_value),
+        "broker_reported_pnl": float(reported_pnl) if pd.notna(reported_pnl) else realized_pnl,
+        "broker_reported_commission": commission,
+    }
+    return vf_save_trade_journal_record(payload)
+
 def vf_live_trade_state(entry, current, stop=None, tp1=None, tp2=None):
     entry = _vf_num(entry)
     current = _vf_num(current)
@@ -7402,6 +7676,8 @@ def vf_update_trade_financials(
     fx_fee_exit=None,
     broker_fee_exit=None,
     other_exit_fees=None,
+    broker_symbol=None,
+    market_data_symbol=None,
 ):
     """Persist editable XTB currency/fee parameters and recalculate accounting."""
     if hasattr(trade_row, "to_dict"):
@@ -7425,6 +7701,19 @@ def vf_update_trade_financials(
     payload = {
         **row,
         "instrument_type": _clean_text(instrument_type, upper=True) or "ACTION",
+        "broker_symbol": (
+            _clean_text(broker_symbol, upper=True)
+            or _clean_text(row.get("broker_symbol"), upper=True)
+            or _clean_text(row.get("symbol"), upper=True)
+        ),
+        "market_data_symbol": (
+            _clean_text(market_data_symbol, upper=True)
+            or _clean_text(row.get("market_data_symbol"), upper=True)
+            or vf_guess_market_data_symbol(
+                _clean_text(row.get("broker_symbol"), upper=True)
+                or _clean_text(row.get("symbol"), upper=True)
+            )
+        ),
         "instrument_currency": _clean_text(instrument_currency, upper=True) or "EUR",
         "account_currency": _clean_text(account_currency, upper=True) or "EUR",
         "quote_currency": _clean_text(quote_currency) or _clean_text(instrument_currency, upper=True) or "EUR",
@@ -8187,6 +8476,278 @@ def vf_trade_journal_page():
                     vf_safe_cache_clear()
                     st.rerun()
 
+    # ------------------------------------------------------
+    # V39.6 — Direct import of an already CLOSED XTB position
+    # ------------------------------------------------------
+    vf_section(
+        "📥 Reprendre une position XTB déjà clôturée",
+        "Recopie directement l'écran « Détails de la position » XTB. "
+        "Aucun Stop/TP n'est obligatoire : les valeurs réellement affichées par XTB sont prioritaires."
+    )
+
+    with st.expander("Saisir un trade clôturé depuis XTB", expanded=False):
+        st.caption(
+            "Exemple Tullow Oil : ticker XTB TLW.UK, ticker marché TLW.L, "
+            "prix 0,2450 → 0,2490 GBP. Le flux Yahoo de Londres est en GBX/GBp, "
+            "donc VISION FUTURE applique 0,01 pour obtenir les GBP."
+        )
+
+        x1,x2 = st.columns(2)
+        xtb_broker_symbol = x1.text_input(
+            "Ticker XTB",
+            placeholder="Ex. TLW.UK",
+            key="xtb_hist_broker_symbol"
+        )
+        guessed_market = vf_guess_market_data_symbol(xtb_broker_symbol)
+        xtb_market_symbol = x2.text_input(
+            "Ticker pour le cours live / Yahoo",
+            value=guessed_market,
+            placeholder="Ex. TLW.L",
+            key=f"xtb_hist_market_symbol_{guessed_market or 'empty'}",
+            help="Séparé du ticker XTB. TLW.UK chez XTB correspond à TLW.L sur Yahoo."
+        )
+
+        market_ctx = (
+            vf_trade_quote(xtb_market_symbol)
+            if _clean_text(xtb_market_symbol)
+            else {"instrument_currency":"EUR","raw_currency":"EUR","quote_scale":1.0,"name":""}
+        )
+        inferred_name = _clean_text(market_ctx.get("name"))
+        inferred_curr = _clean_text(market_ctx.get("instrument_currency"), upper=True) or "EUR"
+        inferred_raw_curr = _clean_text(market_ctx.get("raw_currency")) or inferred_curr
+        inferred_scale = float(market_ctx.get("quote_scale") or 1.0)
+
+        x3,x4,x5 = st.columns(3)
+        xtb_name = x3.text_input(
+            "Nom",
+            value=inferred_name,
+            placeholder="Ex. Tullow Oil PLC",
+            key=f"xtb_hist_name_{xtb_market_symbol or 'empty'}"
+        )
+        curr_choices = ["EUR","GBP","USD","PLN","CHF","CAD","JPY","AUD","SEK","NOK","DKK"]
+        if inferred_curr not in curr_choices:
+            curr_choices.append(inferred_curr)
+        xtb_inst_curr = x4.selectbox(
+            "Devise de l'action",
+            curr_choices,
+            index=curr_choices.index(inferred_curr),
+            key=f"xtb_hist_currency_{xtb_market_symbol or 'empty'}"
+        )
+        xtb_quote_scale = x5.number_input(
+            "Multiplicateur du flux live",
+            min_value=0.0001,
+            max_value=10000.0,
+            value=float(inferred_scale),
+            step=0.001 if inferred_scale < 1 else 0.01,
+            format="%.4f",
+            key=f"xtb_hist_scale_{xtb_market_symbol or 'empty'}",
+            help="Londres GBX/GBp → GBP = 0,01."
+        )
+
+        p1,p2,p3 = st.columns(3)
+        xtb_qty = p1.number_input(
+            "Volume / quantité",
+            min_value=1,
+            value=1,
+            step=1,
+            key="xtb_hist_qty"
+        )
+        xtb_entry = p2.number_input(
+            f"Prix ouvert ({xtb_inst_curr})",
+            min_value=0.0,
+            value=0.0,
+            step=0.0001,
+            format="%.4f",
+            key="xtb_hist_entry"
+        )
+        xtb_exit = p3.number_input(
+            f"Prix de fermeture ({xtb_inst_curr})",
+            min_value=0.0,
+            value=0.0,
+            step=0.0001,
+            format="%.4f",
+            key="xtb_hist_exit"
+        )
+
+        d1,d2,d3,d4 = st.columns(4)
+        open_date = d1.date_input(
+            "Date ouverture",
+            value=date.today(),
+            key="xtb_hist_open_date"
+        )
+        open_time = d2.time_input(
+            "Heure ouverture",
+            value=datetime.now().replace(second=0, microsecond=0).time(),
+            key="xtb_hist_open_time"
+        )
+        close_date = d3.date_input(
+            "Date clôture",
+            value=date.today(),
+            key="xtb_hist_close_date"
+        )
+        close_time = d4.time_input(
+            "Heure clôture",
+            value=datetime.now().replace(second=0, microsecond=0).time(),
+            key="xtb_hist_close_time"
+        )
+
+        fx1,fx2 = st.columns(2)
+        fx_auto_hist = vf_fx_rate(xtb_inst_curr, "EUR")
+        if pd.isna(fx_auto_hist) or fx_auto_hist <= 0:
+            fx_auto_hist = 1.0
+        xtb_fx_entry = fx1.number_input(
+            f"Taux conversion ouverture • 1 {xtb_inst_curr} = EUR",
+            min_value=0.000001,
+            value=float(fx_auto_hist),
+            step=0.00001,
+            format="%.6f",
+            key="xtb_hist_fx_entry"
+        )
+        xtb_fx_exit = fx2.number_input(
+            f"Taux change clôture • 1 {xtb_inst_curr} = EUR",
+            min_value=0.000001,
+            value=float(fx_auto_hist),
+            step=0.00001,
+            format="%.6f",
+            key="xtb_hist_fx_exit"
+        )
+
+        theoretical_buy = float(xtb_entry) * int(xtb_qty) * float(xtb_fx_entry)
+        theoretical_sell = float(xtb_exit) * int(xtb_qty) * float(xtb_fx_exit)
+
+        v1,v2,v3,v4 = st.columns(4)
+        xtb_buy_value = v1.number_input(
+            "Valeur d'achat XTB (€)",
+            min_value=0.0,
+            value=float(round(theoretical_buy, 2)),
+            step=0.01,
+            format="%.2f",
+            key="xtb_hist_buy_value",
+            help="Recopie la valeur d'achat affichée dans XTB."
+        )
+        xtb_sell_value = v2.number_input(
+            "Valeur de vente XTB (€)",
+            min_value=0.0,
+            value=float(round(theoretical_sell, 2)),
+            step=0.01,
+            format="%.2f",
+            key="xtb_hist_sell_value",
+            help="Recopie la valeur de vente affichée dans XTB."
+        )
+        xtb_reported_pnl = v3.number_input(
+            "Gain / perte XTB (€)",
+            value=float(round(xtb_sell_value - xtb_buy_value, 2)),
+            step=0.01,
+            format="%.2f",
+            key="xtb_hist_reported_pnl",
+            help="Cette valeur devient la source de vérité pour le P/L du journal."
+        )
+        xtb_commission = v4.number_input(
+            "Commission XTB (€)",
+            min_value=0.0,
+            value=0.0,
+            step=0.01,
+            format="%.2f",
+            key="xtb_hist_commission"
+        )
+
+        st.info(
+            f"Contrôle mathématique • achat théorique {theoretical_buy:.4f} € "
+            f"vs XTB {float(xtb_buy_value):.2f} € • "
+            f"vente théorique {theoretical_sell:.4f} € "
+            f"vs XTB {float(xtb_sell_value):.2f} €."
+        )
+
+        m1,m2,m3 = st.columns(3)
+        xtb_position_id = m1.text_input(
+            "ID de position",
+            key="xtb_hist_position_id"
+        )
+        xtb_order_id = m2.text_input(
+            "Numéro d'ordre",
+            key="xtb_hist_order_id"
+        )
+        xtb_source = m3.text_input(
+            "Source",
+            value="Mes Transactions",
+            key="xtb_hist_source"
+        )
+
+        o1,o2 = st.columns(2)
+        xtb_open_origin = o1.text_input(
+            "Origine d'ouverture",
+            placeholder="Ex. Mobile Android",
+            key="xtb_hist_open_origin"
+        )
+        xtb_close_origin = o2.text_input(
+            "Origine de fermeture",
+            placeholder="Ex. Mobile Android",
+            key="xtb_hist_close_origin"
+        )
+
+        xtb_hist_notes = st.text_input(
+            "Note facultative",
+            placeholder="Ex. recopie manuelle du détail de position XTB",
+            key="xtb_hist_notes"
+        )
+
+        opened_dt = datetime.combine(open_date, open_time)
+        closed_dt = datetime.combine(close_date, close_time)
+
+        valid_hist = True
+        if not _clean_text(xtb_broker_symbol):
+            st.warning("Renseigne le ticker XTB.")
+            valid_hist = False
+        if not _clean_text(xtb_market_symbol):
+            st.warning("Renseigne le ticker utilisé pour le flux live.")
+            valid_hist = False
+        if float(xtb_entry) <= 0 or float(xtb_exit) <= 0:
+            valid_hist = False
+        if closed_dt < opened_dt:
+            st.error("La date/heure de clôture doit être postérieure à l'ouverture.")
+            valid_hist = False
+
+        if st.button(
+            "📥 Enregistrer ce trade XTB clôturé",
+            type="primary",
+            use_container_width=True,
+            disabled=not valid_hist,
+            key="xtb_hist_submit"
+        ):
+            ok, where = vf_register_xtb_closed_trade(
+                broker_symbol=xtb_broker_symbol,
+                market_data_symbol=xtb_market_symbol,
+                name=xtb_name,
+                qty=int(xtb_qty),
+                entry_price=xtb_entry,
+                exit_price=xtb_exit,
+                opened_at=opened_dt,
+                closed_at=closed_dt,
+                instrument_currency=xtb_inst_curr,
+                account_currency="EUR",
+                quote_currency=inferred_raw_curr,
+                quote_scale=xtb_quote_scale,
+                fx_rate_entry=xtb_fx_entry,
+                fx_rate_exit=xtb_fx_exit,
+                broker_buy_value=xtb_buy_value,
+                broker_sell_value=xtb_sell_value,
+                broker_reported_pnl=xtb_reported_pnl,
+                broker_reported_commission=xtb_commission,
+                xtb_position_id=xtb_position_id,
+                xtb_order_id=xtb_order_id,
+                xtb_source=xtb_source,
+                xtb_open_origin=xtb_open_origin,
+                xtb_close_origin=xtb_close_origin,
+                notes=xtb_hist_notes,
+                instrument_type="ACTION",
+            )
+            if ok:
+                st.success(f"Trade XTB clôturé enregistré • {where}.")
+                vf_safe_cache_clear()
+                st.rerun()
+            else:
+                st.error(str(where))
+
     st.caption(
         "VISION FUTURE suit ensuite automatiquement le dernier cours disponible. "
         "TP/SL atteints sont signalés comme niveaux à vérifier : l'app ne suppose pas qu'un ordre XTB a réellement été exécuté."
@@ -8198,6 +8759,12 @@ def vf_trade_journal_page():
             "Migration V39.5 non détectée : le journal reste compatible, mais les nouveaux "
             "paramètres devise/FX/frais ne seront pas persistants tant que le fichier SQL V39.5 "
             "n'aura pas été exécuté dans le projet Supabase VISION FUTURE."
+        )
+    if st.session_state.get("vf_trade_journal_xtb_schema_missing"):
+        st.warning(
+            "Migration V39.6 non détectée : les champs spécifiques XTB "
+            "(ticker courtier, ticker live, ID position/ordre, valeurs achat/vente) "
+            "ne seront pas persistants tant que le SQL V39.6 n'aura pas été exécuté."
         )
     stats = vf_trade_journal_stats(df)
 
@@ -8416,6 +8983,15 @@ def vf_trade_journal_page():
                             "Vérifie le multiplicateur de cotation dans « Paramètres devise & frais XTB »."
                         )
 
+                broker_ticker_display = _clean_text(ctx.get("broker_symbol"), upper=True)
+                market_ticker_display = _clean_text(ctx.get("market_data_symbol"), upper=True)
+                if broker_ticker_display and market_ticker_display and broker_ticker_display != market_ticker_display:
+                    st.caption(
+                        f"Flux live : {broker_ticker_display} (XTB) → "
+                        f"{market_ticker_display} (marché/Yahoo) • "
+                        f"{ctx.get('raw_currency') or instrument_currency} × {float(ctx.get('quote_scale') or 1):g}."
+                    )
+
                 if live_note:
                     if live_kind == "green":
                         st.success(live_note)
@@ -8485,6 +9061,28 @@ def vf_trade_journal_page():
         edit_currency_choices = ["EUR","GBP","USD","PLN","CHF","CAD","JPY","AUD","SEK","NOK","DKK"]
         if inferred_inst_currency not in edit_currency_choices:
             edit_currency_choices.append(inferred_inst_currency)
+
+        symbol1,symbol2 = st.columns(2)
+        current_broker_symbol = (
+            _clean_text(edit_row.get("broker_symbol"), upper=True)
+            or _clean_text(edit_row.get("symbol"), upper=True)
+        )
+        current_market_symbol = (
+            _clean_text(edit_row.get("market_data_symbol"), upper=True)
+            or vf_guess_market_data_symbol(current_broker_symbol)
+        )
+        edit_broker_symbol = symbol1.text_input(
+            "Ticker XTB",
+            value=current_broker_symbol,
+            key=f"journal_edit_broker_symbol_{edit_row.get('trade_id')}",
+            help="Ex. TLW.UK tel qu'affiché chez XTB."
+        )
+        edit_market_symbol = symbol2.text_input(
+            "Ticker flux live / Yahoo",
+            value=current_market_symbol,
+            key=f"journal_edit_market_symbol_{edit_row.get('trade_id')}",
+            help="Ex. TLW.L pour Tullow Oil. Ce ticker pilote le suivi live."
+        )
 
         e1,e2,e3,e4 = st.columns(4)
         existing_type = _clean_text(edit_row.get("instrument_type"), upper=True) or "ACTION"
@@ -8688,6 +9286,8 @@ def vf_trade_journal_page():
                 fx_fee_exit=edit_fx_fee_exit,
                 broker_fee_exit=edit_broker_fee_exit,
                 other_exit_fees=edit_other_exit,
+                broker_symbol=edit_broker_symbol,
+                market_data_symbol=edit_market_symbol,
             )
             if ok:
                 st.success(f"Paramètres enregistrés • {where}.")
