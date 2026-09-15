@@ -25,7 +25,7 @@ st.set_page_config(page_title="VISION FUTURE — Trading & Portfolio Intelligenc
 
 APP_NAME = "VISION FUTURE"
 APP_SUBTITLE = "Trading & Portfolio Intelligence"
-APP_VERSION = "V39.4 Mobile UX Pro"
+APP_VERSION = "V39.5 XTB FX & Quote Integrity"
 APP_TAGLINE = "Build the Future of Your Capital"
 
 
@@ -3116,6 +3116,305 @@ def live_quote(symbol):
     except Exception:
         return {"price":None,"currency":"","name":symbol}
 
+
+
+# ==========================================================
+# V39.5 — XTB FX + QUOTE UNIT INTEGRITY
+# ==========================================================
+XTB_FX_MARGIN_DEFAULT_PCT = 0.5
+XTB_OMI_FREE_TURNOVER_EUR = 100000.0
+XTB_OMI_COMMISSION_PCT = 0.2
+XTB_OMI_MIN_COMMISSION_EUR = 10.0
+
+# Yahoo/LSE may expose London-listed equities in pence (GBp/GBX)
+# while the broker/accounting view is naturally expressed in GBP.
+VF_MINOR_CURRENCY_MAP = {
+    "GBX": ("GBP", 0.01),
+    "GBPENCE": ("GBP", 0.01),
+    "PENCE": ("GBP", 0.01),
+    "EUC": ("EUR", 0.01),
+    "USC": ("USD", 0.01),
+    "ZAC": ("ZAR", 0.01),
+}
+
+
+def vf_float0(value):
+    n = _vf_num(value)
+    return 0.0 if pd.isna(n) else float(n)
+
+
+def vf_normalize_quote_currency(raw_currency):
+    raw = str(raw_currency or "").strip()
+    # Preserve the case-sensitive Yahoo convention GBp.
+    if raw == "GBp":
+        return "GBP", 0.01, "GBp"
+    upper = raw.upper().replace(" ", "")
+    if upper in VF_MINOR_CURRENCY_MAP:
+        major, factor = VF_MINOR_CURRENCY_MAP[upper]
+        return major, float(factor), raw or upper
+    return (upper or "EUR"), 1.0, raw or upper or "EUR"
+
+
+def vf_trade_quote(symbol, quote_scale_override=None, instrument_currency_override=None):
+    """
+    Journal-safe quote:
+    - keeps Yahoo raw quote for traceability;
+    - normalizes minor currencies such as GBp/GBX to GBP;
+    - allows an explicit per-trade scale override.
+    """
+    q = live_quote(symbol)
+    raw_price = _vf_num(q.get("price"))
+    raw_currency = str(q.get("currency") or "").strip()
+    major_currency, auto_scale, raw_label = vf_normalize_quote_currency(raw_currency)
+
+    scale = _vf_num(quote_scale_override)
+    if pd.isna(scale) or scale <= 0:
+        scale = auto_scale
+
+    instrument_currency = _clean_text(instrument_currency_override, upper=True)
+    if not instrument_currency:
+        instrument_currency = major_currency
+
+    normalized_price = (
+        float(raw_price) * float(scale)
+        if pd.notna(raw_price) else np.nan
+    )
+
+    return {
+        "price": normalized_price,
+        "raw_price": float(raw_price) if pd.notna(raw_price) else None,
+        "raw_currency": raw_label,
+        "instrument_currency": instrument_currency,
+        "quote_scale": float(scale),
+        "name": q.get("name") or symbol,
+    }
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def vf_fx_rate(from_currency, to_currency="EUR"):
+    """
+    Reference FX rate: 1 unit of from_currency expressed in to_currency.
+    This is a market reference, not the exact XTB execution rate.
+    """
+    src = _clean_text(from_currency, upper=True) or "EUR"
+    dst = _clean_text(to_currency, upper=True) or "EUR"
+
+    # Normalize minor currencies before FX conversion.
+    src, _, _ = vf_normalize_quote_currency(src)
+    dst, _, _ = vf_normalize_quote_currency(dst)
+
+    if src == dst:
+        return 1.0
+
+    pair = f"{src}{dst}=X"
+    try:
+        t = yf.Ticker(pair)
+        fi = getattr(t, "fast_info", None)
+        px = None
+        if fi:
+            try:
+                px = fi.get("last_price")
+            except Exception:
+                px = None
+        if px is None:
+            h = t.history(period="5d", interval="1h", auto_adjust=False)
+            if h is not None and not h.empty:
+                px = float(h["Close"].dropna().iloc[-1])
+        px = _vf_num(px)
+        if pd.notna(px) and px > 0:
+            return float(px)
+    except Exception:
+        pass
+
+    # Try the inverse pair.
+    inverse = f"{dst}{src}=X"
+    try:
+        t = yf.Ticker(inverse)
+        fi = getattr(t, "fast_info", None)
+        px = None
+        if fi:
+            try:
+                px = fi.get("last_price")
+            except Exception:
+                px = None
+        if px is None:
+            h = t.history(period="5d", interval="1h", auto_adjust=False)
+            if h is not None and not h.empty:
+                px = float(h["Close"].dropna().iloc[-1])
+        px = _vf_num(px)
+        if pd.notna(px) and px > 0:
+            return float(1.0 / px)
+    except Exception:
+        pass
+
+    return np.nan
+
+
+def vf_xtb_fee_defaults(instrument_currency, account_currency="EUR", threshold_exceeded=False):
+    instrument_currency = _clean_text(instrument_currency, upper=True) or "EUR"
+    account_currency = _clean_text(account_currency, upper=True) or "EUR"
+    fx_pct = XTB_FX_MARGIN_DEFAULT_PCT if instrument_currency != account_currency else 0.0
+    commission_pct = XTB_OMI_COMMISSION_PCT if threshold_exceeded else 0.0
+    commission_min = XTB_OMI_MIN_COMMISSION_EUR if threshold_exceeded else 0.0
+    return {
+        "fx_fee_rate_pct": fx_pct,
+        "broker_commission_rate_pct": commission_pct,
+        "broker_min_commission": commission_min,
+    }
+
+
+def vf_xtb_cost_estimate(
+    price, qty, fx_rate=1.0,
+    fx_fee_rate_pct=0.0,
+    broker_commission_rate_pct=0.0,
+    broker_min_commission=0.0
+):
+    price = _vf_num(price)
+    fx_rate = _vf_num(fx_rate)
+    try:
+        qty = int(qty or 0)
+    except Exception:
+        qty = 0
+
+    if pd.isna(price) or pd.isna(fx_rate) or qty <= 0:
+        return {
+            "gross_base": 0.0,
+            "fx_fee": 0.0,
+            "broker_fee": 0.0,
+            "total_fees": 0.0,
+            "net_cost": 0.0,
+        }
+
+    gross = float(price) * qty * float(fx_rate)
+    fx_fee = gross * max(vf_float0(fx_fee_rate_pct), 0.0) / 100.0
+    commission_pct = max(vf_float0(broker_commission_rate_pct), 0.0)
+    broker_fee = gross * commission_pct / 100.0
+    if commission_pct > 0 and broker_min_commission:
+        broker_fee = max(broker_fee, float(broker_min_commission))
+
+    return {
+        "gross_base": gross,
+        "fx_fee": fx_fee,
+        "broker_fee": broker_fee,
+        "total_fees": fx_fee + broker_fee,
+        "net_cost": gross + fx_fee + broker_fee,
+    }
+
+
+def vf_trade_row_currency_context(row, refresh_fx=True):
+    """Resolve quote unit, instrument currency and current FX for an existing trade."""
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row or {})
+
+    symbol = _clean_text(row.get("symbol"), upper=True)
+    scale = _vf_num(row.get("quote_scale"))
+    currency_override = _clean_text(row.get("instrument_currency"), upper=True)
+
+    tq = vf_trade_quote(
+        symbol,
+        quote_scale_override=scale if pd.notna(scale) and scale > 0 else None,
+        instrument_currency_override=currency_override or None,
+    )
+
+    instrument_currency = currency_override or tq.get("instrument_currency") or "EUR"
+    account_currency = _clean_text(row.get("account_currency"), upper=True) or "EUR"
+
+    live_fx = 1.0
+    if instrument_currency != account_currency:
+        live_fx = vf_fx_rate(instrument_currency, account_currency) if refresh_fx else np.nan
+
+    if pd.isna(live_fx) or live_fx <= 0:
+        fallback = _vf_num(row.get("fx_rate_entry"))
+        live_fx = fallback if pd.notna(fallback) and fallback > 0 else 1.0
+
+    return {
+        **tq,
+        "instrument_currency": instrument_currency,
+        "account_currency": account_currency,
+        "live_fx_rate": float(live_fx),
+    }
+
+
+def vf_trade_entry_financials(
+    price, qty, stop,
+    fx_rate_entry=1.0,
+    fx_fee_entry=0.0,
+    broker_fee_entry=0.0,
+):
+    price = _vf_num(price)
+    stop = _vf_num(stop)
+    fx = _vf_num(fx_rate_entry)
+    try:
+        qty = int(qty or 0)
+    except Exception:
+        qty = 0
+
+    if pd.isna(fx) or fx <= 0:
+        fx = 1.0
+
+    gross = float(price) * qty * float(fx) if pd.notna(price) and qty > 0 else 0.0
+    entry_fees = max(vf_float0(fx_fee_entry), 0.0) + max(vf_float0(broker_fee_entry), 0.0)
+    committed = gross + entry_fees
+
+    risk = 0.0
+    if pd.notna(price) and pd.notna(stop) and qty > 0:
+        risk = abs(float(price) - float(stop)) * qty * float(fx)
+
+    return {
+        "gross_entry_base": gross,
+        "entry_fees": entry_fees,
+        "capital_committed": committed,
+        "risk_amount": risk,
+    }
+
+
+def vf_recalculate_closed_trade(row):
+    """Recalculate a CLOSED trade in account currency from entry/exit FX and fees."""
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    row = dict(row or {})
+
+    entry = _vf_num(row.get("actual_entry"))
+    exit_price = _vf_num(row.get("exit_price"))
+    stop = _vf_num(row.get("stop"))
+    qty = int(_vf_num(row.get("quantity")) or 0)
+
+    entry_fx = _vf_num(row.get("fx_rate_entry"))
+    exit_fx = _vf_num(row.get("fx_rate_exit"))
+    if pd.isna(entry_fx) or entry_fx <= 0:
+        entry_fx = 1.0
+    if pd.isna(exit_fx) or exit_fx <= 0:
+        exit_fx = entry_fx
+
+    entry_fx_fee = max(vf_float0(row.get("fx_fee_entry")), 0.0)
+    entry_broker_fee = max(vf_float0(row.get("broker_fee_entry")), 0.0)
+    exit_fx_fee = max(vf_float0(row.get("fx_fee_exit")), 0.0)
+    exit_broker_fee = max(vf_float0(row.get("broker_fee_exit")), 0.0)
+    other_exit_fees = max(vf_float0(row.get("other_exit_fees")), 0.0)
+
+    if pd.isna(entry) or pd.isna(exit_price) or qty <= 0:
+        return row
+
+    entry_gross = float(entry) * qty * float(entry_fx)
+    exit_gross = float(exit_price) * qty * float(exit_fx)
+    entry_cost = entry_gross + entry_fx_fee + entry_broker_fee
+    exit_costs = exit_fx_fee + exit_broker_fee + other_exit_fees
+    proceeds = exit_gross - exit_costs
+    pnl = proceeds - entry_cost
+    pct = pnl / entry_cost * 100.0 if entry_cost else np.nan
+
+    risk = _vf_num(row.get("risk_amount"))
+    if pd.isna(risk) or risk <= 0:
+        risk = abs(float(entry) - float(stop)) * qty * float(entry_fx) if pd.notna(stop) else np.nan
+    r_multiple = pnl / risk if pd.notna(risk) and risk > 0 else np.nan
+
+    row["capital_committed"] = entry_cost
+    row["fees"] = entry_fx_fee + entry_broker_fee + exit_fx_fee + exit_broker_fee + other_exit_fees
+    row["realized_pnl"] = pnl
+    row["realized_pct"] = pct
+    row["r_multiple"] = r_multiple
+    return row
 
 
 
@@ -6666,7 +6965,7 @@ def vf_journal_session():
 
 
 def vf_load_trade_journal(account="cto_xtb"):
-    cols = [
+    legacy_cols = [
         "trade_id","account","broker","symbol","name","isin","status",
         "planned_entry","actual_entry","stop","tp1","tp2","quantity",
         "risk_amount","capital_committed","score","rr","upside",
@@ -6674,6 +6973,15 @@ def vf_load_trade_journal(account="cto_xtb"):
         "rotation","opened_at","closed_at","exit_price","exit_reason",
         "fees","realized_pnl","realized_pct","r_multiple","notes"
     ]
+    fx_cols = [
+        "instrument_type","instrument_currency","account_currency",
+        "quote_currency","quote_scale",
+        "fx_rate_entry","fx_rate_exit","fx_fee_rate_pct",
+        "fx_fee_entry","fx_fee_exit",
+        "broker_commission_rate_pct","broker_fee_entry","broker_fee_exit",
+        "other_exit_fees"
+    ]
+    cols = legacy_cols + fx_cols
 
     if vf_trade_journal_backend_ready():
         try:
@@ -6684,13 +6992,30 @@ def vf_load_trade_journal(account="cto_xtb"):
                 .order("opened_at", desc=True)
                 .execute()
             )
+            st.session_state["vf_trade_journal_fx_schema_missing"] = False
             df = pd.DataFrame(_sb_data(res))
             for c in cols:
                 if c not in df.columns:
                     df[c] = np.nan
             return df[cols]
         except Exception:
-            pass
+            # Backward-compatible load before the V39.5 SQL migration.
+            try:
+                res = (
+                    SUPABASE.table(TRADE_JOURNAL_TABLE)
+                    .select(",".join(legacy_cols))
+                    .eq("account", account)
+                    .order("opened_at", desc=True)
+                    .execute()
+                )
+                st.session_state["vf_trade_journal_fx_schema_missing"] = True
+                df = pd.DataFrame(_sb_data(res))
+                for c in cols:
+                    if c not in df.columns:
+                        df[c] = np.nan
+                return df[cols]
+            except Exception:
+                pass
 
     rows = [r for r in vf_journal_session() if r.get("account") == account]
     if not rows:
@@ -6716,15 +7041,36 @@ def vf_save_trade_journal_record(payload):
 
     clean["user_id"] = vf_current_user_id()
 
+    legacy_cols = {
+        "trade_id","account","broker","symbol","name","isin","status",
+        "planned_entry","actual_entry","stop","tp1","tp2","quantity",
+        "risk_amount","capital_committed","score","rr","upside",
+        "horizon_tp1","horizon_tp2","sessions_tp1","sessions_tp2",
+        "rotation","opened_at","closed_at","exit_price","exit_reason",
+        "fees","realized_pnl","realized_pct","r_multiple","notes","user_id"
+    }
+
     if vf_trade_journal_backend_ready():
         try:
             SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
                 clean, on_conflict="trade_id"
             ).execute()
+            st.session_state["vf_trade_journal_fx_schema_missing"] = False
             vf_safe_cache_clear()
             return True, "Supabase"
         except Exception:
-            pass
+            # If the V39.5 migration has not yet been applied, preserve the
+            # legacy journal instead of silently losing the trade.
+            try:
+                legacy_clean = {k: v for k, v in clean.items() if k in legacy_cols}
+                SUPABASE.table(TRADE_JOURNAL_TABLE).upsert(
+                    legacy_clean, on_conflict="trade_id"
+                ).execute()
+                st.session_state["vf_trade_journal_fx_schema_missing"] = True
+                vf_safe_cache_clear()
+                return True, "Supabase (mode compatibilité — migration V39.5 à appliquer)"
+            except Exception:
+                pass
 
     rows = vf_journal_session()
     found = False
@@ -6819,7 +7165,17 @@ def vf_register_trade_plan(
 
 def vf_register_manual_open_trade(
     symbol, name, isin, actual_entry, stop, tp1, tp2, qty,
-    broker="XTB", account="cto_xtb", notes=""
+    broker="XTB", account="cto_xtb", notes="",
+    instrument_type="ACTION",
+    instrument_currency="EUR",
+    account_currency="EUR",
+    quote_currency="EUR",
+    quote_scale=1.0,
+    fx_rate_entry=1.0,
+    fx_fee_rate_pct=0.0,
+    fx_fee_entry=0.0,
+    broker_commission_rate_pct=0.0,
+    broker_fee_entry=0.0,
 ):
     symbol = _clean_text(symbol, upper=True)
     name = _clean_text(name) or symbol
@@ -6829,6 +7185,9 @@ def vf_register_manual_open_trade(
     stop = _vf_num(stop)
     tp1 = _vf_num(tp1)
     tp2 = _vf_num(tp2)
+    fx_rate_entry = _vf_num(fx_rate_entry)
+    if pd.isna(fx_rate_entry) or fx_rate_entry <= 0:
+        fx_rate_entry = 1.0
 
     try:
         qty = int(qty or 0)
@@ -6838,11 +7197,14 @@ def vf_register_manual_open_trade(
     if not symbol or pd.isna(actual_entry) or actual_entry <= 0 or qty <= 0:
         return False, "Données invalides"
 
-    risk_amount = 0.0
-    if pd.notna(stop):
-        risk_amount = abs(float(actual_entry) - float(stop)) * qty
-
-    capital_committed = float(actual_entry) * qty
+    financials = vf_trade_entry_financials(
+        actual_entry, qty, stop,
+        fx_rate_entry=fx_rate_entry,
+        fx_fee_entry=fx_fee_entry,
+        broker_fee_entry=broker_fee_entry,
+    )
+    risk_amount = float(financials["risk_amount"])
+    capital_committed = float(financials["capital_committed"])
 
     can_commit, available_cash = vf_xtb_project_zero_can_commit(capital_committed)
     if account == XTB_PROJECT_ZERO_ACCOUNT and not can_commit:
@@ -6881,8 +7243,8 @@ def vf_register_manual_open_trade(
         "tp1": float(tp1) if pd.notna(tp1) else None,
         "tp2": float(tp2) if pd.notna(tp2) else None,
         "quantity": qty,
-        "risk_amount": float(risk_amount),
-        "capital_committed": float(capital_committed),
+        "risk_amount": risk_amount,
+        "capital_committed": capital_committed,
         "score": None,
         "rr": float(rr) if pd.notna(rr) else None,
         "upside": float(upside) if pd.notna(upside) else None,
@@ -6895,11 +7257,27 @@ def vf_register_manual_open_trade(
         "closed_at": None,
         "exit_price": None,
         "exit_reason": None,
-        "fees": 0.0,
+        "fees": vf_float0(fx_fee_entry) + vf_float0(broker_fee_entry),
         "realized_pnl": None,
         "realized_pct": None,
         "r_multiple": None,
         "notes": _clean_text(notes),
+
+        # V39.5 financial context
+        "instrument_type": _clean_text(instrument_type, upper=True) or "ACTION",
+        "instrument_currency": _clean_text(instrument_currency, upper=True) or "EUR",
+        "account_currency": _clean_text(account_currency, upper=True) or "EUR",
+        "quote_currency": _clean_text(quote_currency) or _clean_text(instrument_currency, upper=True) or "EUR",
+        "quote_scale": float(_vf_num(quote_scale) or 1.0),
+        "fx_rate_entry": float(fx_rate_entry),
+        "fx_rate_exit": None,
+        "fx_fee_rate_pct": vf_float0(fx_fee_rate_pct),
+        "fx_fee_entry": vf_float0(fx_fee_entry),
+        "fx_fee_exit": 0.0,
+        "broker_commission_rate_pct": vf_float0(broker_commission_rate_pct),
+        "broker_fee_entry": vf_float0(broker_fee_entry),
+        "broker_fee_exit": 0.0,
+        "other_exit_fees": 0.0,
     }
     return vf_save_trade_journal_record(payload)
 
@@ -6928,7 +7306,13 @@ def vf_live_trade_state(entry, current, stop=None, tp1=None, tp2=None):
 
 
 
-def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""):
+def vf_close_trade_record(
+    trade_row, exit_price, exit_reason,
+    fees=0.0, notes="",
+    fx_rate_exit=None,
+    fx_fee_exit=0.0,
+    broker_fee_exit=0.0,
+):
     if hasattr(trade_row, "to_dict"):
         trade_row = trade_row.to_dict()
     row = dict(trade_row)
@@ -6937,19 +7321,50 @@ def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""
     stop = _vf_num(row.get("stop"))
     qty = int(_vf_num(row.get("quantity")) or 0)
     exit_price = _vf_num(exit_price)
-    fees = float(_vf_num(fees) if pd.notna(_vf_num(fees)) else 0.0)
+
+    entry_fx = _vf_num(row.get("fx_rate_entry"))
+    if pd.isna(entry_fx) or entry_fx <= 0:
+        entry_fx = 1.0
+
+    fx_rate_exit = _vf_num(fx_rate_exit)
+    if pd.isna(fx_rate_exit) or fx_rate_exit <= 0:
+        instrument_currency = _clean_text(row.get("instrument_currency"), upper=True) or "EUR"
+        account_currency = _clean_text(row.get("account_currency"), upper=True) or "EUR"
+        fx_rate_exit = vf_fx_rate(instrument_currency, account_currency)
+        if pd.isna(fx_rate_exit) or fx_rate_exit <= 0:
+            fx_rate_exit = entry_fx
+
+    entry_fx_fee = max(vf_float0(row.get("fx_fee_entry")), 0.0)
+    entry_broker_fee = max(vf_float0(row.get("broker_fee_entry")), 0.0)
+    fx_fee_exit = max(vf_float0(fx_fee_exit), 0.0)
+    broker_fee_exit = max(vf_float0(broker_fee_exit), 0.0)
+    other_exit_fees = max(vf_float0(fees), 0.0)
 
     pnl = np.nan
     pct = np.nan
     r_multiple = np.nan
+    capital_committed = _vf_num(row.get("capital_committed"))
 
     if pd.notna(entry) and pd.notna(exit_price) and qty > 0:
-        pnl = (exit_price - entry) * qty - fees
-        pct = ((exit_price - entry) / entry * 100) if entry else np.nan
+        entry_gross = float(entry) * qty * float(entry_fx)
+        if pd.isna(capital_committed) or capital_committed <= 0:
+            capital_committed = entry_gross + entry_fx_fee + entry_broker_fee
 
-        initial_risk = abs(entry - stop) * qty if pd.notna(stop) else np.nan
+        exit_gross = float(exit_price) * qty * float(fx_rate_exit)
+        proceeds = exit_gross - fx_fee_exit - broker_fee_exit - other_exit_fees
+        pnl = proceeds - float(capital_committed)
+        pct = pnl / float(capital_committed) * 100.0 if capital_committed else np.nan
+
+        initial_risk = _vf_num(row.get("risk_amount"))
+        if pd.isna(initial_risk) or initial_risk <= 0:
+            initial_risk = abs(entry - stop) * qty * float(entry_fx) if pd.notna(stop) else np.nan
         if pd.notna(initial_risk) and initial_risk > 0:
             r_multiple = pnl / initial_risk
+
+    total_fees = (
+        entry_fx_fee + entry_broker_fee +
+        fx_fee_exit + broker_fee_exit + other_exit_fees
+    )
 
     payload = {
         **row,
@@ -6957,12 +7372,88 @@ def vf_close_trade_record(trade_row, exit_price, exit_reason, fees=0.0, notes=""
         "closed_at": datetime.utcnow().isoformat(),
         "exit_price": float(exit_price) if pd.notna(exit_price) else None,
         "exit_reason": _clean_text(exit_reason, upper=True),
-        "fees": fees,
+        "capital_committed": float(capital_committed) if pd.notna(capital_committed) else row.get("capital_committed"),
+        "fx_rate_exit": float(fx_rate_exit),
+        "fx_fee_exit": fx_fee_exit,
+        "broker_fee_exit": broker_fee_exit,
+        "other_exit_fees": other_exit_fees,
+        "fees": total_fees,
         "realized_pnl": float(pnl) if pd.notna(pnl) else None,
         "realized_pct": float(pct) if pd.notna(pct) else None,
         "r_multiple": float(r_multiple) if pd.notna(r_multiple) else None,
         "notes": _clean_text(notes) or _clean_text(row.get("notes")),
     }
+    return vf_save_trade_journal_record(payload)
+
+
+def vf_update_trade_financials(
+    trade_row,
+    instrument_type,
+    instrument_currency,
+    account_currency,
+    quote_currency,
+    quote_scale,
+    fx_rate_entry,
+    fx_fee_rate_pct,
+    fx_fee_entry,
+    broker_commission_rate_pct,
+    broker_fee_entry,
+    fx_rate_exit=None,
+    fx_fee_exit=None,
+    broker_fee_exit=None,
+    other_exit_fees=None,
+):
+    """Persist editable XTB currency/fee parameters and recalculate accounting."""
+    if hasattr(trade_row, "to_dict"):
+        trade_row = trade_row.to_dict()
+    row = dict(trade_row or {})
+
+    entry = _vf_num(row.get("actual_entry"))
+    stop = _vf_num(row.get("stop"))
+    qty = int(_vf_num(row.get("quantity")) or 0)
+    fx_rate_entry = _vf_num(fx_rate_entry)
+    if pd.isna(fx_rate_entry) or fx_rate_entry <= 0:
+        fx_rate_entry = 1.0
+
+    fin = vf_trade_entry_financials(
+        entry, qty, stop,
+        fx_rate_entry=fx_rate_entry,
+        fx_fee_entry=fx_fee_entry,
+        broker_fee_entry=broker_fee_entry,
+    )
+
+    payload = {
+        **row,
+        "instrument_type": _clean_text(instrument_type, upper=True) or "ACTION",
+        "instrument_currency": _clean_text(instrument_currency, upper=True) or "EUR",
+        "account_currency": _clean_text(account_currency, upper=True) or "EUR",
+        "quote_currency": _clean_text(quote_currency) or _clean_text(instrument_currency, upper=True) or "EUR",
+        "quote_scale": float(_vf_num(quote_scale) or 1.0),
+        "fx_rate_entry": float(fx_rate_entry),
+        "fx_fee_rate_pct": vf_float0(fx_fee_rate_pct),
+        "fx_fee_entry": vf_float0(fx_fee_entry),
+        "broker_commission_rate_pct": vf_float0(broker_commission_rate_pct),
+        "broker_fee_entry": vf_float0(broker_fee_entry),
+        "capital_committed": float(fin["capital_committed"]),
+        "risk_amount": float(fin["risk_amount"]),
+    }
+
+    if _clean_text(row.get("status"), upper=True) == "CLOSED":
+        if fx_rate_exit is not None:
+            payload["fx_rate_exit"] = float(_vf_num(fx_rate_exit) or fx_rate_entry)
+        if fx_fee_exit is not None:
+            payload["fx_fee_exit"] = vf_float0(fx_fee_exit)
+        if broker_fee_exit is not None:
+            payload["broker_fee_exit"] = vf_float0(broker_fee_exit)
+        if other_exit_fees is not None:
+            payload["other_exit_fees"] = vf_float0(other_exit_fees)
+        payload = vf_recalculate_closed_trade(payload)
+    else:
+        payload["fees"] = (
+            vf_float0(payload.get("fx_fee_entry")) +
+            vf_float0(payload.get("broker_fee_entry"))
+        )
+
     return vf_save_trade_journal_record(payload)
 
 
@@ -7052,13 +7543,11 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
     """
     Project 0 is driven by the XTB Trade Journal.
 
-    Accounting:
-    - initial stake = 1,000 EUR
-    - OPEN trades reserve their committed capital
-    - CLOSED trades release principal and add/subtract realized P/L
-    - OPEN live P/L changes the project equity, not the available cash
-    - no synthetic rows are written to the broker transaction ledger, avoiding
-      double counting if a real XTB export is imported later.
+    V39.5:
+    - journal prices stay in the instrument's major currency (GBP, USD, EUR…);
+    - minor quote units (GBp/GBX) are normalized for live tracking;
+    - OPEN market value is converted to the account currency;
+    - XTB FX conversion and broker fees can be estimated/overridden per trade.
     """
     initial = float(XTB_PROJECT_ZERO_INITIAL_CAPITAL)
 
@@ -7106,29 +7595,82 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
         symbol = _clean_text(row.get("symbol"), upper=True)
         qty = int(_vf_num(row.get("quantity")) or 0)
         entry = _vf_num(row.get("actual_entry"))
-        committed = _vf_num(row.get("capital_committed"))
 
-        if pd.isna(committed) or committed <= 0:
-            committed = (float(entry) * qty) if pd.notna(entry) and qty > 0 else 0.0
+        ctx = vf_trade_row_currency_context(row, refresh_fx=refresh_quotes)
+        instrument_currency = ctx["instrument_currency"]
+        account_currency = ctx["account_currency"]
+        live_fx = float(ctx.get("live_fx_rate") or 1.0)
+
+        entry_fx = _vf_num(row.get("fx_rate_entry"))
+        if pd.isna(entry_fx) or entry_fx <= 0:
+            entry_fx = live_fx if instrument_currency != account_currency else 1.0
+
+        fx_rate_pct = _vf_num(row.get("fx_fee_rate_pct"))
+        if pd.isna(fx_rate_pct):
+            fx_rate_pct = (
+                XTB_FX_MARGIN_DEFAULT_PCT
+                if instrument_currency != account_currency else 0.0
+            )
+
+        entry_fx_fee = _vf_num(row.get("fx_fee_entry"))
+        broker_fee_entry = _vf_num(row.get("broker_fee_entry"))
+        if pd.isna(entry_fx_fee):
+            base_entry = float(entry) * qty * float(entry_fx) if pd.notna(entry) and qty > 0 else 0.0
+            entry_fx_fee = base_entry * float(fx_rate_pct) / 100.0
+        if pd.isna(broker_fee_entry):
+            broker_fee_entry = 0.0
+
+        committed = _vf_num(row.get("capital_committed"))
+        # Legacy rows in foreign currency did not know FX. Rebuild a provisional
+        # EUR/account-currency cost until the user saves exact broker parameters.
+        has_fx_context = bool(_clean_text(row.get("instrument_currency"), upper=True))
+        if pd.isna(committed) or committed <= 0 or (not has_fx_context and instrument_currency != account_currency):
+            fin = vf_trade_entry_financials(
+                entry, qty, row.get("stop"),
+                fx_rate_entry=entry_fx,
+                fx_fee_entry=entry_fx_fee,
+                broker_fee_entry=broker_fee_entry,
+            )
+            committed = float(fin["capital_committed"])
 
         risk = _vf_num(row.get("risk_amount"))
-        if pd.isna(risk):
-            risk = 0.0
+        if pd.isna(risk) or risk <= 0 or (not has_fx_context and instrument_currency != account_currency):
+            fin = vf_trade_entry_financials(
+                entry, qty, row.get("stop"),
+                fx_rate_entry=entry_fx,
+                fx_fee_entry=entry_fx_fee,
+                broker_fee_entry=broker_fee_entry,
+            )
+            risk = float(fin["risk_amount"])
 
-        live_price = np.nan
-        if refresh_quotes and symbol:
-            try:
-                live_price = _vf_num(live_quote(symbol).get("price"))
-            except Exception:
-                live_price = np.nan
-
+        live_price = _vf_num(ctx.get("price")) if refresh_quotes else np.nan
         if pd.isna(live_price) or live_price <= 0:
             live_price = entry
 
-        live_value = (
-            float(live_price) * qty
+        gross_live = (
+            float(live_price) * qty * live_fx
             if pd.notna(live_price) and qty > 0
             else float(committed or 0)
+        )
+
+        # Estimate liquidation costs. User can override fee rates/amounts in journal.
+        estimated_exit_fx_fee = (
+            gross_live * float(fx_rate_pct) / 100.0
+            if instrument_currency != account_currency else 0.0
+        )
+        commission_pct = _vf_num(row.get("broker_commission_rate_pct"))
+        if pd.isna(commission_pct):
+            commission_pct = 0.0
+        estimated_exit_broker_fee = gross_live * max(float(commission_pct), 0.0) / 100.0
+        if float(commission_pct) > 0:
+            estimated_exit_broker_fee = max(
+                estimated_exit_broker_fee,
+                XTB_OMI_MIN_COMMISSION_EUR
+            )
+
+        live_value = max(
+            gross_live - estimated_exit_fx_fee - estimated_exit_broker_fee,
+            0.0
         )
         unrealized = live_value - float(committed or 0)
 
@@ -7141,16 +7683,16 @@ def vf_xtb_project_zero_metrics(journal_df=None, refresh_quotes=True):
             "Ticker": symbol,
             "Nom": _clean_text(row.get("name")) or symbol,
             "Qté": qty,
+            "Devise": instrument_currency,
             "Entrée": float(entry) if pd.notna(entry) else np.nan,
             "Cours live": float(live_price) if pd.notna(live_price) else np.nan,
+            "FX live": live_fx,
             "Capital engagé": float(committed or 0),
             "Valeur live": float(live_value or 0),
             "P/L latent": float(unrealized or 0),
             "Risque initial": float(risk or 0),
         })
 
-    # A closed trade returns its principal to cash; only its P/L changes the
-    # project total. Therefore available cash = initial + realized - OPEN cost.
     available_cash = initial + realized - committed_total
     open_unrealized = live_value_total - committed_total
     project_equity = available_cash + live_value_total
@@ -7345,23 +7887,145 @@ def vf_trade_journal_page():
 
         if selected:
             symbol = selected["symbol"]
-            auto_quote = live_quote(symbol)
-            live_px = _vf_num(auto_quote.get("price"))
-            company_name = _clean_text(auto_quote.get("name")) or selected["name"]
+            auto_trade_quote = vf_trade_quote(symbol)
+            company_name = _clean_text(auto_trade_quote.get("name")) or selected["name"]
             isin = selected.get("isin","")
 
             st.markdown(vf_identity_html(symbol, company_name, isin), unsafe_allow_html=True)
 
+            inferred_currency = _clean_text(auto_trade_quote.get("instrument_currency"), upper=True) or "EUR"
+            raw_currency = str(auto_trade_quote.get("raw_currency") or inferred_currency)
+            auto_scale = float(auto_trade_quote.get("quote_scale") or 1.0)
+
+            currency_choices = ["EUR","GBP","USD","PLN","CHF","CAD","JPY","AUD","SEK","NOK","DKK"]
+            if inferred_currency not in currency_choices:
+                currency_choices.append(inferred_currency)
+
+            with st.expander("💱 Devise, unité de cotation & frais XTB", expanded=(inferred_currency != "EUR")):
+                st.caption(
+                    "VISION FUTURE sépare désormais la devise de l'action de la devise du compte. "
+                    "Pour Londres, un cours Yahoo en GBp/GBX est automatiquement divisé par 100 pour être suivi en GBP. "
+                    "Si tu saisis le taux FX réellement exécuté par XTB et qu'il inclut déjà la marge de conversion, "
+                    "passe les frais FX en mode personnalisé pour éviter de les compter deux fois."
+                )
+
+                f1,f2,f3 = st.columns(3)
+                instrument_type = f1.selectbox(
+                    "Type d'instrument",
+                    ["ACTION","ETF","AUTRE"],
+                    key=f"manual_instrument_type_{symbol}"
+                )
+                instrument_currency = f2.selectbox(
+                    "Devise de l'instrument",
+                    currency_choices,
+                    index=currency_choices.index(inferred_currency),
+                    key=f"manual_currency_{symbol}"
+                )
+                account_currency = f3.selectbox(
+                    "Devise du compte Project 0",
+                    ["EUR"],
+                    index=0,
+                    key=f"manual_account_currency_{symbol}",
+                    help="Project 0 est actuellement comptabilisé sur une base de 1 000 €."
+                )
+
+                u1,u2,u3 = st.columns(3)
+                quote_scale = u1.number_input(
+                    "Multiplicateur du flux live",
+                    min_value=0.0001,
+                    max_value=10000.0,
+                    value=float(auto_scale),
+                    step=0.01 if auto_scale >= 1 else 0.001,
+                    format="%.4f",
+                    key=f"manual_quote_scale_{symbol}",
+                    help="Ex. GBp/GBX → GBP : 0,01. Devise normale : 1,00."
+                )
+                live_context = vf_trade_quote(
+                    symbol,
+                    quote_scale_override=quote_scale,
+                    instrument_currency_override=instrument_currency
+                )
+                live_px = _vf_num(live_context.get("price"))
+
+                fx_auto = vf_fx_rate(instrument_currency, account_currency)
+                if pd.isna(fx_auto) or fx_auto <= 0:
+                    fx_auto = 1.0
+                fx_rate_entry = u2.number_input(
+                    f"Taux FX entrée • 1 {instrument_currency} = ? {account_currency}",
+                    min_value=0.000001,
+                    value=float(fx_auto),
+                    step=0.0001,
+                    format="%.6f",
+                    key=f"manual_fx_entry_{symbol}"
+                )
+                fee_mode = u3.selectbox(
+                    "Calcul des frais",
+                    ["Automatique XTB","Personnalisé"],
+                    key=f"manual_fee_mode_{symbol}"
+                )
+
+                if raw_currency and (auto_scale != 1.0 or raw_currency.upper() != instrument_currency.upper()):
+                    raw_price = _vf_num(live_context.get("raw_price"))
+                    if pd.notna(raw_price) and pd.notna(live_px):
+                        st.info(
+                            f"Unité corrigée : flux brut {raw_price:.4f} {raw_currency} "
+                            f"→ {live_px:.4f} {instrument_currency}. "
+                            "C'est notamment le cas de Tullow Oil (GBX/GBp → GBP)."
+                        )
+
+                threshold_exceeded = st.checkbox(
+                    "J'ai dépassé le seuil mensuel XTB de 100 000 € de chiffre d'affaires OMI",
+                    value=False,
+                    key=f"manual_xtb_threshold_{symbol}",
+                    help="Sous ce seuil, la commission actions/ETF est normalement de 0 %. Au-delà, le barème XTB peut appliquer 0,2 % avec un minimum de 10 €."
+                )
+
+                defaults = vf_xtb_fee_defaults(
+                    instrument_currency,
+                    account_currency,
+                    threshold_exceeded=threshold_exceeded
+                )
+                fx_fee_rate_pct = float(defaults["fx_fee_rate_pct"])
+                broker_commission_rate_pct = float(defaults["broker_commission_rate_pct"])
+
+                if fee_mode == "Personnalisé":
+                    pfx1,pfx2 = st.columns(2)
+                    fx_fee_rate_pct = pfx1.number_input(
+                        "Marge conversion FX (%)",
+                        min_value=0.0,
+                        max_value=10.0,
+                        value=float(fx_fee_rate_pct),
+                        step=0.05,
+                        format="%.3f",
+                        key=f"manual_fx_fee_rate_{symbol}"
+                    )
+                    broker_commission_rate_pct = pfx2.number_input(
+                        "Commission courtage (%)",
+                        min_value=0.0,
+                        max_value=10.0,
+                        value=float(broker_commission_rate_pct),
+                        step=0.05,
+                        format="%.3f",
+                        key=f"manual_broker_rate_{symbol}"
+                    )
+
             a,b,c = st.columns(3)
-            a.metric("Cours live", f"{live_px:.2f}" if pd.notna(live_px) else "—")
-            a.caption("Le prix affiché provient du flux de marché utilisé par VISION FUTURE.")
+            a.metric(
+                "Cours live",
+                f"{live_px:.4f} {instrument_currency}" if pd.notna(live_px) else "—"
+            )
+            a.caption(
+                f"Flux source : {raw_currency or '—'} • multiplicateur {float(quote_scale):g}."
+            )
 
             default_entry = float(live_px) if pd.notna(live_px) and live_px > 0 else 0.0
+            price_step = 0.0001 if default_entry and default_entry < 1 else 0.01
             buy_price = b.number_input(
-                "Prix d'achat réel",
+                f"Prix d'achat réel ({instrument_currency})",
                 min_value=0.0,
                 value=default_entry,
-                step=0.01,
+                step=price_step,
+                format="%.4f" if price_step < 0.01 else "%.2f",
                 key=f"manual_entry_{symbol}"
             )
             qty = c.number_input(
@@ -7372,28 +8036,67 @@ def vf_trade_journal_page():
                 key=f"manual_qty_{symbol}"
             )
 
+            level_step = 0.0001 if buy_price and buy_price < 1 else 0.01
             d,e,f = st.columns(3)
             sl = d.number_input(
-                "Stop Loss",
+                f"Stop Loss ({instrument_currency})",
                 min_value=0.0,
                 value=max(buy_price * 0.95, 0.0) if buy_price else 0.0,
-                step=0.01,
+                step=level_step,
+                format="%.4f" if level_step < 0.01 else "%.2f",
                 key=f"manual_sl_{symbol}"
             )
             tp1 = e.number_input(
-                "TP1",
+                f"TP1 ({instrument_currency})",
                 min_value=0.0,
                 value=buy_price * 1.03 if buy_price else 0.0,
-                step=0.01,
+                step=level_step,
+                format="%.4f" if level_step < 0.01 else "%.2f",
                 key=f"manual_tp1_{symbol}"
             )
             tp2 = f.number_input(
-                "TP2",
+                f"TP2 ({instrument_currency})",
                 min_value=0.0,
                 value=buy_price * 1.06 if buy_price else 0.0,
-                step=0.01,
+                step=level_step,
+                format="%.4f" if level_step < 0.01 else "%.2f",
                 key=f"manual_tp2_{symbol}"
             )
+
+            cost_estimate = vf_xtb_cost_estimate(
+                buy_price,
+                int(qty),
+                fx_rate=fx_rate_entry,
+                fx_fee_rate_pct=fx_fee_rate_pct,
+                broker_commission_rate_pct=broker_commission_rate_pct,
+                broker_min_commission=(
+                    XTB_OMI_MIN_COMMISSION_EUR
+                    if threshold_exceeded and broker_commission_rate_pct > 0
+                    else 0.0
+                )
+            )
+
+            if fee_mode == "Automatique XTB":
+                fx_fee_entry = float(cost_estimate["fx_fee"])
+                broker_fee_entry = float(cost_estimate["broker_fee"])
+            else:
+                af1,af2 = st.columns(2)
+                fx_fee_entry = af1.number_input(
+                    f"Frais FX entrée réels ({account_currency})",
+                    min_value=0.0,
+                    value=float(cost_estimate["fx_fee"]),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"manual_fx_fee_entry_{symbol}"
+                )
+                broker_fee_entry = af2.number_input(
+                    f"Frais courtage entrée réels ({account_currency})",
+                    min_value=0.0,
+                    value=float(cost_estimate["broker_fee"]),
+                    step=0.01,
+                    format="%.2f",
+                    key=f"manual_broker_fee_entry_{symbol}"
+                )
 
             notes = st.text_input(
                 "Note facultative",
@@ -7401,17 +8104,28 @@ def vf_trade_journal_page():
                 key=f"manual_notes_{symbol}"
             )
 
-            # Preview calculations
-            risk_eur = max((buy_price - sl) * int(qty), 0.0) if buy_price and sl else 0.0
-            gain_tp1 = max((tp1 - buy_price) * int(qty), 0.0) if buy_price and tp1 else 0.0
-            gain_tp2 = max((tp2 - buy_price) * int(qty), 0.0) if buy_price and tp2 else 0.0
+            fin = vf_trade_entry_financials(
+                buy_price, int(qty), sl,
+                fx_rate_entry=fx_rate_entry,
+                fx_fee_entry=fx_fee_entry,
+                broker_fee_entry=broker_fee_entry,
+            )
+            capital_to_commit = float(fin["capital_committed"])
+            risk_account = float(fin["risk_amount"])
+            gain_tp1 = max((tp1 - buy_price) * int(qty) * fx_rate_entry, 0.0) if buy_price and tp1 else 0.0
+            gain_tp2 = max((tp2 - buy_price) * int(qty) * fx_rate_entry, 0.0) if buy_price and tp2 else 0.0
 
             p1,p2,p3,p4 = st.columns(4)
-            capital_to_commit = buy_price * int(qty)
-            p1.metric("Capital engagé", f"{capital_to_commit:.2f} €")
-            p2.metric("Risque jusqu'au SL", f"-{risk_eur:.2f} €")
-            p3.metric("Gain théorique TP1", f"+{gain_tp1:.2f} €")
-            p4.metric("Gain théorique TP2", f"+{gain_tp2:.2f} €")
+            p1.metric("Capital engagé", f"{capital_to_commit:.2f} {account_currency}")
+            p2.metric("Risque jusqu'au SL", f"-{risk_account:.2f} {account_currency}")
+            p3.metric("Gain brut TP1", f"+{gain_tp1:.2f} {account_currency}")
+            p4.metric("Gain brut TP2", f"+{gain_tp2:.2f} {account_currency}")
+
+            st.caption(
+                f"Entrée brute convertie : {cost_estimate['gross_base']:.2f} {account_currency} • "
+                f"FX estimé/réel : {float(fx_fee_entry):.2f} • "
+                f"courtage : {float(broker_fee_entry):.2f}."
+            )
 
             current_project = vf_xtb_project_zero_metrics(
                 journal_df=vf_load_trade_journal(XTB_PROJECT_ZERO_ACCOUNT),
@@ -7457,6 +8171,16 @@ def vf_trade_journal_page():
                     tp2=tp2,
                     qty=int(qty),
                     notes=notes,
+                    instrument_type=instrument_type,
+                    instrument_currency=instrument_currency,
+                    account_currency=account_currency,
+                    quote_currency=raw_currency,
+                    quote_scale=quote_scale,
+                    fx_rate_entry=fx_rate_entry,
+                    fx_fee_rate_pct=fx_fee_rate_pct,
+                    fx_fee_entry=fx_fee_entry,
+                    broker_commission_rate_pct=broker_commission_rate_pct,
+                    broker_fee_entry=broker_fee_entry,
                 )
                 if ok:
                     st.success(f"Trade ajouté au suivi • {where}.")
@@ -7469,6 +8193,12 @@ def vf_trade_journal_page():
     )
 
     df = vf_load_trade_journal("cto_xtb")
+    if st.session_state.get("vf_trade_journal_fx_schema_missing"):
+        st.warning(
+            "Migration V39.5 non détectée : le journal reste compatible, mais les nouveaux "
+            "paramètres devise/FX/frais ne seront pas persistants tant que le fichier SQL V39.5 "
+            "n'aura pas été exécuté dans le projet Supabase VISION FUTURE."
+        )
     stats = vf_trade_journal_stats(df)
 
     rfa,rfb = st.columns([1,4])
@@ -7503,7 +8233,10 @@ def vf_trade_journal_page():
     # OPEN trades
     # ------------------------------------------------------
     opened = df[df["status"].astype(str).str.upper() == "OPEN"].copy()
-    vf_section("Positions OPEN", "Suivi des micro-trades enregistrés mais pas encore clôturés.")
+    vf_section(
+        "Positions OPEN",
+        "Suivi live avec unité de cotation, devise de l'instrument, conversion FX et frais XTB."
+    )
 
     if opened.empty:
         st.info("Aucun micro-trade OPEN.")
@@ -7513,10 +8246,77 @@ def vf_trade_journal_page():
             name = _clean_text(rr.get("name")) or symbol
             entry = _vf_num(rr.get("actual_entry"))
             qty = int(_vf_num(rr.get("quantity")) or 0)
-            current = _vf_num(live_quote(symbol).get("price"))
 
-            unreal = (current - entry) * qty if pd.notna(current) and pd.notna(entry) else np.nan
-            unreal_pct = ((current-entry)/entry*100) if pd.notna(current) and pd.notna(entry) and entry else np.nan
+            ctx = vf_trade_row_currency_context(rr, refresh_fx=True)
+            current = _vf_num(ctx.get("price"))
+            instrument_currency = ctx.get("instrument_currency") or "EUR"
+            account_currency = ctx.get("account_currency") or "EUR"
+            live_fx = float(ctx.get("live_fx_rate") or 1.0)
+
+            entry_fx = _vf_num(rr.get("fx_rate_entry"))
+            if pd.isna(entry_fx) or entry_fx <= 0:
+                entry_fx = live_fx if instrument_currency != account_currency else 1.0
+
+            fx_fee_rate_pct = _vf_num(rr.get("fx_fee_rate_pct"))
+            if pd.isna(fx_fee_rate_pct):
+                fx_fee_rate_pct = (
+                    XTB_FX_MARGIN_DEFAULT_PCT
+                    if instrument_currency != account_currency else 0.0
+                )
+
+            entry_fx_fee = _vf_num(rr.get("fx_fee_entry"))
+            broker_fee_entry = _vf_num(rr.get("broker_fee_entry"))
+            if pd.isna(entry_fx_fee):
+                gross_entry_est = float(entry) * qty * float(entry_fx) if pd.notna(entry) else 0.0
+                entry_fx_fee = gross_entry_est * float(fx_fee_rate_pct) / 100.0
+            if pd.isna(broker_fee_entry):
+                broker_fee_entry = 0.0
+
+            fin = vf_trade_entry_financials(
+                entry, qty, rr.get("stop"),
+                fx_rate_entry=entry_fx,
+                fx_fee_entry=entry_fx_fee,
+                broker_fee_entry=broker_fee_entry,
+            )
+
+            committed = _vf_num(rr.get("capital_committed"))
+            if pd.isna(committed) or committed <= 0 or not _clean_text(rr.get("instrument_currency"), upper=True):
+                committed = float(fin["capital_committed"])
+
+            gross_live = (
+                float(current) * qty * live_fx
+                if pd.notna(current) and qty > 0 else np.nan
+            )
+            estimated_exit_fx_fee = (
+                gross_live * float(fx_fee_rate_pct) / 100.0
+                if pd.notna(gross_live) and instrument_currency != account_currency
+                else 0.0
+            )
+            broker_rate = _vf_num(rr.get("broker_commission_rate_pct"))
+            if pd.isna(broker_rate):
+                broker_rate = 0.0
+            estimated_exit_broker_fee = (
+                gross_live * max(float(broker_rate), 0.0) / 100.0
+                if pd.notna(gross_live) else 0.0
+            )
+            if pd.notna(gross_live) and float(broker_rate) > 0:
+                estimated_exit_broker_fee = max(
+                    estimated_exit_broker_fee,
+                    XTB_OMI_MIN_COMMISSION_EUR
+                )
+
+            live_value = (
+                gross_live - estimated_exit_fx_fee - estimated_exit_broker_fee
+                if pd.notna(gross_live) else np.nan
+            )
+            unreal = (
+                live_value - float(committed)
+                if pd.notna(live_value) and pd.notna(committed) else np.nan
+            )
+            unreal_pct = (
+                unreal / float(committed) * 100.0
+                if pd.notna(unreal) and pd.notna(committed) and committed else np.nan
+            )
 
             stop_v = _vf_num(rr.get("stop"))
             tp1_v = _vf_num(rr.get("tp1"))
@@ -7529,21 +8329,52 @@ def vf_trade_journal_page():
             with st.container(border=True):
                 a,b = st.columns([4,1])
                 with a:
-                    st.markdown(vf_identity_html(symbol, name, _clean_text(rr.get("isin"), upper=True)), unsafe_allow_html=True)
+                    st.markdown(
+                        vf_identity_html(
+                            symbol,
+                            name,
+                            _clean_text(rr.get("isin"), upper=True)
+                        ),
+                        unsafe_allow_html=True
+                    )
                 with b:
-                    st.markdown(vf_board_badge(live_state, live_kind), unsafe_allow_html=True)
+                    st.markdown(
+                        vf_board_badge(live_state, live_kind),
+                        unsafe_allow_html=True
+                    )
+
+                entry_txt = (
+                    f"{entry:.4f} {instrument_currency}"
+                    if pd.notna(entry) and abs(entry) < 1
+                    else (f"{entry:.2f} {instrument_currency}" if pd.notna(entry) else "—")
+                )
+                current_txt = (
+                    f"{current:.4f} {instrument_currency}"
+                    if pd.notna(current) and abs(current) < 1
+                    else (f"{current:.2f} {instrument_currency}" if pd.notna(current) else "—")
+                )
+                stop_txt = (
+                    f"{stop_v:.4f}" if pd.notna(stop_v) and abs(stop_v) < 1
+                    else (f"{stop_v:.2f}" if pd.notna(stop_v) else "—")
+                )
+                tp_txt = "—"
+                if pd.notna(tp1_v) and pd.notna(tp2_v):
+                    if max(abs(tp1_v), abs(tp2_v)) < 1:
+                        tp_txt = f"{tp1_v:.4f} / {tp2_v:.4f}"
+                    else:
+                        tp_txt = f"{tp1_v:.2f} / {tp2_v:.2f}"
 
                 c1,c2,c3,c4,c5 = st.columns(5)
-                c1.metric("Entrée réelle", f"{entry:.2f}" if pd.notna(entry) else "—")
-                c2.metric("Cours", f"{current:.2f}" if pd.notna(current) else "—")
-                c3.metric("P/L live", f"{unreal:+.2f} €" if pd.notna(unreal) else "—",
-                          f"{unreal_pct:+.2f}%" if pd.notna(unreal_pct) else None)
-                c4.metric("Stop", f"{_vf_num(rr.get('stop')):.2f}" if pd.notna(_vf_num(rr.get("stop"))) else "—")
-                c5.metric("TP1 / TP2",
-                          f"{_vf_num(rr.get('tp1')):.2f} / {_vf_num(rr.get('tp2')):.2f}"
-                          if pd.notna(_vf_num(rr.get("tp1"))) and pd.notna(_vf_num(rr.get("tp2"))) else "—")
+                c1.metric("Entrée réelle", entry_txt)
+                c2.metric("Cours", current_txt)
+                c3.metric(
+                    "P/L live net estimé",
+                    f"{unreal:+.2f} {account_currency}" if pd.notna(unreal) else "—",
+                    f"{unreal_pct:+.2f}%" if pd.notna(unreal_pct) else None
+                )
+                c4.metric("Stop", stop_txt)
+                c5.metric("TP1 / TP2", tp_txt)
 
-                # Live distances to exit levels
                 d1,d2,d3,d4 = st.columns(4)
                 if pd.notna(current) and current > 0:
                     dist_sl = ((current-stop_v)/current*100) if pd.notna(stop_v) else np.nan
@@ -7552,10 +8383,38 @@ def vf_trade_journal_page():
                 else:
                     dist_sl = dist_tp1 = dist_tp2 = np.nan
 
-                d1.metric("Valeur live", f"{current*qty:.2f} €" if pd.notna(current) else "—")
+                d1.metric(
+                    f"Valeur live ({account_currency})",
+                    f"{live_value:.2f}" if pd.notna(live_value) else "—"
+                )
                 d2.metric("Marge avant SL", f"{dist_sl:+.2f}%" if pd.notna(dist_sl) else "—")
                 d3.metric("Distance TP1", f"{dist_tp1:+.2f}%" if pd.notna(dist_tp1) else "—")
                 d4.metric("Distance TP2", f"{dist_tp2:+.2f}%" if pd.notna(dist_tp2) else "—")
+
+                raw_price = _vf_num(ctx.get("raw_price"))
+                raw_currency = str(ctx.get("raw_currency") or "")
+                quote_scale = float(ctx.get("quote_scale") or 1.0)
+                if pd.notna(raw_price) and quote_scale != 1.0:
+                    st.caption(
+                        f"Flux brut : {raw_price:.4f} {raw_currency} × {quote_scale:g} "
+                        f"= {float(current):.4f} {instrument_currency} • "
+                        f"FX live : 1 {instrument_currency} ≈ {live_fx:.6f} {account_currency}."
+                    )
+                else:
+                    st.caption(
+                        f"Devise instrument : {instrument_currency} • "
+                        f"FX live : 1 {instrument_currency} ≈ {live_fx:.6f} {account_currency} • "
+                        f"frais de sortie FX estimés : {estimated_exit_fx_fee:.2f} {account_currency}."
+                    )
+
+                # Detect a likely 100x unit mismatch between stored entry and live quote.
+                if pd.notna(entry) and pd.notna(current) and entry > 0 and current > 0:
+                    ratio = max(entry / current, current / entry)
+                    if 50 <= ratio <= 150:
+                        st.warning(
+                            "Écart d'unité probable ×100 entre le prix enregistré et le flux live. "
+                            "Vérifie le multiplicateur de cotation dans « Paramètres devise & frais XTB »."
+                        )
 
                 if live_note:
                     if live_kind == "green":
@@ -7574,11 +8433,266 @@ def vf_trade_journal_page():
                         age_days = max((now - opened_at).total_seconds() / 86400, 0)
                         st.caption(
                             f"Ouvert depuis ~{age_days:.1f} jour(s) • "
-                            f"TP1 prévu : {rr.get('horizon_tp1') or '—'} / {rr.get('sessions_tp1') or '—'} séances"
+                            f"TP1 prévu : {rr.get('horizon_tp1') or '—'} / "
+                            f"{rr.get('sessions_tp1') or '—'} séances"
                         )
                     except Exception:
                         pass
 
+    # ------------------------------------------------------
+    # Editable XTB currency / quote-unit / fee parameters
+    # ------------------------------------------------------
+    editable_df = df[
+        ~df["status"].astype(str).str.upper().isin(["CANCELLED"])
+    ].copy()
+
+    if not editable_df.empty:
+        vf_section(
+            "⚙️ Paramètres devise & frais XTB",
+            "Corrige une unité de cotation (ex. GBX/GBp), le taux de change ou les frais réels. "
+            "Le capital engagé et le P/L sont recalculés."
+        )
+
+        edit_labels = {}
+        for _, er in editable_df.iterrows():
+            tid = str(er.get("trade_id") or "")
+            status_txt = _clean_text(er.get("status"), upper=True) or "—"
+            edit_labels[
+                f"{_clean_text(er.get('symbol'), upper=True)} • {status_txt} • ID {tid[-6:]}"
+            ] = er
+
+        edit_choice = st.selectbox(
+            "Trade à paramétrer",
+            list(edit_labels.keys()),
+            key="journal_fx_edit_trade"
+        )
+        edit_row = edit_labels[edit_choice]
+        edit_symbol = _clean_text(edit_row.get("symbol"), upper=True)
+        edit_ctx = vf_trade_row_currency_context(edit_row, refresh_fx=True)
+
+        inferred_inst_currency = (
+            _clean_text(edit_row.get("instrument_currency"), upper=True)
+            or edit_ctx.get("instrument_currency")
+            or "EUR"
+        )
+        inferred_account_currency = (
+            _clean_text(edit_row.get("account_currency"), upper=True) or "EUR"
+        )
+        inferred_scale = _vf_num(edit_row.get("quote_scale"))
+        if pd.isna(inferred_scale) or inferred_scale <= 0:
+            inferred_scale = float(edit_ctx.get("quote_scale") or 1.0)
+
+        edit_currency_choices = ["EUR","GBP","USD","PLN","CHF","CAD","JPY","AUD","SEK","NOK","DKK"]
+        if inferred_inst_currency not in edit_currency_choices:
+            edit_currency_choices.append(inferred_inst_currency)
+
+        e1,e2,e3,e4 = st.columns(4)
+        existing_type = _clean_text(edit_row.get("instrument_type"), upper=True) or "ACTION"
+        type_choices = ["ACTION","ETF","AUTRE"]
+        if existing_type not in type_choices:
+            type_choices.append(existing_type)
+        edit_type = e1.selectbox(
+            "Type",
+            type_choices,
+            index=type_choices.index(existing_type),
+            key=f"journal_edit_type_{edit_row.get('trade_id')}"
+        )
+        edit_inst_currency = e2.selectbox(
+            "Devise instrument",
+            edit_currency_choices,
+            index=edit_currency_choices.index(inferred_inst_currency),
+            key=f"journal_edit_currency_{edit_row.get('trade_id')}"
+        )
+        account_choices = ["EUR"]
+        edit_account_currency = e3.selectbox(
+            "Devise compte Project 0",
+            account_choices,
+            index=0,
+            key=f"journal_edit_account_currency_{edit_row.get('trade_id')}",
+            help="Project 0 reste consolidé en EUR."
+        )
+        edit_scale = e4.number_input(
+            "Multiplicateur live",
+            min_value=0.0001,
+            max_value=10000.0,
+            value=float(inferred_scale),
+            step=0.001 if inferred_scale < 1 else 0.01,
+            format="%.4f",
+            key=f"journal_edit_scale_{edit_row.get('trade_id')}",
+            help="Tullow / Londres coté en GBX : 0,01 pour obtenir des GBP."
+        )
+
+        fx_entry_default = _vf_num(edit_row.get("fx_rate_entry"))
+        if pd.isna(fx_entry_default) or fx_entry_default <= 0:
+            fx_entry_default = vf_fx_rate(edit_inst_currency, edit_account_currency)
+        if pd.isna(fx_entry_default) or fx_entry_default <= 0:
+            fx_entry_default = 1.0
+
+        fx_pct_default = _vf_num(edit_row.get("fx_fee_rate_pct"))
+        if pd.isna(fx_pct_default):
+            fx_pct_default = (
+                XTB_FX_MARGIN_DEFAULT_PCT
+                if edit_inst_currency != edit_account_currency else 0.0
+            )
+
+        broker_rate_default = _vf_num(edit_row.get("broker_commission_rate_pct"))
+        if pd.isna(broker_rate_default):
+            broker_rate_default = 0.0
+
+        f1,f2,f3 = st.columns(3)
+        edit_fx_entry = f1.number_input(
+            f"FX entrée • 1 {edit_inst_currency} = {edit_account_currency}",
+            min_value=0.000001,
+            value=float(fx_entry_default),
+            step=0.0001,
+            format="%.6f",
+            key=f"journal_edit_fxentry_{edit_row.get('trade_id')}"
+        )
+        edit_fx_pct = f2.number_input(
+            "Marge FX XTB (%)",
+            min_value=0.0,
+            max_value=10.0,
+            value=float(fx_pct_default),
+            step=0.05,
+            format="%.3f",
+            key=f"journal_edit_fxpct_{edit_row.get('trade_id')}"
+        )
+        edit_broker_rate = f3.number_input(
+            "Commission courtage (%)",
+            min_value=0.0,
+            max_value=10.0,
+            value=float(broker_rate_default),
+            step=0.05,
+            format="%.3f",
+            key=f"journal_edit_brokerrate_{edit_row.get('trade_id')}"
+        )
+
+        entry_price_edit = _vf_num(edit_row.get("actual_entry"))
+        entry_qty_edit = int(_vf_num(edit_row.get("quantity")) or 0)
+        entry_est = vf_xtb_cost_estimate(
+            entry_price_edit,
+            entry_qty_edit,
+            fx_rate=edit_fx_entry,
+            fx_fee_rate_pct=edit_fx_pct,
+            broker_commission_rate_pct=edit_broker_rate,
+            broker_min_commission=(
+                XTB_OMI_MIN_COMMISSION_EUR if edit_broker_rate > 0 else 0.0
+            )
+        )
+
+        fx_fee_entry_default = _vf_num(edit_row.get("fx_fee_entry"))
+        if pd.isna(fx_fee_entry_default):
+            fx_fee_entry_default = entry_est["fx_fee"]
+        broker_fee_entry_default = _vf_num(edit_row.get("broker_fee_entry"))
+        if pd.isna(broker_fee_entry_default):
+            broker_fee_entry_default = entry_est["broker_fee"]
+
+        fe1,fe2 = st.columns(2)
+        edit_fx_fee_entry = fe1.number_input(
+            f"Frais FX entrée réels ({edit_account_currency})",
+            min_value=0.0,
+            value=float(fx_fee_entry_default),
+            step=0.01,
+            format="%.2f",
+            key=f"journal_edit_fxfeeentry_{edit_row.get('trade_id')}"
+        )
+        edit_broker_fee_entry = fe2.number_input(
+            f"Frais courtage entrée réels ({edit_account_currency})",
+            min_value=0.0,
+            value=float(broker_fee_entry_default),
+            step=0.01,
+            format="%.2f",
+            key=f"journal_edit_brokerfeeentry_{edit_row.get('trade_id')}"
+        )
+
+        edit_fx_exit = None
+        edit_fx_fee_exit = None
+        edit_broker_fee_exit = None
+        edit_other_exit = None
+
+        if _clean_text(edit_row.get("status"), upper=True) == "CLOSED":
+            fx_exit_default = _vf_num(edit_row.get("fx_rate_exit"))
+            if pd.isna(fx_exit_default) or fx_exit_default <= 0:
+                fx_exit_default = vf_fx_rate(edit_inst_currency, edit_account_currency)
+            if pd.isna(fx_exit_default) or fx_exit_default <= 0:
+                fx_exit_default = edit_fx_entry
+
+            ex1,ex2,ex3,ex4 = st.columns(4)
+            edit_fx_exit = ex1.number_input(
+                "FX sortie",
+                min_value=0.000001,
+                value=float(fx_exit_default),
+                step=0.0001,
+                format="%.6f",
+                key=f"journal_edit_fxexit_{edit_row.get('trade_id')}"
+            )
+            edit_fx_fee_exit = ex2.number_input(
+                "Frais FX sortie",
+                min_value=0.0,
+                value=vf_float0(edit_row.get("fx_fee_exit")),
+                step=0.01,
+                key=f"journal_edit_fxfeeexit_{edit_row.get('trade_id')}"
+            )
+            edit_broker_fee_exit = ex3.number_input(
+                "Frais courtage sortie",
+                min_value=0.0,
+                value=vf_float0(edit_row.get("broker_fee_exit")),
+                step=0.01,
+                key=f"journal_edit_brokerfeeexit_{edit_row.get('trade_id')}"
+            )
+            edit_other_exit = ex4.number_input(
+                "Autres frais sortie",
+                min_value=0.0,
+                value=vf_float0(edit_row.get("other_exit_fees")),
+                step=0.01,
+                key=f"journal_edit_otherexit_{edit_row.get('trade_id')}"
+            )
+
+        edit_quote_currency = (
+            _clean_text(edit_row.get("quote_currency"))
+            or str(edit_ctx.get("raw_currency") or edit_inst_currency)
+        )
+
+        preview_fin = vf_trade_entry_financials(
+            entry_price_edit,
+            entry_qty_edit,
+            edit_row.get("stop"),
+            fx_rate_entry=edit_fx_entry,
+            fx_fee_entry=edit_fx_fee_entry,
+            broker_fee_entry=edit_broker_fee_entry,
+        )
+        pv1,pv2,pv3 = st.columns(3)
+        pv1.metric("Capital engagé recalculé", f"{preview_fin['capital_committed']:.2f} {edit_account_currency}")
+        pv2.metric("Frais entrée", f"{preview_fin['entry_fees']:.2f} {edit_account_currency}")
+        pv3.metric("Risque recalculé", f"{preview_fin['risk_amount']:.2f} {edit_account_currency}")
+
+        if st.button(
+            "💾 Enregistrer les paramètres XTB",
+            type="primary",
+            use_container_width=True,
+            key=f"journal_edit_financials_save_{edit_row.get('trade_id')}"
+        ):
+            ok, where = vf_update_trade_financials(
+                edit_row,
+                instrument_type=edit_type,
+                instrument_currency=edit_inst_currency,
+                account_currency=edit_account_currency,
+                quote_currency=edit_quote_currency,
+                quote_scale=edit_scale,
+                fx_rate_entry=edit_fx_entry,
+                fx_fee_rate_pct=edit_fx_pct,
+                fx_fee_entry=edit_fx_fee_entry,
+                broker_commission_rate_pct=edit_broker_rate,
+                broker_fee_entry=edit_broker_fee_entry,
+                fx_rate_exit=edit_fx_exit,
+                fx_fee_exit=edit_fx_fee_exit,
+                broker_fee_exit=edit_broker_fee_exit,
+                other_exit_fees=edit_other_exit,
+            )
+            if ok:
+                st.success(f"Paramètres enregistrés • {where}.")
+                vf_safe_cache_clear()
+                st.rerun()
     # ------------------------------------------------------
     # Cancel one or more erroneous OPEN journal lines
     # ------------------------------------------------------
@@ -7600,11 +8714,18 @@ def vf_trade_journal_page():
             )
             entry_v = _vf_num(rr.get("actual_entry"))
             qty_v = int(_vf_num(rr.get("quantity")) or 0)
+            rr_ctx = vf_trade_row_currency_context(rr, refresh_fx=False)
+            rr_currency = rr_ctx.get("instrument_currency") or "EUR"
+            entry_label = (
+                f"{entry_v:.4f} {rr_currency}"
+                if pd.notna(entry_v) and abs(entry_v) < 1
+                else (f"{entry_v:.2f} {rr_currency}" if pd.notna(entry_v) else "—")
+            )
             label = (
                 f"{_clean_text(rr.get('symbol'), upper=True)} • "
                 f"{_clean_text(rr.get('name')) or '—'} • "
                 f"Qté {qty_v} • "
-                f"{entry_v:.2f} € • "
+                f"{entry_label} • "
                 f"{opened_txt} • ID {tid[-6:]}"
             )
             cancel_labels[label] = rr
@@ -7699,7 +8820,7 @@ def vf_trade_journal_page():
     if not opened.empty:
         vf_section(
             "✅ Clôturer un trade réellement exécuté",
-            "À utiliser uniquement lorsqu'une vente/sortie a réellement été exécutée chez XTB."
+            "La sortie est calculée dans la devise du compte en tenant compte du FX et des frais."
         )
 
         labels = {}
@@ -7710,15 +8831,21 @@ def vf_trade_journal_page():
         choice = st.selectbox("Trade OPEN", list(labels.keys()), key="journal_close_trade")
         selected = labels[choice]
         symbol = _clean_text(selected.get("symbol"), upper=True)
-        current = _vf_num(live_quote(symbol).get("price"))
+        close_ctx = vf_trade_row_currency_context(selected, refresh_fx=True)
+        current = _vf_num(close_ctx.get("price"))
+        inst_currency = close_ctx.get("instrument_currency") or "EUR"
+        account_currency = close_ctx.get("account_currency") or "EUR"
+        current_fx = float(close_ctx.get("live_fx_rate") or 1.0)
         default_exit = float(current) if pd.notna(current) else float(_vf_num(selected.get("actual_entry")) or 0)
 
         q1,q2,q3 = st.columns(3)
+        exit_step = 0.0001 if default_exit and default_exit < 1 else 0.01
         exit_price = q1.number_input(
-            "Prix de sortie réel",
+            f"Prix de sortie réel ({inst_currency})",
             min_value=0.0,
             value=max(default_exit, 0.0),
-            step=0.01,
+            step=exit_step,
+            format="%.4f" if exit_step < 0.01 else "%.2f",
             key=f"journal_exit_{selected.get('trade_id')}"
         )
         exit_reason = q2.selectbox(
@@ -7726,13 +8853,89 @@ def vf_trade_journal_page():
             ["TP1","TP2","STOP","MANUEL","INVALIDATION","NEWS/RISK"],
             key=f"journal_reason_{selected.get('trade_id')}"
         )
-        fees = q3.number_input(
-            "Frais (€)",
+        fx_rate_exit = q3.number_input(
+            f"FX sortie • 1 {inst_currency} = {account_currency}",
+            min_value=0.000001,
+            value=float(current_fx),
+            step=0.0001,
+            format="%.6f",
+            key=f"journal_exit_fx_{selected.get('trade_id')}"
+        )
+
+        fx_pct = _vf_num(selected.get("fx_fee_rate_pct"))
+        if pd.isna(fx_pct):
+            fx_pct = (
+                XTB_FX_MARGIN_DEFAULT_PCT
+                if inst_currency != account_currency else 0.0
+            )
+        broker_pct = _vf_num(selected.get("broker_commission_rate_pct"))
+        if pd.isna(broker_pct):
+            broker_pct = 0.0
+
+        exit_est = vf_xtb_cost_estimate(
+            exit_price,
+            int(_vf_num(selected.get("quantity")) or 0),
+            fx_rate=fx_rate_exit,
+            fx_fee_rate_pct=fx_pct,
+            broker_commission_rate_pct=broker_pct,
+            broker_min_commission=(
+                XTB_OMI_MIN_COMMISSION_EUR if broker_pct > 0 else 0.0
+            )
+        )
+
+        e1,e2,e3 = st.columns(3)
+        fx_fee_exit = e1.number_input(
+            f"Frais FX sortie ({account_currency})",
+            min_value=0.0,
+            value=float(exit_est["fx_fee"]),
+            step=0.01,
+            format="%.2f",
+            key=f"journal_exit_fxfee_{selected.get('trade_id')}"
+        )
+        broker_fee_exit = e2.number_input(
+            f"Frais courtage sortie ({account_currency})",
+            min_value=0.0,
+            value=float(exit_est["broker_fee"]),
+            step=0.01,
+            format="%.2f",
+            key=f"journal_exit_brokerfee_{selected.get('trade_id')}"
+        )
+        fees = e3.number_input(
+            f"Autres frais sortie ({account_currency})",
             min_value=0.0,
             value=0.0,
             step=0.01,
             key=f"journal_fees_{selected.get('trade_id')}"
         )
+
+        entry_committed = _vf_num(selected.get("capital_committed"))
+        if pd.isna(entry_committed) or entry_committed <= 0:
+            entry_fx = _vf_num(selected.get("fx_rate_entry"))
+            if pd.isna(entry_fx) or entry_fx <= 0:
+                entry_fx = current_fx
+            fin0 = vf_trade_entry_financials(
+                selected.get("actual_entry"),
+                int(_vf_num(selected.get("quantity")) or 0),
+                selected.get("stop"),
+                fx_rate_entry=entry_fx,
+                fx_fee_entry=vf_float0(selected.get("fx_fee_entry")),
+                broker_fee_entry=vf_float0(selected.get("broker_fee_entry")),
+            )
+            entry_committed = fin0["capital_committed"]
+
+        net_exit_value = (
+            exit_est["gross_base"] -
+            float(fx_fee_exit) -
+            float(broker_fee_exit) -
+            float(fees)
+        )
+        pnl_preview = net_exit_value - float(entry_committed or 0.0)
+
+        px1,px2,px3 = st.columns(3)
+        px1.metric("Valeur brute sortie", f"{exit_est['gross_base']:.2f} {account_currency}")
+        px2.metric("Frais sortie", f"{float(fx_fee_exit)+float(broker_fee_exit)+float(fees):.2f} {account_currency}")
+        px3.metric("P/L net estimé", f"{pnl_preview:+.2f} {account_currency}")
+
         notes = st.text_input(
             "Note de sortie",
             placeholder="Ex. momentum cassé, sortie volontaire avant news…",
@@ -7740,7 +8943,16 @@ def vf_trade_journal_page():
         )
 
         if st.button("✅ Clôturer et calculer le résultat", type="primary", use_container_width=True):
-            ok, where = vf_close_trade_record(selected, exit_price, exit_reason, fees, notes)
+            ok, where = vf_close_trade_record(
+                selected,
+                exit_price,
+                exit_reason,
+                fees,
+                notes,
+                fx_rate_exit=fx_rate_exit,
+                fx_fee_exit=fx_fee_exit,
+                broker_fee_exit=broker_fee_exit,
+            )
             if ok:
                 st.success(f"Trade clôturé • journal {where}.")
                 vf_safe_cache_clear()
@@ -7845,7 +9057,11 @@ def vf_trade_journal_page():
 
         st.markdown("**Historique clôturé**")
         visible = [
-            "closed_at","symbol","name","actual_entry","exit_price","quantity",
+            "closed_at","symbol","name","instrument_currency",
+            "actual_entry","exit_price","quantity",
+            "fx_rate_entry","fx_rate_exit",
+            "fx_fee_entry","fx_fee_exit",
+            "broker_fee_entry","broker_fee_exit","other_exit_fees","fees",
             "exit_reason","realized_pnl","realized_pct","r_multiple",
             "score","horizon_tp1","rotation","Durée jours"
         ]
